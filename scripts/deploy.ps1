@@ -136,6 +136,9 @@ foreach ($rel in @('public\hot', 'public\storage')) {
     $p = Join-Path $Stage $rel
     if (Test-Path $p) { Remove-Item -LiteralPath $p -Recurse -Force }
 }
+# composer sometimes installs a package from source, leaving a .git directory in vendor: not needed at runtime
+Get-ChildItem -LiteralPath (Join-Path $Stage 'vendor') -Recurse -Force -Directory -Filter '.git' -ErrorAction SilentlyContinue |
+    Sort-Object { $_.FullName.Length } -Descending | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
 # the uploader treats a package.json as a Node app: it must never be in the staging directory
 Get-ChildItem -LiteralPath $Stage -Recurse -Force -File -Filter 'package.json' |
     Where-Object { $_.FullName -notmatch '\\vendor\\' } | Remove-Item -Force
@@ -150,27 +153,24 @@ $releaseId = '{0}-{1}' -f $sha, [DateTime]::UtcNow.ToString('yyyyMMdd\THHmmss\Z'
 Write-Utf8NoBom (Join-Path $Stage 'deploy\hostinger\release.txt') ($releaseId + "`n")
 
 # --- 7b. manifest: lets cron.sh tell a complete upload from a half-finished one ---
-# "release <id>" then "<size> <path>" for sentinel files only (migrations, routes, config,
-# bootstrap, composer autoload files, ...). Deliberately not every file: the uploader
-# may legitimately skip some, and a skipped file must never block a release.
-$sentinels = New-Object System.Collections.ArrayList
-foreach ($dir in @('database\migrations', 'routes', 'config')) {
-    Get-ChildItem -LiteralPath (Join-Path $Stage $dir) -Recurse -File | ForEach-Object { [void]$sentinels.Add($_.FullName) }
+# "release <id>" then the relative path (forward slashes, LF) of EVERY staged file.
+# Left out: the manifest and release.txt themselves, and what the uploader is known to
+# skip or what is not needed (.env*, .git, node_modules, the storage skeleton, which
+# cron.sh recreates under ../shared).
+$manifestLines = New-Object System.Collections.ArrayList
+[void]$manifestLines.Add("release $releaseId")
+$stagePrefix = $Stage.TrimEnd('\') + '\'
+$paths = Get-ChildItem -LiteralPath $Stage -Recurse -Force -File | ForEach-Object {
+    $_.FullName.Substring($stagePrefix.Length).Replace('\', '/')
 }
-foreach ($rel in @('artisan', 'bootstrap\app.php', 'bootstrap\providers.php', 'public\index.php', 'public\build\manifest.json',
-        'vendor\autoload.php', 'vendor\composer\autoload_real.php', 'vendor\composer\autoload_static.php',
-        'vendor\composer\autoload_classmap.php', 'vendor\composer\autoload_psr4.php', 'vendor\composer\installed.json',
-        'deploy\hostinger\cron.sh')) {
-    $p = Join-Path $Stage $rel
-    if (Test-Path $p) { [void]$sentinels.Add((Resolve-Path $p).Path) }
+foreach ($rel in ($paths | Sort-Object)) {
+    if ($rel -eq 'deploy/hostinger/release.txt' -or $rel -eq 'deploy/hostinger/release.manifest') { continue }
+    if ($rel -like 'storage/*') { continue }
+    if ($rel -match '(^|/)(node_modules|\.git)/') { continue }
+    if ($rel -match '(^|/)\.env[^/]*$') { continue }
+    [void]$manifestLines.Add($rel)
 }
-$manifest = "release $releaseId`n"
-foreach ($full in ($sentinels | Sort-Object -Unique)) {
-    $relative = $full.Substring($Stage.Length + 1).Replace('\', '/')
-    $manifest += ('{0} {1}' -f (Get-Item -LiteralPath $full).Length, $relative) + "`n"
-}
-Write-Utf8NoBom (Join-Path $Stage 'deploy\hostinger\release.manifest') $manifest
-
+Write-Utf8NoBom (Join-Path $Stage 'deploy\hostinger\release.manifest') (($manifestLines -join "`n") + "`n")
 # --- 8. sanity checks ------------------------------------------------------
 foreach ($forbidden in @('.env', 'package.json', 'node_modules', 'vendor\bin\pest')) {
     if (Test-Path (Join-Path $Stage $forbidden)) { throw "Staging contains $forbidden." }

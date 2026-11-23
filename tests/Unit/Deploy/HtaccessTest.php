@@ -51,5 +51,30 @@ it('puts the https redirect before the deny and rewrite rules', function () {
 });
 
 it('redirects trailing slashes itself so the internal public prefix never leaks', function () {
-    expect(rootHtaccess())->toContain('RewriteRule ^.+/$ %1 [L,R=308]');
+    expect(rootHtaccess())->toContain('RewriteRule ^(?!public/).+/$ %1 [L,R=308]');
+});
+
+it('exempts exactly the iclock request lines from the https redirect (pattern executed)', function () {
+    preg_match('/RewriteCond %\{THE_REQUEST\} !(\S+)/', rootHtaccess(), $m);
+    $pattern = '#'.$m[1].'#';
+
+    foreach ([
+        'GET /iclock/cdata?SN=1 HTTP/1.1',
+        'POST /iclock/devicecmd?SN=1 HTTP/1.1',
+        'GET /iclock/getrequest?SN=1 HTTP/1.0',
+        'GET /iclock HTTP/1.1',
+        'GET /iclock?SN=1 HTTP/1.1',
+    ] as $line) {
+        expect(preg_match($pattern, $line))->toBe(1, "should be exempt: $line");
+    }
+
+    foreach ([
+        'GET /iclockx HTTP/1.1',
+        'GET /foo/iclock/ HTTP/1.1',
+        'GET /Iclock/cdata HTTP/1.1',
+        'GET /login?next=/iclock/ HTTP/1.1',
+        'GET / HTTP/1.1',
+    ] as $line) {
+        expect(preg_match($pattern, $line))->toBe(0, "should be redirected: $line");
+    }
 });

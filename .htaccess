@@ -35,7 +35,7 @@ Options -Indexes
     # Trailing slash: redirect here (308) instead of letting public/.htaccess do it,
     # whose redirect would expose the internal /public prefix.
     RewriteCond %{REQUEST_URI} ^(.+)/$
-    RewriteRule ^.+/$ %1 [L,R=308]
+    RewriteRule ^(?!public/).+/$ %1 [L,R=308]
 
     # 3. Everything else is served from public/ (static files and index.php).
     #    The (?!public/) guard stops the internal redirect from looping.

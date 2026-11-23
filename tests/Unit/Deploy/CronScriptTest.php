@@ -51,7 +51,7 @@ function runCron(string $app, string $stub, string $shared, array $env = []): in
         'PHP_BIN' => $stub,
         'STUB_CALLS' => $shared.'/calls.txt',
         'STUB_ENV' => $shared.'/.env',
-        'SETTLE_MINUTES' => '0',
+        'CONFIRM_RUNS' => '1',
     ], $env);
 
     $proc = proc_open(
@@ -67,18 +67,40 @@ function runCron(string $app, string $stub, string $shared, array $env = []): in
     return proc_close($proc);
 }
 
-/** Writes release.txt plus a manifest whose sentinel file really exists. */
-function writeRelease(string $app, string $id, bool $withSentinel = true): void
-{
-    $sentinel = 'database/migrations/2026_01_01_000000_x.php';
-    @mkdir($app.'/database/migrations', 0777, true);
-    if ($withSentinel) {
-        file_put_contents($app.'/'.$sentinel, "<?php // migration\n");
-    }
-    file_put_contents($app.'/deploy/hostinger/release.txt', $id."\n");
-    file_put_contents($app.'/deploy/hostinger/release.manifest', "release $id\n".strlen("<?php // migration\n")." $sentinel\n");
-}
+/** The files a staged release consists of (relative to the app root). */
+const RELEASE_FILES = [
+    'artisan',
+    'deploy/hostinger/cron.sh',
+    'database/migrations/m.php',
+    'resources/views/my view.blade.php',
+    'vendor/symfony/deep/pkg/late.php',
+];
 
+/** Writes release.txt plus a manifest listing every file; $late=false leaves one file out of the tree. */
+function writeRelease(string $app, string $id, bool $late = true, bool $crlf = false): void
+{
+    foreach (RELEASE_FILES as $rel) {
+        if ($rel === 'vendor/symfony/deep/pkg/late.php' && ! $late) {
+            continue;
+        }
+        if (! is_file($app.'/'.$rel)) {
+            @mkdir(dirname($app.'/'.$rel), 0777, true);
+            file_put_contents($app.'/'.$rel, "x\n");
+        }
+    }
+    if ($late) {
+        @mkdir($app.'/vendor/symfony/deep/pkg', 0777, true);
+        file_put_contents($app.'/vendor/symfony/deep/pkg/late.php', "x\n");
+    } else {
+        @unlink($app.'/vendor/symfony/deep/pkg/late.php');
+    }
+    $nl = $crlf ? "\r\n" : "\n";
+    file_put_contents($app.'/deploy/hostinger/release.txt', $id."\n");
+    file_put_contents(
+        $app.'/deploy/hostinger/release.manifest',
+        "release $id$nl".implode($nl, array_slice(RELEASE_FILES, 0, 3)).$nl.$nl.implode($nl, array_slice(RELEASE_FILES, 3)).$nl,
+    );
+}
 function cronLog(string $shared): string
 {
     return file_get_contents($shared.'/storage/logs/cron.log');
@@ -224,30 +246,85 @@ it('rotates cron.log when it grows past the limit', function () {
         ->and(filesize($this->sharedDir.'/storage/logs/cron.log'))->toBeLessThan(10000);
 });
 
-it('does not run post-deploy on a partial upload, then runs exactly once when complete', function () {
-    runCron($this->appDir, $this->stub, $this->sharedDir);
-    file_put_contents($this->sharedDir.'/.env', "APP_KEY=base64:x\n");
+function readyEnv(object $t): void
+{
+    runCron($t->appDir, $t->stub, $t->sharedDir);
+    file_put_contents($t->sharedDir.'/.env', "APP_KEY=base64:x\n");
+}
 
-    // release.txt and manifest arrived, the migration file did not
-    writeRelease($this->appDir, 'r9', withSentinel: false);
-    runCron($this->appDir, $this->stub, $this->sharedDir);
+const FULL_RUN = ['config:clear', 'migrate --force', 'config:cache', 'route:cache', 'view:cache', 'schedule:run'];
+
+it('does not trigger while one late file is missing and reports the missing count', function () {
+    readyEnv($this);
+    writeRelease($this->appDir, 'r9', late: false);
+
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['CONFIRM_RUNS' => '2']);
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['CONFIRM_RUNS' => '2']);
+
     expect(cronCalls($this->sharedDir))->toBe([])
         ->and(is_file($this->sharedDir.'/release.done'))->toBeFalse()
-        ->and(cronLog($this->sharedDir))->toContain('upload still in progress: missing file database/migrations/2026_01_01_000000_x.php');
+        ->and(cronLog($this->sharedDir))->toContain('upload still in progress: 1 of 5 files missing, first: vendor/symfony/deep/pkg/late.php');
+});
 
-    // upload completes
+it('needs two consecutive complete runs, triggers exactly once, then only schedules', function () {
+    readyEnv($this);
     writeRelease($this->appDir, 'r9');
-    runCron($this->appDir, $this->stub, $this->sharedDir);
-    expect(cronCalls($this->sharedDir))->toBe(['config:clear', 'migrate --force', 'config:cache', 'route:cache', 'view:cache', 'schedule:run']);
+
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['CONFIRM_RUNS' => '2']);
+    expect(cronCalls($this->sharedDir))->toBe([])
+        ->and(cronLog($this->sharedDir))->toContain('all 5 files present, confirming (1 of 2 runs)');
+
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['CONFIRM_RUNS' => '2']);
+    expect(cronCalls($this->sharedDir))->toBe(FULL_RUN)
+        ->and(trim(file_get_contents($this->sharedDir.'/release.done')))->toBe('r9')
+        ->and(is_file($this->sharedDir.'/release.pending'))->toBeFalse();
 
     unlink($this->sharedDir.'/calls.txt');
-    runCron($this->appDir, $this->stub, $this->sharedDir);
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['CONFIRM_RUNS' => '2']);
     expect(cronCalls($this->sharedDir))->toBe(['schedule:run']);
 });
 
-it('waits when the manifest is missing, names another release, or a size differs', function () {
-    runCron($this->appDir, $this->stub, $this->sharedDir);
-    file_put_contents($this->sharedDir.'/.env', "APP_KEY=base64:x\n");
+it('treats a CRLF manifest like an LF one, including paths with spaces', function () {
+    readyEnv($this);
+    writeRelease($this->appDir, 'r9', crlf: true);
+
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['CONFIRM_RUNS' => '2']);
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['CONFIRM_RUNS' => '2']);
+
+    expect(cronCalls($this->sharedDir))->toBe(FULL_RUN);
+});
+
+it('resets the confirmation count when the release id changes or the tree is seen incomplete', function () {
+    readyEnv($this);
+    $two = ['CONFIRM_RUNS' => '2'];
+
+    writeRelease($this->appDir, 'r1');
+    runCron($this->appDir, $this->stub, $this->sharedDir, $two);
+    expect(trim(file_get_contents($this->sharedDir.'/release.pending')))->toBe('r1 1');
+
+    // release id changes mid-wait: count restarts for r2
+    writeRelease($this->appDir, 'r2');
+    runCron($this->appDir, $this->stub, $this->sharedDir, $two);
+    expect(trim(file_get_contents($this->sharedDir.'/release.pending')))->toBe('r2 1')
+        ->and(cronCalls($this->sharedDir))->toBe([]);
+
+    // an incomplete observation clears the count
+    writeRelease($this->appDir, 'r2', late: false);
+    runCron($this->appDir, $this->stub, $this->sharedDir, $two);
+    expect(is_file($this->sharedDir.'/release.pending'))->toBeFalse();
+
+    // complete again: only the first of two confirmations
+    writeRelease($this->appDir, 'r2');
+    runCron($this->appDir, $this->stub, $this->sharedDir, $two);
+    expect(cronCalls($this->sharedDir))->toBe([]);
+
+    runCron($this->appDir, $this->stub, $this->sharedDir, $two);
+    expect(cronCalls($this->sharedDir))->toBe(FULL_RUN)
+        ->and(trim(file_get_contents($this->sharedDir.'/release.done')))->toBe('r2');
+});
+
+it('never triggers a new release without a manifest or with a manifest for another release', function () {
+    readyEnv($this);
 
     writeRelease($this->appDir, 'r1');
     unlink($this->appDir.'/deploy/hostinger/release.manifest');
@@ -259,24 +336,28 @@ it('waits when the manifest is missing, names another release, or a size differs
     runCron($this->appDir, $this->stub, $this->sharedDir);
     expect(cronLog($this->sharedDir))->toContain("release.manifest names 'r1', release.txt names 'r2'");
 
-    writeRelease($this->appDir, 'r1');
-    file_put_contents($this->appDir.'/database/migrations/2026_01_01_000000_x.php', 'truncated');
-    runCron($this->appDir, $this->stub, $this->sharedDir);
-    expect(cronLog($this->sharedDir))->toContain('size mismatch for database/migrations/2026_01_01_000000_x.php');
-
     expect(cronCalls($this->sharedDir))->toBe([])
         ->and(is_file($this->sharedDir.'/release.done'))->toBeFalse();
 });
 
-it('waits for release.txt to settle when a settle time is configured', function () {
-    runCron($this->appDir, $this->stub, $this->sharedDir);
-    file_put_contents($this->sharedDir.'/.env', "APP_KEY=base64:x\n");
+it('never consults the manifest for an already-completed release (scheduler and .env rebuild keep working)', function () {
+    readyEnv($this);
     writeRelease($this->appDir, 'r1');
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    expect(trim(file_get_contents($this->sharedDir.'/release.done')))->toBe('r1');
+    unlink($this->sharedDir.'/calls.txt');
 
-    runCron($this->appDir, $this->stub, $this->sharedDir, ['SETTLE_MINUTES' => '5']);
+    // manifest gone and a listed file deleted: irrelevant for the done release
+    unlink($this->appDir.'/deploy/hostinger/release.manifest');
+    unlink($this->appDir.'/vendor/symfony/deep/pkg/late.php');
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    expect(cronCalls($this->sharedDir))->toBe(['schedule:run']);
 
-    expect(cronCalls($this->sharedDir))->toBe([])
-        ->and(cronLog($this->sharedDir))->toContain('settling');
+    // .env edited afterwards: config rebuilt without any manifest
+    unlink($this->sharedDir.'/calls.txt');
+    touch($this->sharedDir.'/.env', time() + 30);
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    expect(cronCalls($this->sharedDir))->toBe(FULL_RUN);
 });
 
 it('normalises APP_KEY="" before generating a key and removes stale output files', function () {
