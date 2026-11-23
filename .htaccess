@@ -43,7 +43,7 @@ Options -Indexes
 </IfModule>
 
 # Fallback if mod_rewrite is unavailable: never serve these root files.
-<FilesMatch "^(\.(?!well-known)[^/]*|artisan|composer\.(json|lock)|package(-lock)?\.json|phpunit\.xml)$">
+<FilesMatch "^(\.(?!well-known)[^/]*|artisan|composer\.(json|lock)|package(-lock)?\.json|phpunit\.xml|env\.seed|env\.production\.example|status\.(txt|log)|release\.(txt|manifest)|cron\.sh)$">
     <IfModule mod_authz_core.c>
         Require all denied
     </IfModule>

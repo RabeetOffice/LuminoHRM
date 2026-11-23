@@ -88,3 +88,15 @@ it('denies the env seed and status files under deploy/', function () {
     }
     expect(preg_match($pattern, 'build/assets/app.js'))->toBe(0);
 });
+
+it('also denies the seed, status and release files in the FilesMatch fallback (mod_rewrite off)', function () {
+    preg_match('/<FilesMatch "([^"]+)">/', rootHtaccess(), $m);
+    $pattern = '#'.$m[1].'#';
+
+    foreach (['env.seed', 'status.txt', 'status.log', 'release.txt', 'release.manifest', 'cron.sh', 'env.production.example', '.env', 'composer.json', 'artisan'] as $name) {
+        expect(preg_match($pattern, $name))->toBe(1, "should be denied: $name");
+    }
+    foreach (['index.php', 'robots.txt', 'app.js'] as $name) {
+        expect(preg_match($pattern, $name))->toBe(0, "should be served: $name");
+    }
+});

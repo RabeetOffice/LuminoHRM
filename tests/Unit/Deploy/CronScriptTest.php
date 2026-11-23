@@ -380,9 +380,20 @@ it('parses the whole script up front by running everything from main()', functio
         ->and(implode("\n", $lines))->toContain('main() {');
 });
 
-function writeSeed(string $app, string $content): void
+/** Stages a seed the way deploy.ps1 does: content + "# seed-end <release id>" (id of release.txt). */
+function writeSeed(string $app, string $content, ?string $markerId = null, bool $marker = true): void
 {
-    file_put_contents($app.'/deploy/hostinger/env.seed', $content);
+    $txt = $app.'/deploy/hostinger/release.txt';
+    if (! is_file($txt)) {
+        file_put_contents($txt, "rseed\n");
+    }
+    $id = $markerId ?? trim(file_get_contents($txt));
+    file_put_contents($app.'/deploy/hostinger/env.seed', $content.($marker ? "# seed-end $id\n" : ''));
+}
+
+function seedTemps(string $shared): array
+{
+    return array_merge(glob($shared.'/.env.seed-tmp.*') ?: [], glob($shared.'/.env.tmp.*') ?: []);
 }
 
 function readStatus(string $app): array
@@ -412,11 +423,11 @@ it('installs the env seed as shared/.env, removes the seed and logs without valu
 });
 
 it('strips carriage returns from a CRLF seed', function () {
-    writeSeed($this->appDir, "APP_NAME=Seeded\r\nAPP_KEY=base64:k\r\n");
+    writeSeed($this->appDir, "APP_NAME=Seeded\r\nAPP_KEY=base64:k\r\nDB_PASSWORD=p\r\n");
 
     runCron($this->appDir, $this->stub, $this->sharedDir);
 
-    expect(file_get_contents($this->sharedDir.'/.env'))->toBe("APP_NAME=Seeded\nAPP_KEY=base64:k\n");
+    expect(file_get_contents($this->sharedDir.'/.env'))->toBe("APP_NAME=Seeded\nAPP_KEY=base64:k\nDB_PASSWORD=p\n");
 });
 
 it('keeps the existing APP_KEY when the seed has an empty one', function () {
@@ -436,11 +447,11 @@ it('keeps the existing APP_KEY when the seed has an empty one', function () {
 it('lets a non-empty seed APP_KEY replace the old key', function () {
     runCron($this->appDir, $this->stub, $this->sharedDir);
     file_put_contents($this->sharedDir.'/.env', "APP_KEY=base64:oldkey\n");
-    writeSeed($this->appDir, "APP_KEY=base64:newkey\n");
+    writeSeed($this->appDir, "APP_KEY=base64:newkey\nDB_PASSWORD=p\n");
 
     runCron($this->appDir, $this->stub, $this->sharedDir);
 
-    expect(file_get_contents($this->sharedDir.'/.env'))->toBe("APP_KEY=base64:newkey\n");
+    expect(file_get_contents($this->sharedDir.'/.env'))->toBe("APP_KEY=base64:newkey\nDB_PASSWORD=p\n");
 });
 
 it('rebuilds the config cache in the same run that installs a new seed', function () {
@@ -450,7 +461,7 @@ it('rebuilds the config cache in the same run that installs a new seed', functio
     expect(trim(file_get_contents($this->sharedDir.'/release.done')))->toBe('r1');
     unlink($this->sharedDir.'/calls.txt');
 
-    writeSeed($this->appDir, "APP_KEY=base64:k2\nHRM_DEVICE_SERIALS=SN1\n");
+    writeSeed($this->appDir, "APP_KEY=base64:k2\nHRM_DEVICE_SERIALS=SN1\nDB_PASSWORD=p\n");
     runCron($this->appDir, $this->stub, $this->sharedDir);
 
     expect(cronCalls($this->sharedDir))->toBe(FULL_RUN)
@@ -498,8 +509,8 @@ it('reports post_deploy_failed with the failing command name only', function () 
 });
 
 it('never leaks env values into status.txt, status.log or cron.log, and status.log has only own lines', function () {
-    writeSeed($this->appDir, "APP_KEY=base64:seedkey\nDB_PASSWORD=FAKEPASS123\n");
     writeRelease($this->appDir, 'r7');
+    writeSeed($this->appDir, "APP_KEY=base64:seedkey\nDB_PASSWORD=FAKEPASS123\n");
 
     runCron($this->appDir, $this->stub, $this->sharedDir, ['FAIL_ON' => 'config:cache']);   // artisan output ("boom ...") lands in cron.log
     runCron($this->appDir, $this->stub, $this->sharedDir);
@@ -516,4 +527,90 @@ it('never leaks env values into status.txt, status.log or cron.log, and status.l
         expect($line)->toMatch('/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ /');
     }
     expect(count(array_filter(explode("\n", $log))))->toBeLessThanOrEqual(40);
+});
+
+it('does not touch lookalike keys: OLD_APP_KEY stays, a commented APP_KEY is ignored', function () {
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    file_put_contents($this->sharedDir.'/.env', "# APP_KEY=base64:commented\nOLD_APP_KEY=base64:previous\nAPP_KEY=base64:realold\n");
+    writeSeed($this->appDir, "APP_KEY=\nDB_PASSWORD=p\nOLD_APP_KEY=base64:fromseed\n");
+
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+
+    $env = file_get_contents($this->sharedDir.'/.env');
+    expect($env)->toContain("OLD_APP_KEY=base64:fromseed\n")->toContain("APP_KEY=base64:realold\n")
+        ->not->toContain('commented')->not->toContain('previous')
+        ->and(preg_match_all('/^APP_KEY=/m', $env))->toBe(1);
+
+    // a commented APP_KEY in the *current* env must not count as "has a key"
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    file_put_contents($this->sharedDir.'/.env', "# APP_KEY=base64:onlycomment\nDB_PASSWORD=old\n");
+    writeSeed($this->appDir, "APP_KEY=\nDB_PASSWORD=p2\n");
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    expect(file_get_contents($this->sharedDir.'/.env'))->not->toContain('onlycomment')->toContain('DB_PASSWORD=p2');
+});
+
+it('rejects invalid seeds and keeps the previous good .env', function (string $name, string $seed, ?string $markerId, bool $marker) {
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    $good = "APP_KEY=base64:good\nDB_PASSWORD=goodpass\n";
+    file_put_contents($this->sharedDir.'/.env', $good);
+    writeRelease($this->appDir, 'r1');
+    writeSeed($this->appDir, $seed, $markerId, $marker);
+
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+
+    expect(file_get_contents($this->sharedDir.'/.env'))->toBe($good, $name)
+        ->and(is_file($this->appDir.'/deploy/hostinger/env.seed'))->toBeTrue('seed must stay in place')
+        ->and(cronLog($this->sharedDir))->toContain('seed incomplete or invalid, waiting')
+        ->and(readStatus($this->appDir)['detail'])->toContain('seed incomplete or invalid, waiting')
+        ->and(seedTemps($this->sharedDir))->toBe([]);
+})->with([
+    'empty seed' => ['empty', '', null, false],
+    'empty seed with marker' => ['empty+marker', '', null, true],
+    'no end marker (truncated upload)' => ['no marker', "APP_KEY=base64:x\nDB_PASSWORD=p\n", null, false],
+    'marker id mismatch' => ['id mismatch', "APP_KEY=base64:x\nDB_PASSWORD=p\n", 'some-other-release', true],
+    'no DB_PASSWORD' => ['no password', "APP_KEY=base64:x\nAPP_NAME=y\n", null, true],
+    'empty DB_PASSWORD' => ['empty password', "APP_KEY=base64:x\nDB_PASSWORD=\n", null, true],
+    'placeholder DB_PASSWORD' => ['placeholder', "APP_KEY=base64:x\nDB_PASSWORD=__DB_PASSWORD__\n", null, true],
+]);
+
+it('installs a valid seed without the marker line, then picks up a corrected seed after an invalid one', function () {
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    writeRelease($this->appDir, 'r1');
+    writeSeed($this->appDir, "APP_KEY=base64:x\nDB_PASSWORD=p\n", null, false);   // still uploading
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    expect(is_file($this->sharedDir.'/.env'))->toBeFalse()
+        ->and(readStatus($this->appDir)['state'])->toBe('waiting_for_env')
+        ->and(readStatus($this->appDir)['detail'])->toBe('shared/.env not created yet; seed incomplete or invalid, waiting');
+
+    writeSeed($this->appDir, "APP_KEY=base64:x\nDB_PASSWORD=p\n");                // upload finished
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+
+    $env = file_get_contents($this->sharedDir.'/.env');
+    expect($env)->toBe("APP_KEY=base64:x\nDB_PASSWORD=p\n")->not->toContain('seed-end')
+        ->and(is_file($this->appDir.'/deploy/hostinger/env.seed'))->toBeFalse()
+        ->and(seedTemps($this->sharedDir))->toBe([]);
+    if (PHP_OS_FAMILY !== 'Windows') {
+        expect(substr(sprintf('%o', fileperms($this->sharedDir.'/.env')), -3))->toBe('600');
+    }
+});
+
+it('removes leftover temp files of killed runs at startup', function () {
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    file_put_contents($this->sharedDir.'/.env.seed-tmp.4242', 'secret');
+    file_put_contents($this->sharedDir.'/.env.seed-tmp.4242.2', 'secret');
+    file_put_contents($this->sharedDir.'/.env', "APP_KEY=base64:x\n");
+    file_put_contents($this->sharedDir.'/.env.tmp.4242', 'secret');
+
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+
+    expect(seedTemps($this->sharedDir))->toBe([]);
+});
+
+it('creates shared/ private (modes are only meaningful off Windows)', function () {
+    if (PHP_OS_FAMILY === 'Windows') {
+        $this->markTestSkipped('file modes are not meaningful on Windows');
+    }
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+
+    expect(substr(sprintf('%o', fileperms($this->sharedDir)), -3))->toBe('700');
 });

@@ -114,7 +114,13 @@ to `shared/storage/logs/cron.log`, which is rotated at about 1 MB (one `.1` back
    `deploy/hostinger/env.seed` in the staging directory (never printed, not in `release.manifest`, refused if
    it sits inside the git tree without being git-ignored). On its next run `cron.sh` installs it as
    `shared/.env` (mode 600, atomically), deletes the seed and logs `installed shared/.env from seed`. The
-   password is never in git. The seed is under `deploy/`, which `.htaccess` denies over HTTP; it is also
+   password is never in git. `deploy.ps1` appends a last line `# seed-end <release id>` to the staged copy only;
+   `cron.sh` installs a seed only if that marker (same id as `release.txt`) is its last line and it has a
+   non-empty `DB_PASSWORD` (not the `__DB_PASSWORD__` placeholder). A truncated or foreign seed is left in place,
+   logged as `seed incomplete or invalid, waiting` (also in `status.txt` `detail`), and never replaces a good
+   `shared/.env`. **The staging directory then contains a secret: delete it after uploading with
+   `scripts\deploy.ps1 -Clean`** (it only removes `build\`; the script prints a reminder whenever a seed is
+   staged). The seed is under `deploy/`, which `.htaccess` denies over HTTP; it is also
    gone from the server within a minute of arriving.
 5. Within a minute `cron.sh` generates `APP_KEY` into `shared/.env`, runs the
    post-deploy step (migrations create the tables) and records the release.

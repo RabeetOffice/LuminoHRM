@@ -29,8 +29,10 @@
 # Env seed: there is no file-write API for shared/, so deploy.ps1 -SeedEnvFile can
 # stage deploy/hostinger/env.seed. When it exists, this script installs it as
 # shared/.env (mode 600, atomically; an empty APP_KEY in the seed keeps the existing
-# key), deletes the seed and logs one line without values. The seed is not listed
-# in release.manifest. A newer .env triggers the config rebuild in the same run.
+# key), deletes the seed and logs one line without values, but only when the seed
+# ends with "# seed-end <release id>" (same id as release.txt) and has a DB_PASSWORD;
+# otherwise it logs "seed incomplete or invalid, waiting" and changes nothing. The
+# seed is not listed in release.manifest. A newer .env triggers the config rebuild in the same run.
 #
 # Status (for reading through the hosting file API, where shared/ is out of reach):
 # every run that holds the lock ends by writing deploy/hostinger/status.txt (key=value,
@@ -142,19 +144,43 @@ release_ready() {
     return 0
 }
 # Install deploy/hostinger/env.seed as shared/.env. Never logs values.
+# The seed is NOT part of release.manifest, so completeness is explicit: deploy.ps1
+# appends "# seed-end <release id>" as the last line of the staged copy. A seed is
+# installed only if (a) that marker is its last non-empty line with the id in
+# release.txt and (b) it has a non-empty DB_PASSWORD. Otherwise it stays in place and
+# the previous shared/.env is never touched. All secret-bearing temp files are
+# created under umask 077.
 install_seed() {
     seed_tmp="$SHARED/.env.seed-tmp.$$"
-    seed_ok=1
-    if ! tr -d '\r' < "$SEED_FILE" > "$seed_tmp"; then
-        seed_ok=0
+    seed_rel=''
+    [ -f "$RELEASE_FILE" ] && seed_rel=$(tr -d ' \r\n' < "$RELEASE_FILE")
+
+    # Private copy first: what is validated is exactly what gets installed.
+    if ! (umask 077; tr -d '\r' < "$SEED_FILE" > "$seed_tmp"); then
+        rm -f "$seed_tmp"
+        SEED_NOTE="seed unreadable, waiting"
+        log "seed incomplete or invalid, waiting (could not read it)"
+        return 1
     fi
+    seed_last=$(grep -v '^[[:space:]]*$' "$seed_tmp" | tail -n 1)
+    seed_pw=$(grep '^DB_PASSWORD=' "$seed_tmp" | tail -n 1 | cut -d= -f2- | tr -d "\"' ")
+    if [ -z "$seed_rel" ] || [ "$seed_last" != "# seed-end $seed_rel" ] || [ -z "$seed_pw" ] || [ "$seed_pw" = "__DB_PASSWORD__" ]; then
+        rm -f "$seed_tmp"
+        SEED_NOTE="seed incomplete or invalid, waiting"
+        log "seed incomplete or invalid, waiting"
+        return 1
+    fi
+
+    seed_ok=1
+    # Strip the marker line(s) from what gets installed.
+    (umask 077; grep -v '^# seed-end ' "$seed_tmp" > "$seed_tmp.2") && mv -f "$seed_tmp.2" "$seed_tmp" || seed_ok=0
     if [ "$seed_ok" = 1 ]; then
         seed_key=$(grep '^APP_KEY=' "$seed_tmp" | tail -n 1 | cut -d= -f2- | tr -d "\"' ")
         if [ -z "$seed_key" ] && [ -f "$ENV_FILE" ]; then
             old_key_raw=$(grep '^APP_KEY=' "$ENV_FILE" | tail -n 1 | cut -d= -f2- | tr -d '\r')
             old_key=$(printf '%s' "$old_key_raw" | tr -d "\"' ")
             if [ -n "$old_key" ]; then
-                { grep -v '^APP_KEY=' "$seed_tmp"; printf 'APP_KEY=%s\n' "$old_key_raw"; } > "$seed_tmp.2" \
+                (umask 077; { grep -v '^APP_KEY=' "$seed_tmp"; printf 'APP_KEY=%s\n' "$old_key_raw"; } > "$seed_tmp.2") \
                     && mv -f "$seed_tmp.2" "$seed_tmp" || seed_ok=0
             fi
         fi
@@ -165,6 +191,7 @@ install_seed() {
         log "installed shared/.env from seed"
     else
         rm -f "$seed_tmp" "$seed_tmp.2"
+        SEED_NOTE="seed install failed"
         log "FAILED to install shared/.env from seed (seed left in place; ignoring it this run)"
     fi
 }
@@ -196,7 +223,7 @@ write_status() {
         echo "release=$st_release"
         echo "release_done=$st_done"
         echo "state=$STATE"
-        echo "detail=$DETAIL"
+        echo "detail=$DETAIL${SEED_NOTE:+${DETAIL:+; }$SEED_NOTE}"
         echo "env_present=$st_env"
         echo "app_key_set=$st_key"
         echo "php=$st_php"
@@ -226,9 +253,12 @@ main() {
     OUT_FILE="$SHARED/cron.out.$$"
     STATE=ok
     DETAIL=
+    SEED_NOTE=
     env_changed=0
 
-    # 1. Shared layout (idempotent).
+    # 1. Shared layout (idempotent). shared/ itself is private (it holds .env); the
+    #    storage tree below keeps default modes.
+    (umask 077; mkdir -p "$SHARED") || exit 1
     for d in app/private app/public framework/cache/data framework/sessions framework/views logs; do
         mkdir -p "$STORAGE/$d" || exit 1
     done
@@ -248,9 +278,10 @@ main() {
     if ! acquire_lock; then
         exit 0   # another run is active; it will do the work
     fi
-    trap 'write_status; rm -rf "$LOCK_DIR" "$OUT_FILE"' EXIT
+    trap 'write_status; rm -rf "$LOCK_DIR" "$OUT_FILE" "$SHARED"/.env.seed-tmp.*' EXIT
     trap 'exit 1' HUP INT TERM
-    rm -f "$SHARED"/cron.out.*   # leftovers of killed runs (we hold the lock)
+    # leftovers of killed runs (we hold the lock)
+    rm -rf "$SHARED"/cron.out.* "$SHARED"/.env.seed-tmp.* "$ENV_FILE".tmp.*
 
     # 1b. Env seed (see header): install before looking for shared/.env.
     if [ -f "$SEED_FILE" ]; then

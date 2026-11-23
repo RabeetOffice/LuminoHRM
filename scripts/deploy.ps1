@@ -6,6 +6,9 @@
 .DESCRIPTION
     -SeedEnvFile <path> stages that file as deploy\hostinger\env.seed (not in release.manifest);
     cron.sh installs it as shared/.env and deletes it. See docs/deploy.md.
+    The staged copy (never the source file) gets a final line "# seed-end <release id>" so
+    cron.sh can tell a complete upload from a truncated one.
+    -Clean deletes build\ and does nothing else (run it after uploading a seed).
 
     1. refuses to run with uncommitted changes (unless -AllowDirty)
     2. runs the test suite (stops on failure)
@@ -22,7 +25,10 @@ param(
 
     # Optional local env file (kept OUTSIDE the repo, or git-ignored) to install as shared/.env
     # on the server via deploy/hostinger/env.seed. Contents are never printed.
-    [string]$SeedEnvFile
+    [string]$SeedEnvFile,
+
+    # Only deletes build\ (the staging directory, which may contain a secret seed) and exits.
+    [switch]$Clean
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,6 +51,21 @@ function Assert-LastExit([string]$What) {
 
 function Write-Utf8NoBom([string]$Path, [string]$Text) {
     [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+if ($Clean) {
+    $buildDir = Join-Path $RepoRoot 'build'
+    if (Test-Path $buildDir) {
+        $resolvedBuild = (Resolve-Path $buildDir).Path
+        if ($resolvedBuild -ne (Join-Path $RepoRoot 'build')) {
+            throw "Refusing to delete $resolvedBuild."
+        }
+        Remove-Item -LiteralPath $resolvedBuild -Recurse -Force
+        Write-Host "Deleted $resolvedBuild" -ForegroundColor Green
+    } else {
+        Write-Host 'Nothing to clean (build\ does not exist).'
+    }
+    return
 }
 
 if (-not (Test-Path $Php)) {
@@ -161,11 +182,6 @@ foreach ($rel in @('public\hot', 'public\storage')) {
 # composer sometimes installs a package from source, leaving a .git directory in vendor: not needed at runtime
 Get-ChildItem -LiteralPath (Join-Path $Stage 'vendor') -Recurse -Force -Directory -Filter '.git' -ErrorAction SilentlyContinue |
     Sort-Object { $_.FullName.Length } -Descending | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
-# env seed (optional), staged last so the cleanup above cannot remove it
-if ($SeedPath) {
-    Copy-Item -LiteralPath $SeedPath -Destination (Join-Path $Stage 'deploy\hostinger\env.seed') -Force
-    Write-Host 'Seed env file staged as deploy\hostinger\env.seed (contents not shown).' -ForegroundColor Yellow
-}
 # the uploader treats a package.json as a Node app: it must never be in the staging directory
 Get-ChildItem -LiteralPath $Stage -Recurse -Force -File -Filter 'package.json' |
     Where-Object { $_.FullName -notmatch '\\vendor\\' } | Remove-Item -Force
@@ -178,6 +194,17 @@ Write-Utf8NoBom $cron $text
 # --- 7. release id ---------------------------------------------------------
 $releaseId = '{0}-{1}' -f $sha, [DateTime]::UtcNow.ToString('yyyyMMdd\THHmmss\Z')
 Write-Utf8NoBom (Join-Path $Stage 'deploy\hostinger\release.txt') ($releaseId + "`n")
+
+# --- 7a. env seed (optional): staged copy + completeness marker ------------
+# The marker is appended to the STAGED copy only (the source file is never modified). It
+# lets cron.sh refuse a seed that is truncated or belongs to another release.
+if ($SeedPath) {
+    $seedText = [System.IO.File]::ReadAllText($SeedPath) -replace "`r`n", "`n"
+    if (-not $seedText.EndsWith("`n")) { $seedText += "`n" }
+    $seedText += "# seed-end $releaseId`n"
+    Write-Utf8NoBom (Join-Path $Stage 'deploy\hostinger\env.seed') $seedText
+    Write-Host 'Seed env file staged as deploy\hostinger\env.seed (contents not shown).' -ForegroundColor Yellow
+}
 
 # --- 7b. manifest: lets cron.sh tell a complete upload from a half-finished one ---
 # "release <id>" then the relative path (forward slashes, LF) of EVERY staged file.
@@ -213,3 +240,6 @@ Write-Host "Release id : $releaseId" -ForegroundColor Green
 Write-Host "Staging dir: $Stage" -ForegroundColor Green
 Write-Host "Files      : $count" -ForegroundColor Green
 Write-Host 'Next: upload this directory to the site document root (see docs/deploy.md).'
+if ($SeedPath) {
+    Write-Host 'WARNING: the staging directory contains a secret seed (deploy\hostinger\env.seed). Delete it after uploading: scripts\deploy.ps1 -Clean' -ForegroundColor Red
+}
