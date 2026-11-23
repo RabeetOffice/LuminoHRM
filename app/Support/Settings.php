@@ -33,7 +33,9 @@ class Settings
 
         $saved = static::store()->all()[$group] ?? [];
 
-        return array_key_exists($key, $saved) ? $saved[$key] : $declared[$key];
+        return array_key_exists($key, $saved) && static::sameType($declared[$key], $saved[$key])
+            ? $saved[$key]
+            : $declared[$key];
     }
 
     /**
@@ -72,7 +74,27 @@ class Settings
     {
         $saved = static::store()->all()[$group] ?? [];
 
-        return array_replace(static::declared($group), array_intersect_key($saved, static::declared($group)));
+        $declared = static::declared($group);
+
+        foreach ($declared as $key => $default) {
+            if (array_key_exists($key, $saved) && static::sameType($default, $saved[$key])) {
+                $declared[$key] = $saved[$key];
+            }
+        }
+
+        return $declared;
+    }
+
+    /** A saved value of the wrong type (hand-edited row) is ignored in favour of the default. */
+    protected static function sameType(mixed $default, mixed $saved): bool
+    {
+        return match (true) {
+            is_int($default) => is_int($saved),
+            is_bool($default) => is_bool($saved),
+            is_array($default) => is_array($saved),
+            is_string($default) => is_string($saved),
+            default => true,
+        };
     }
 
     /** @return array<string, mixed> */

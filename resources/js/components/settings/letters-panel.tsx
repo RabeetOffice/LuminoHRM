@@ -16,15 +16,19 @@ export function LettersPanel({
     placeholders: string[];
 }) {
     const form = useForm(values);
-    const { submit, state } = useSettingsSubmit('letters', form);
+    const { card } = useSettingsSubmit('letters', form);
     const { data, errors, setData } = form;
 
     return (
-        <form onSubmit={submit} className="grid gap-6" noValidate>
+        <form
+            onSubmit={(e) => e.preventDefault()}
+            className="grid gap-6"
+            noValidate
+        >
             <SettingsCard
                 title="Experience letter"
                 description="The text of the experience letter. The PDF itself arrives in a later phase."
-                state={state}
+                {...card(['experience_template'])}
             >
                 <Field
                     id="letter-experience"

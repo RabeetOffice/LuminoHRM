@@ -9,15 +9,19 @@ import type { LeaveValues } from '@/types/hrm-settings';
 
 export function LeavePanel({ values }: { values: LeaveValues }) {
     const form = useForm<Editable<LeaveValues>>(values);
-    const { submit, state } = useSettingsSubmit('leave', form);
+    const { card } = useSettingsSubmit('leave', form);
     const { data, errors, setData } = form;
 
     return (
-        <form onSubmit={submit} className="grid gap-6" noValidate>
+        <form
+            onSubmit={(e) => e.preventDefault()}
+            className="grid gap-6"
+            noValidate
+        >
             <SettingsCard
                 title="Approval"
                 description="Who signs off a leave request."
-                state={state}
+                {...card(['hr_step_enabled'])}
             >
                 <CheckField
                     id="leave-hr-step"
@@ -32,7 +36,7 @@ export function LeavePanel({ values }: { values: LeaveValues }) {
             <SettingsCard
                 title="Balances"
                 description="What happens to leave at the turn of the year and for new joiners."
-                state={state}
+                {...card(['carry_forward_cap', 'prorate_new_joiners'])}
             >
                 <NumberField
                     id="leave-carry"

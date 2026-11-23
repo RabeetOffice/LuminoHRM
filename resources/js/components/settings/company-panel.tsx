@@ -20,15 +20,19 @@ type Props = { values: CompanyValues; options: SettingsOptions };
 
 export function CompanyPanel({ values, options }: Props) {
     const form = useForm(values);
-    const { submit, state } = useSettingsSubmit('company', form);
+    const { card } = useSettingsSubmit('company', form);
     const { data, errors, setData } = form;
 
     return (
-        <form onSubmit={submit} className="grid gap-6" noValidate>
+        <form
+            onSubmit={(e) => e.preventDefault()}
+            className="grid gap-6"
+            noValidate
+        >
             <SettingsCard
                 title="Company details"
                 description="Shown on payslips, letters and emails."
-                state={state}
+                {...card(['name', 'address'])}
             >
                 <Field
                     id="company-name"
@@ -60,7 +64,7 @@ export function CompanyPanel({ values, options }: Props) {
             <SettingsCard
                 title="Regional"
                 description="Currency, timezone and how dates are written."
-                state={state}
+                {...card(['currency', 'date_format', 'timezone'])}
             >
                 <div className="grid gap-5 sm:grid-cols-2">
                     <Field

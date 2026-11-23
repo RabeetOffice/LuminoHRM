@@ -358,3 +358,136 @@ it('has no route under a reserved prefix', function () {
 
     expect($offenders->all())->toBe([]);
 });
+
+// ---- fix round 1: matrix, partial saves, hardening ---------------------------
+
+/** group => [valid payload, [setting key, value stored by that payload]] */
+function matrixCases(): array
+{
+    return [
+        'company' => [['name' => 'Matrix Co', 'address' => null, 'currency' => 'USD', 'timezone' => 'UTC', 'date_format' => 'Y-m-d'], ['company.name', 'Matrix Co']],
+        'branding' => [['accent' => '#112233'], ['branding.accent', '#112233']],
+        'attendance' => [validAttendance(['grace_minutes' => 33]), ['attendance.grace_minutes', 33]],
+        'leave' => [['hr_step_enabled' => true, 'carry_forward_cap' => 7, 'prorate_new_joiners' => true], ['leave.carry_forward_cap', 7]],
+        'payroll' => [['day_pay_basis' => 'thirty', 'default_tax_mode' => 'none', 'leave_encashment' => false, 'notice_period_days' => 45, 'payslip_footer' => null], ['payroll.notice_period_days', 45]],
+        'email' => [validEmail(['host' => 'matrix.example.com']), ['email.host', 'matrix.example.com']],
+        'letters' => [['experience_template' => 'Matrix {company_name}'], ['letters.experience_template', 'Matrix {company_name}']],
+    ];
+}
+
+function mayEdit(string $role, string $group): bool
+{
+    foreach (config("hrm.settings_groups.$group") as $permission) {
+        if (in_array($role, config('hrm.permissions')[$permission], true)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+it('follows the permission map for every group and role, on the page and on save', function (string $role, string $group) {
+    [$payload, [$key, $value]] = matrixCases()[$group];
+    $before = settings($key);
+    $user = userWithRole($role);
+    $allowed = mayEdit($role, $group);
+
+    // Page: managers and employees get nothing; admin and hr get only the groups they may edit.
+    $page = $this->actingAs($user)->get("/hrm-settings?group=$group");
+    if (! mayEdit($role, 'attendance')) {
+        $page->assertForbidden();
+    } elseif ($allowed) {
+        $page->assertInertia(fn ($p) => $p->where('active', $group)->has("values.$group"));
+    } else {
+        $page->assertInertia(fn ($p) => $p->missing("values.$group")->where('active', 'attendance'));
+    }
+
+    // Save: a valid payload is accepted or refused per the map; a refusal changes nothing.
+    $response = $this->actingAs($user)->put("/hrm-settings/$group", $payload);
+    if ($allowed) {
+        $response->assertSessionHasNoErrors();
+        expect(settings($key))->toBe($value);
+    } else {
+        $response->assertForbidden();
+        expect(settings($key))->toBe($before);
+    }
+})->with(['admin', 'hr', 'manager', 'employee'])->with(array_keys(matrixCases()));
+
+it('treats a differently cased group as unknown and answers 403 before 404 for users without settings access', function () {
+    foreach (['admin', 'hr'] as $role) {
+        $this->actingAs(userWithRole($role))->put('/hrm-settings/Attendance', validAttendance())->assertNotFound();
+        $this->actingAs(userWithRole($role))->put('/hrm-settings/ATTENDANCE', validAttendance())->assertNotFound();
+    }
+    $this->actingAs(userWithRole('manager'))->put('/hrm-settings/bogus', [])->assertForbidden();
+    $this->actingAs(userWithRole('employee'))->put('/hrm-settings/Attendance', [])->assertForbidden();
+});
+
+it('keeps the password out of props, errors and old input when email validation fails', function () {
+    $admin = userWithRole('admin');
+    $response = $this->actingAs($admin)->from('/hrm-settings?group=email')
+        ->put('/hrm-settings/email', validEmail(['password' => 'hunter2-secret', 'port' => 99999]));
+
+    $response->assertSessionHasErrors('port');
+    expect(json_encode(session('errors')->getBag('default')->toArray()))->not->toContain('hunter2');
+    expect(session()->getOldInput())->not->toHaveKey('password');
+    expect(json_encode(session()->all()))->not->toContain('hunter2-secret');
+
+    $page = $this->actingAs($admin)->get('/hrm-settings?group=email');
+    expect($page->getContent())->not->toContain('hunter2-secret');
+});
+
+it('keeps the password out of the flash, the session and the log when a test email fails', function () {
+    Log::spy();
+    Mail::shouldReceive('to->send')->andThrow(new RuntimeException('AUTH failed for hunter2-secret'));
+
+    $this->actingAs(userWithRole('admin'))->post('/hrm-settings/email/test')->assertSessionHas('error');
+
+    expect(json_encode(session()->all()))->not->toContain('hunter2-secret');
+    Log::shouldHaveReceived('warning')->once()->withArgs(fn (...$args) => ! str_contains(json_encode($args), 'hunter2-secret') && $args[1] === ['exception' => RuntimeException::class]);
+    Log::shouldNotHaveReceived('error');
+});
+
+it('limits logo pixel dimensions', function () {
+    $admin = userWithRole('admin');
+    $this->actingAs($admin)->put('/hrm-settings/branding', ['accent' => '#10b77f', 'logo' => UploadedFile::fake()->image('big.png', 2001, 100)])->assertSessionHasErrors('logo');
+    $this->actingAs($admin)->put('/hrm-settings/branding', ['accent' => '#10b77f', 'logo_dark' => UploadedFile::fake()->image('tall.png', 100, 2001)])->assertSessionHasErrors('logo_dark');
+    $this->actingAs($admin)->put('/hrm-settings/branding', ['accent' => '#10b77f', 'logo' => UploadedFile::fake()->image('tiny.png', 8, 8)])->assertSessionHasErrors('logo');
+    $this->actingAs($admin)->put('/hrm-settings/branding', ['accent' => '#10b77f', 'logo' => UploadedFile::fake()->image('ok.png', 2000, 16)])->assertSessionHasNoErrors();
+});
+
+it('saves only the fields sent and validates them against the stored rest of the group', function () {
+    $admin = userWithRole('admin');
+    $this->actingAs($admin)->put('/hrm-settings/attendance', ['grace_minutes' => 25])->assertSessionHasNoErrors();
+    expect(settings('attendance.grace_minutes'))->toBe(25)
+        ->and(settings('attendance.shift_end'))->toBe('18:00')
+        ->and(settings('attendance.weekly_offs'))->toBe(['saturday', 'sunday']);
+
+    // shift_end alone is compared with the stored shift_start (09:00).
+    $this->actingAs($admin)->put('/hrm-settings/attendance', ['shift_end' => '08:00'])->assertSessionHasErrors('shift_end');
+    $this->actingAs($admin)->put('/hrm-settings/attendance', ['shift_end' => '19:30'])->assertSessionHasNoErrors();
+    expect(settings('attendance.shift_end'))->toBe('19:30');
+
+    // A bad field is still refused on its own, and nothing is stored.
+    $this->actingAs($admin)->put('/hrm-settings/attendance', ['grace_minutes' => 500])->assertSessionHasErrors('grace_minutes');
+    expect(settings('attendance.grace_minutes'))->toBe(25);
+
+    // Email: the stored password survives a partial save of other fields.
+    $this->actingAs($admin)->put('/hrm-settings/email', validEmail(['password' => 'secret-1']));
+    $this->actingAs($admin)->put('/hrm-settings/email', ['from_name' => 'Renamed'])->assertSessionHasNoErrors();
+    expect(settings('email.from_name'))->toBe('Renamed')
+        ->and(Crypt::decryptString(Settings::group('email')['password']))->toBe('secret-1');
+
+    // Branding: the accent alone, and a logo alone without disturbing the accent.
+    $this->actingAs($admin)->put('/hrm-settings/branding', ['accent' => '#445566'])->assertSessionHasNoErrors();
+    $this->actingAs($admin)->put('/hrm-settings/branding', ['logo' => UploadedFile::fake()->image('a.png', 40, 40)])->assertSessionHasNoErrors();
+    expect(settings('branding.accent'))->toBe('#445566')->and(settings('branding.logo'))->not->toBeNull();
+});
+
+it('rejects unknown placeholders in the letter template and lists the supported ones', function () {
+    $admin = userWithRole('admin');
+    $this->actingAs($admin)->put('/hrm-settings/letters', ['experience_template' => 'Dear {employee_nam}, from {company_name}'])
+        ->assertSessionHasErrors('experience_template');
+    expect(session('errors')->first('experience_template'))->toContain('{employee_nam}')->toContain('{last_working_day}');
+    $this->actingAs($admin)->put('/hrm-settings/letters', ['experience_template' => 'Plain {employee_name} {designation} {department} {joining_date} {last_working_day} {company_name} { not one }'])
+        ->assertSessionHasNoErrors();
+});

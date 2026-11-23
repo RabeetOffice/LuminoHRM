@@ -31,15 +31,19 @@ const TAX_MODES = [
 
 export function PayrollPanel({ values }: { values: PayrollValues }) {
     const form = useForm<Editable<PayrollValues>>(values);
-    const { submit, state } = useSettingsSubmit('payroll', form);
+    const { card } = useSettingsSubmit('payroll', form);
     const { data, errors, setData } = form;
 
     return (
-        <form onSubmit={submit} className="grid gap-6" noValidate>
+        <form
+            onSubmit={(e) => e.preventDefault()}
+            className="grid gap-6"
+            noValidate
+        >
             <SettingsCard
                 title="Pay calculation"
                 description="How one day's pay is worked out and how tax starts for a new salary profile."
-                state={state}
+                {...card(['day_pay_basis', 'default_tax_mode'])}
             >
                 <div className="grid gap-5 sm:grid-cols-2">
                     <Field
@@ -104,7 +108,7 @@ export function PayrollPanel({ values }: { values: PayrollValues }) {
             <SettingsCard
                 title="Leave and notice"
                 description="Settlement rules for leavers."
-                state={state}
+                {...card(['leave_encashment', 'notice_period_days'])}
             >
                 <CheckField
                     id="pay-encashment"
@@ -128,7 +132,7 @@ export function PayrollPanel({ values }: { values: PayrollValues }) {
             <SettingsCard
                 title="Payslip"
                 description="Printed at the bottom of every payslip."
-                state={state}
+                {...card(['payslip_footer'])}
             >
                 <Field
                     id="pay-footer"

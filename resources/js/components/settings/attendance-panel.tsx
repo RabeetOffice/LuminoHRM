@@ -26,7 +26,7 @@ const label = (day: string) => day.charAt(0).toUpperCase() + day.slice(1);
 
 export function AttendancePanel({ values }: { values: AttendanceValues }) {
     const form = useForm<Editable<AttendanceValues>>(values);
-    const { submit, state } = useSettingsSubmit('attendance', form);
+    const { card } = useSettingsSubmit('attendance', form);
     const { data, errors, setData } = form;
 
     // Errors on the list items come back as weekly_offs.0, weekly_offs.1 ...
@@ -48,11 +48,20 @@ export function AttendancePanel({ values }: { values: AttendanceValues }) {
     };
 
     return (
-        <form onSubmit={submit} className="grid gap-6" noValidate>
+        <form
+            onSubmit={(e) => e.preventDefault()}
+            className="grid gap-6"
+            noValidate
+        >
             <SettingsCard
                 title="Working hours"
                 description="The standard shift and the days the office is closed."
-                state={state}
+                {...card([
+                    'shift_start',
+                    'shift_end',
+                    'grace_minutes',
+                    'weekly_offs',
+                ])}
             >
                 <div className="grid gap-5 sm:grid-cols-3">
                     <Field
@@ -142,7 +151,7 @@ export function AttendancePanel({ values }: { values: AttendanceValues }) {
             <SettingsCard
                 title="Late and half-day rules"
                 description="How lateness and short days turn into deductions."
-                state={state}
+                {...card(['late_rule_count', 'half_day_hours'])}
             >
                 <div className="grid gap-5 sm:grid-cols-2">
                     <NumberField
@@ -173,7 +182,7 @@ export function AttendancePanel({ values }: { values: AttendanceValues }) {
             <SettingsCard
                 title="Overtime"
                 description="Pay for time worked after the shift ends."
-                state={state}
+                {...card(['overtime_enabled', 'overtime_min_minutes'])}
             >
                 <CheckField
                     id="att-overtime"

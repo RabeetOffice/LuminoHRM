@@ -1,5 +1,6 @@
 import type { InertiaFormProps } from '@inertiajs/react';
-import type { FormEvent, ReactNode } from 'react';
+import { useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import HrmSettingsController from '@/actions/App/Http/Controllers/Settings/HrmSettingsController';
 import InputError from '@/components/input-error';
 import { Button } from '@/components/ui/button';
@@ -18,10 +19,24 @@ export type Editable<T> = {
     [K in keyof T]: T[K] extends number ? number | string : T[K];
 };
 
+/** Typed text and numbers compare by their text; files by identity. */
+function sameValue(a: unknown, b: unknown): boolean {
+    if (a instanceof File || b instanceof File) {
+        return a === b;
+    }
+
+    return JSON.stringify(a) === JSON.stringify(b)
+        ? true
+        : typeof a !== 'object' &&
+              typeof b !== 'object' &&
+              String(a ?? '') === String(b ?? '');
+}
+
 /**
- * Saves one settings group from an Inertia form. Each card in the group has its own
- * "Save Changes" button, and any of them saves the whole group (the server validates the
- * group as one, for example shift end after shift start).
+ * Saves one settings group card by card. `card(fields)` gives a card its own Save Changes
+ * handler (sends only those fields; the server validates them against the stored values of
+ * the rest of the group) and its own unsaved-changes flag. Other cards' unsaved edits stay in
+ * the form and stay unsaved.
  *
  * `afterSave` values replace state that should not outlive a save (a typed password, a chosen file).
  */
@@ -30,38 +45,69 @@ export function useSettingsSubmit<T extends Record<string, any>>(
     form: InertiaFormProps<T>,
     options: { files?: boolean; afterSave?: Partial<T> } = {},
 ) {
-    const submit = (event?: FormEvent) => {
-        event?.preventDefault();
+    const saved = useRef<Record<string, unknown>>({ ...form.data });
+    const [, refresh] = useState(0);
+    const [saving, setSaving] = useState<string[]>([]);
 
+    const dirty = (fields: string[]) =>
+        fields.some((f) => !sameValue(form.data[f], saved.current[f]));
+
+    const save = (fields: string[]) => {
         const target = HrmSettingsController.update(group);
+        const sent = Object.fromEntries(fields.map((f) => [f, form.data[f]]));
         const visit = {
             preserveScroll: true,
+            onStart: () => setSaving(fields),
+            onFinish: () => setSaving([]),
             onSuccess: () => {
-                if (options.afterSave) {
-                    const next = { ...form.data, ...options.afterSave };
+                const reset = Object.fromEntries(
+                    fields
+                        .filter(
+                            (f) => options.afterSave && f in options.afterSave,
+                        )
+                        .map((f) => [
+                            f,
+                            (options.afterSave as Record<string, unknown>)[f],
+                        ]),
+                );
 
-                    form.setData(next);
-                    form.setDefaults(next);
-                } else {
-                    form.setDefaults();
+                for (const [key, value] of Object.entries(reset)) {
+                    form.setData(key as never, value as never);
                 }
+
+                saved.current = { ...saved.current, ...sent, ...reset };
+                refresh((n) => n + 1);
             },
         };
 
+        form.transform((data) => ({
+            ...Object.fromEntries(fields.map((f) => [f, data[f]])),
+            // PHP does not read a multipart body on PUT, so a file upload goes as POST with the method spoofed.
+            ...(options.files ? { _method: 'put' } : {}),
+        }));
+
         if (options.files) {
-            // PHP does not read a multipart body on PUT, so send POST and spoof the method.
-            form.transform((data) => ({ ...data, _method: 'put' }));
             form.post(target.url, { ...visit, forceFormData: true });
         } else {
             form.submit(target, visit);
         }
     };
 
+    const card = (fields: string[]) => ({
+        state: {
+            processing:
+                form.processing && fields.some((f) => saving.includes(f)),
+            dirty: dirty(fields),
+        } as FormState,
+        onSave: () => save(fields),
+    });
+
     return {
-        submit,
+        card,
+        /** Any unsaved change anywhere in the group. */
         state: {
             processing: form.processing,
-            dirty: form.isDirty,
+            dirty: dirty(Object.keys(saved.current)),
         } as FormState,
     };
 }
@@ -70,6 +116,8 @@ type CardProps = {
     title: string;
     description?: string;
     state: FormState;
+    /** Saves this card's fields. Omitted on a card with its own footer. */
+    onSave?: () => void;
     children: ReactNode;
     /** Replaces the Save Changes button, for a card that does something else (test email). */
     footer?: ReactNode;
@@ -80,6 +128,7 @@ export function SettingsCard({
     title,
     description,
     state,
+    onSave,
     children,
     footer,
 }: CardProps) {
@@ -99,10 +148,14 @@ export function SettingsCard({
                     <>
                         {state.dirty && !state.processing && (
                             <span className="mr-auto text-sm text-muted-foreground">
-                                Unsaved changes in this section
+                                Unsaved changes
                             </span>
                         )}
-                        <Button type="submit" disabled={state.processing}>
+                        <Button
+                            type="button"
+                            onClick={onSave}
+                            disabled={state.processing}
+                        >
                             {state.processing && <Spinner />}
                             Save Changes
                         </Button>

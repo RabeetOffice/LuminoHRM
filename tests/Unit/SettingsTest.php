@@ -85,3 +85,42 @@ it('falls back to defaults and still boots when the settings table does not exis
     // An artisan command that runs during a deploy.
     expect(Artisan::call('hrm:sync-access'))->toBe(0);
 });
+
+it('falls back to the default for corrupt JSON and for a value of the wrong type', function () {
+    $now = now();
+    DB::table('settings')->insert([
+        ['group' => 'attendance', 'key' => 'grace_minutes', 'value' => '{bad json', 'created_at' => $now, 'updated_at' => $now],
+        ['group' => 'attendance', 'key' => 'weekly_offs', 'value' => '"saturday"', 'created_at' => $now, 'updated_at' => $now],
+        ['group' => 'attendance', 'key' => 'overtime_enabled', 'value' => '"yes"', 'created_at' => $now, 'updated_at' => $now],
+        ['group' => 'company', 'key' => 'name', 'value' => '42', 'created_at' => $now, 'updated_at' => $now],
+        ['group' => 'attendance', 'key' => 'half_day_hours', 'value' => '6', 'created_at' => $now, 'updated_at' => $now],
+    ]);
+
+    expect(settings('attendance.grace_minutes'))->toBe(15)
+        ->and(settings('attendance.weekly_offs'))->toBe(['saturday', 'sunday'])
+        ->and(settings('attendance.overtime_enabled'))->toBeFalse()
+        ->and(settings('company.name'))->toBe('Lumino Digital')
+        ->and(settings('attendance.half_day_hours'))->toBe(6)
+        ->and(Settings::group('attendance')['grace_minutes'])->toBe(15);
+});
+
+it('caches the empty result when the settings table is missing', function () {
+    Schema::drop('settings');
+    app()->forgetScopedInstances();
+
+    expect(settings('company.name'))->toBe('Lumino Digital');
+
+    // Put the table back with a saved value: this request keeps its cached defaults.
+    Schema::create('settings', function ($table) {
+        $table->id();
+        $table->string('group');
+        $table->string('key');
+        $table->text('value')->nullable();
+        $table->timestamps();
+    });
+    DB::table('settings')->insert(['group' => 'company', 'key' => 'name', 'value' => '"Late"', 'created_at' => now(), 'updated_at' => now()]);
+
+    expect(settings('company.name'))->toBe('Lumino Digital');
+    app()->forgetScopedInstances();
+    expect(settings('company.name'))->toBe('Late');
+});

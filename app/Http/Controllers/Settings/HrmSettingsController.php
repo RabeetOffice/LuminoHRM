@@ -84,6 +84,9 @@ class HrmSettingsController extends Controller
 
     public function update(Request $request, string $group): RedirectResponse
     {
+        // 403 for anyone without a settings permission, whatever group they name; 404 after that.
+        abort_if($this->allowedGroups($request->user()) === [], 403);
+
         $class = self::REQUESTS[$group] ?? null;
 
         abort_if($class === null, 404);

@@ -27,9 +27,14 @@ class SettingsStore
             $rows = [];
 
             foreach (Setting::query()->get(['group', 'key', 'value']) as $setting) {
-                $rows[$setting->group][$setting->key] = $setting->value === null
-                    ? null
-                    : json_decode($setting->value, true);
+                $decoded = $setting->value === null ? null : json_decode($setting->value, true);
+
+                // Corrupt JSON: leave the key out so the default applies.
+                if ($setting->value !== null && json_last_error() !== JSON_ERROR_NONE) {
+                    continue;
+                }
+
+                $rows[$setting->group][$setting->key] = $decoded;
             }
         } catch (QueryException $e) {
             // Fresh install before migrations, or a deploy command running first: use defaults.
@@ -38,7 +43,8 @@ class SettingsStore
                 throw $e;
             }
 
-            return [];
+            // Cached too, so repeated reads in this request do not re-query.
+            return $this->rows = [];
         }
 
         return $this->rows = $rows;

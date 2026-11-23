@@ -8,7 +8,8 @@ class BrandingRequest extends SettingsGroupRequest
     public function rules(): array
     {
         // png, jpg and webp only. SVG is refused: it can carry script and is served from our own origin.
-        $logo = ['bail', 'nullable', 'file', 'image', 'mimes:png,jpg,jpeg,webp', 'max:1024'];
+        // The logo loads for every visitor of the sign-in page, so the canvas is limited too.
+        $logo = ['bail', 'nullable', 'file', 'image', 'mimes:png,jpg,jpeg,webp', 'max:1024', 'dimensions:min_width=16,min_height=16,max_width=2000,max_height=2000'];
 
         return [
             // \z, not $: a trailing newline must not slip through before this reaches a style attribute.

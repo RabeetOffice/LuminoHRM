@@ -40,7 +40,7 @@ export function EmailPanel({ values }: { values: EmailValues }) {
         password: '',
         clear_password: false,
     });
-    const { submit, state } = useSettingsSubmit('email', form, {
+    const { card, state } = useSettingsSubmit('email', form, {
         // The typed password must not stay in the browser once it is saved.
         afterSave: { password: '', clear_password: false },
     });
@@ -61,11 +61,22 @@ export function EmailPanel({ values }: { values: EmailValues }) {
 
     return (
         <div className="grid gap-6">
-            <form onSubmit={submit} className="grid gap-6" noValidate>
+            <form
+                onSubmit={(e) => e.preventDefault()}
+                className="grid gap-6"
+                noValidate
+            >
                 <SettingsCard
                     title="SMTP server"
                     description="Leave the host empty to use the mail setup of the server instead."
-                    state={state}
+                    {...card([
+                        'host',
+                        'port',
+                        'encryption',
+                        'username',
+                        'password',
+                        'clear_password',
+                    ])}
                 >
                     <div className="grid gap-5 sm:grid-cols-[1fr_8rem]">
                         <Field id="mail-host" label="Host" error={errors.host}>
@@ -173,7 +184,7 @@ export function EmailPanel({ values }: { values: EmailValues }) {
                 <SettingsCard
                     title="Sender"
                     description="The name and address people see on email from the HRM."
-                    state={state}
+                    {...card(['from_name', 'from_address'])}
                 >
                     <div className="grid gap-5 sm:grid-cols-2">
                         <Field

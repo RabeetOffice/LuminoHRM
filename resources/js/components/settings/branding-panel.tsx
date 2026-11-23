@@ -124,7 +124,7 @@ export function BrandingPanel({ values }: { values: BrandingValues }) {
         remove_logo: false,
         remove_logo_dark: false,
     });
-    const { submit, state } = useSettingsSubmit('branding', form, {
+    const { card } = useSettingsSubmit('branding', form, {
         files: true,
         afterSave: {
             logo: null,
@@ -139,11 +139,15 @@ export function BrandingPanel({ values }: { values: BrandingValues }) {
     const setFile = (key: LogoKey, file: File | null) => setData(key, file);
 
     return (
-        <form onSubmit={submit} className="grid gap-6" noValidate>
+        <form
+            onSubmit={(e) => e.preventDefault()}
+            className="grid gap-6"
+            noValidate
+        >
             <SettingsCard
                 title="Accent colour"
                 description="Buttons, the active menu entry and links use this colour."
-                state={state}
+                {...card(['accent'])}
             >
                 <Field
                     id="branding-accent"
@@ -179,7 +183,12 @@ export function BrandingPanel({ values }: { values: BrandingValues }) {
             <SettingsCard
                 title="Logo"
                 description="Shown in the sidebar and on the sign-in page."
-                state={state}
+                {...card([
+                    'logo',
+                    'logo_dark',
+                    'remove_logo',
+                    'remove_logo_dark',
+                ])}
             >
                 <div className="grid gap-5 md:grid-cols-2">
                     <LogoField
