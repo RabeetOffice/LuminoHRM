@@ -11,3 +11,8 @@ it('never mentions the reference product', function () {
     $files = collect(File::allFiles(resource_path()))->merge(File::allFiles(app_path()));
     expect($files->filter(fn ($f) => str_contains(strtolower($f->getContents()), 'workdo')))->toBeEmpty();
 });
+
+it('shares the app timezone as an object that later settings can extend', function () {
+    $this->actingAs(userWithRole('employee'))->get('/dashboard')
+        ->assertInertia(fn ($p) => $p->where('app.timezone', config('app.timezone')));
+});
