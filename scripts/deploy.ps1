@@ -149,11 +149,33 @@ Write-Utf8NoBom $cron $text
 $releaseId = '{0}-{1}' -f $sha, [DateTime]::UtcNow.ToString('yyyyMMdd\THHmmss\Z')
 Write-Utf8NoBom (Join-Path $Stage 'deploy\hostinger\release.txt') ($releaseId + "`n")
 
+# --- 7b. manifest: lets cron.sh tell a complete upload from a half-finished one ---
+# "release <id>" then "<size> <path>" for sentinel files only (migrations, routes, config,
+# bootstrap, composer autoload files, ...). Deliberately not every file: the uploader
+# may legitimately skip some, and a skipped file must never block a release.
+$sentinels = New-Object System.Collections.ArrayList
+foreach ($dir in @('database\migrations', 'routes', 'config')) {
+    Get-ChildItem -LiteralPath (Join-Path $Stage $dir) -Recurse -File | ForEach-Object { [void]$sentinels.Add($_.FullName) }
+}
+foreach ($rel in @('artisan', 'bootstrap\app.php', 'bootstrap\providers.php', 'public\index.php', 'public\build\manifest.json',
+        'vendor\autoload.php', 'vendor\composer\autoload_real.php', 'vendor\composer\autoload_static.php',
+        'vendor\composer\autoload_classmap.php', 'vendor\composer\autoload_psr4.php', 'vendor\composer\installed.json',
+        'deploy\hostinger\cron.sh')) {
+    $p = Join-Path $Stage $rel
+    if (Test-Path $p) { [void]$sentinels.Add((Resolve-Path $p).Path) }
+}
+$manifest = "release $releaseId`n"
+foreach ($full in ($sentinels | Sort-Object -Unique)) {
+    $relative = $full.Substring($Stage.Length + 1).Replace('\', '/')
+    $manifest += ('{0} {1}' -f (Get-Item -LiteralPath $full).Length, $relative) + "`n"
+}
+Write-Utf8NoBom (Join-Path $Stage 'deploy\hostinger\release.manifest') $manifest
+
 # --- 8. sanity checks ------------------------------------------------------
 foreach ($forbidden in @('.env', 'package.json', 'node_modules', 'vendor\bin\pest')) {
     if (Test-Path (Join-Path $Stage $forbidden)) { throw "Staging contains $forbidden." }
 }
-foreach ($required in @('.htaccess', 'artisan', 'vendor\autoload.php', 'public\index.php', 'public\build\manifest.json', 'deploy\hostinger\cron.sh', 'deploy\hostinger\release.txt')) {
+foreach ($required in @('.htaccess', 'artisan', 'vendor\autoload.php', 'public\index.php', 'public\build\manifest.json', 'deploy\hostinger\cron.sh', 'deploy\hostinger\release.txt', 'deploy\hostinger\release.manifest')) {
     if (-not (Test-Path (Join-Path $Stage $required))) { throw "Staging is missing $required." }
 }
 

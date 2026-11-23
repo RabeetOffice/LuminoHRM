@@ -72,7 +72,11 @@ uses no cookies.
    storage(skeleton) vendor artisan composer.json composer.lock .htaccess`.
    Not in there: `.env*`, `node_modules`, `package.json`, `tests`, `docs`,
    `scripts`, `resources/js`, `resources/css`, dev dependencies.
-4. Wait up to a minute. The cron job notices the new `release.txt`, runs
+4. Wait a couple of minutes. The cron job notices the new `release.txt`, but only acts once the upload is
+   complete: `deploy/hostinger/release.manifest` (written by `deploy.ps1`) must name the same release id and
+   every sentinel file in it (migrations, routes, config, vendor autoload files, ...) must exist with the listed
+   size, and `release.txt` must be at least a minute old. Until then `cron.log` says
+   `upload still in progress: <reason>` and nothing runs. Then it runs
    `config:clear`, `migrate --force`, `config:cache`, `route:cache`, `view:cache`, and only
    then records the release in `shared/release.done`. On failure it logs the
    command output and retries every minute.
@@ -145,3 +149,7 @@ write a new forward migration.
 - The uploader may skip or flag `.htaccess`/dotfiles: confirm `public_html/.htaccess`
   exists after upload, otherwise the app, the deny rules and the HTTPS redirect are
   not active.
+- `upload still in progress: ...` that never clears: the reason names the file or check
+  that fails (missing file, size mismatch, manifest from another release). Re-upload that
+  file. If the uploader legitimately refuses one of the sentinel files, drop it from the list in
+  `scripts/deploy.ps1` (section 7b) and redeploy; a release is never forced past the check.

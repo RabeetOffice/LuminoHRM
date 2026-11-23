@@ -31,7 +31,8 @@ it('redirects http to https but exempts the attendance machine path', function (
 
     expect($htaccess)->toContain('%{HTTPS} !=on')
         ->toContain('R=301')
-        ->toMatch('#RewriteCond %\{REQUEST_URI\} !\^/iclock\(/\|\$\)#');
+        ->toContain('RewriteCond %{THE_REQUEST} !^[A-Z]+\s+(?:https?://[^/\s]+)?/iclock(?:[/?\s]|$)')
+        ->not->toContain('REQUEST_URI} !^/iclock');
 });
 
 it('skips the https redirect on local development hosts', function () {
@@ -47,4 +48,8 @@ it('puts the https redirect before the deny and rewrite rules', function () {
 
     expect(strpos($htaccess, 'R=301'))->toBeLessThan(strpos($htaccess, '[F'))
         ->and(strpos($htaccess, '[F'))->toBeLessThan(strpos($htaccess, 'public/$1'));
+});
+
+it('redirects trailing slashes itself so the internal public prefix never leaks', function () {
+    expect(rootHtaccess())->toContain('RewriteRule ^.+/$ %1 [L,R=308]');
 });

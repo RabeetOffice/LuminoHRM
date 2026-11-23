@@ -10,14 +10,16 @@ Options -Indexes
     RewriteEngine On
 
     # 1. HTTP -> HTTPS (301) for everything except:
-    #    - /iclock/... : the attendance machine can only speak plain HTTP;
+    #    - /iclock/... : the attendance machine can only speak plain HTTP. Matched on
+    #      THE_REQUEST (the original request line), which no internal rewrite changes,
+    #      unlike REQUEST_URI whose value after rewrites differs between servers;
     #    - local development hosts (localhost, 127.0.0.1, [::1], *.test).
     #    Lives here (not in public/.htaccess) because this is the first file
     #    Apache reads for every request, and the only one that exists whichever
     #    way the app is served; public/.htaccess stays the stock Laravel file.
     RewriteCond %{HTTPS} !=on
     RewriteCond %{HTTP:X-Forwarded-Proto} !https [NC]
-    RewriteCond %{REQUEST_URI} !^/iclock(/|$)
+    RewriteCond %{THE_REQUEST} !^[A-Z]+\s+(?:https?://[^/\s]+)?/iclock(?:[/?\s]|$)
     RewriteCond %{HTTP_HOST} !^(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?$ [NC]
     RewriteCond %{HTTP_HOST} !\.test(:[0-9]+)?$ [NC]
     RewriteCond %{HTTP_HOST} ^([^:]+)
@@ -29,6 +31,11 @@ Options -Indexes
     RewriteRule (^|/)\.(?!well-known(/|$)) - [F,L]
     RewriteRule ^(?:storage|vendor|bootstrap|config|database|routes|app|resources|tests|deploy|scripts|docs|node_modules)(?:/|$) - [F,L]
     RewriteRule ^(?:artisan|composer\.[^/]*|package(?:-lock)?\.json|phpunit\.xml|[^/]*\.md)$ - [F,L]
+
+    # Trailing slash: redirect here (308) instead of letting public/.htaccess do it,
+    # whose redirect would expose the internal /public prefix.
+    RewriteCond %{REQUEST_URI} ^(.+)/$
+    RewriteRule ^.+/$ %1 [L,R=308]
 
     # 3. Everything else is served from public/ (static files and index.php).
     #    The (?!public/) guard stops the internal redirect from looping.
