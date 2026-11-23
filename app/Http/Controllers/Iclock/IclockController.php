@@ -41,7 +41,7 @@ class IclockController extends Controller
     public function upload(Request $request): Response
     {
         return $this->handle($request, function (string $sn) use ($request) {
-            $table = strtoupper((string) $request->query('table', ''));
+            $table = strtoupper($this->queryString($request, 'table'));
 
             if ($table === 'ATTLOG') {
                 $count = count($this->parseAttlog($request->getContent()));
@@ -117,7 +117,7 @@ class IclockController extends Controller
      */
     private function handle(Request $request, callable $respond): Response
     {
-        $sn = trim((string) $request->query('SN', ''));
+        $sn = trim($this->queryString($request, 'SN'));
 
         if ($sn === '') {
             $this->record($request, null, false, 'rejected: no serial number');
@@ -137,6 +137,20 @@ class IclockController extends Controller
         return $this->plain($reply);
     }
 
+    /** A query parameter as a string; arrays (?SN[]=x) and absent values count as ''. */
+    private function queryString(Request $request, string $key): string
+    {
+        $value = $request->query($key);
+
+        return is_string($value) ? $value : '';
+    }
+
+    /** Valid UTF-8 only: invalid bytes become '?', so strict MariaDB never rejects the row. */
+    private function utf8(string $value): string
+    {
+        return mb_check_encoding($value, 'UTF-8') ? $value : mb_convert_encoding($value, 'UTF-8', 'UTF-8');
+    }
+
     private function plain(string $content, int $status = 200): Response
     {
         return response($content, $status, ['Content-Type' => 'text/plain; charset=UTF-8']);
@@ -149,11 +163,12 @@ class IclockController extends Controller
             $body = $request->getContent();
 
             DeviceLog::create([
-                'serial_no' => $sn !== null ? mb_substr($sn, 0, 255) : null,
-                'method' => $request->method(),
-                'path' => $request->path(),
-                'query' => (string) $request->server->get('QUERY_STRING', ''),
-                'body' => $body === '' ? null : mb_strcut($body, 0, self::MAX_BODY_BYTES),
+                'serial_no' => $sn !== null ? mb_substr($this->utf8($sn), 0, 255) : null,
+                'method' => substr($request->method(), 0, 10),
+                'path' => mb_substr($this->utf8($request->path()), 0, 255),
+                // Cut on bytes first (TEXT holds 65535 bytes), then sanitise: '?' is 1 byte, so it never grows.
+                'query' => $this->utf8(mb_strcut((string) $request->server->get('QUERY_STRING', ''), 0, 60000)),
+                'body' => $body === '' ? null : $this->utf8(mb_strcut($body, 0, self::MAX_BODY_BYTES)),
                 'ip' => $request->ip(),
                 'scheme' => $request->isSecure() ? 'https' : 'http',
                 'accepted' => $accepted,

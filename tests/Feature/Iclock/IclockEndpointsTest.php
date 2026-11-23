@@ -50,3 +50,69 @@ it('accepts OPERLOG uploads', function () {
 it('does not start a session or set cookies', function () {
     expect($this->get('/iclock/getrequest?SN=TESTSN001')->headers->getCookies())->toBeEmpty();
 });
+
+it('treats an array SN as a missing serial number instead of failing', function () {
+    $r = $this->get('/iclock/getrequest?SN[]=x');
+    $r->assertStatus(400);
+    expect($r->getContent())->toBe("ERROR: missing serial number\n");
+    expect($r->headers->get('Content-Type'))->toBe('text/plain; charset=UTF-8');
+    expect(DeviceLog::whereNull('serial_no')->where('accepted', false)->count())->toBe(1);
+});
+
+it('ignores an array table parameter from a registered device', function () {
+    $r = $this->call('POST', '/iclock/cdata?SN=TESTSN001&table[]=ATTLOG', [], [], [], [], "101\t2026-11-23 09:00:17\t0\t1\n");
+    $r->assertOk();
+    expect($r->getContent())->toBe("OK\n");
+});
+
+it('logs a missing serial number with a null serial_no and a plain-text 400', function () {
+    $r = $this->get('/iclock/getrequest');
+    expect($r->getContent())->toBe("ERROR: missing serial number\n");
+    expect(DeviceLog::whereNull('serial_no')->where('accepted', false)->count())->toBe(1);
+});
+
+it('logs the malformed-lines upload with its body', function () {
+    $body = "garbage\n\n103\t2026-11-23 18:30:00\t1\t1\n";
+    $this->call('POST', '/iclock/cdata?SN=TESTSN001&table=ATTLOG', [], [], [], [], $body);
+    $log = DeviceLog::latest('id')->first();
+    expect($log->body)->toBe($body)->and($log->accepted)->toBeTrue();
+});
+
+it('stores a body with invalid UTF-8 as valid UTF-8 and still replies', function () {
+    $body = "OPLOG 4\t0\t2026-11-23 09:00:00\t\xB9\xA4\xBA\xC5\n";
+    $r = $this->call('POST', '/iclock/cdata?SN=TESTSN001&table=OPERLOG', [], [], [], [], $body);
+    expect($r->getContent())->toBe("OK\n");
+    $stored = DeviceLog::latest('id')->first()->body;
+    expect(mb_check_encoding($stored, 'UTF-8'))->toBeTrue()
+        ->and($stored)->toStartWith("OPLOG 4\t0\t2026-11-23 09:00:00\t");
+});
+
+it('stores an invalid UTF-8 serial number as valid UTF-8', function () {
+    $r = $this->get('/iclock/getrequest?SN=%FF%FEbad');
+    $r->assertStatus(403);
+    $sn = DeviceLog::latest('id')->first()->serial_no;
+    expect(mb_check_encoding($sn, 'UTF-8'))->toBeTrue();
+});
+
+it('truncates an over-long serial number and query before logging', function () {
+    $r = $this->get('/iclock/getrequest?SN='.str_repeat('A', 400).'&pad='.str_repeat('b', 70000));
+    $r->assertStatus(403);
+    $log = DeviceLog::latest('id')->first();
+    expect(strlen($log->serial_no))->toBeLessThanOrEqual(255)
+        ->and(strlen($log->query))->toBeLessThanOrEqual(65535);
+});
+
+it('truncates the stored body at 1 MB without changing the reply', function () {
+    $line = "101\t2026-11-23 09:00:17\t0\t1\n";
+    $body = str_repeat($line, (int) ceil(1048576 / strlen($line)) + 10);
+    $r = $this->call('POST', '/iclock/cdata?SN=TESTSN001&table=ATTLOG', [], [], [], [], $body);
+    expect($r->getContent())->toBe('OK: '.(int) ceil(1048576 / strlen($line) + 10)."\n");
+    expect(strlen(DeviceLog::latest('id')->first()->body))->toBe(1048576);
+});
+
+it('keeps the reply unchanged when writing the log fails', function () {
+    Illuminate\Support\Facades\Schema::drop('device_logs');
+    $r = $this->get('/iclock/getrequest?SN=TESTSN001');
+    $r->assertOk();
+    expect($r->getContent())->toBe("OK\n");
+});
