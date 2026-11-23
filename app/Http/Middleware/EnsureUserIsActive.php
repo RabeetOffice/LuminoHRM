@@ -24,11 +24,13 @@ class EnsureUserIsActive
             $request->session()->invalidate();
             $request->session()->regenerateToken();
 
-            if ($request->expectsJson()) {
+            if ($request->expectsJson() && ! $request->header('X-Inertia')) {
                 return response()->json(['message' => self::MESSAGE], 403);
             }
 
-            return redirect('/login')->withErrors(['email' => self::MESSAGE]);
+            // 303 (not 302): this runs before Inertia's middleware, which would
+            // otherwise have turned a PUT/PATCH/DELETE redirect into a GET.
+            return redirect('/login', 303)->withErrors(['email' => self::MESSAGE]);
         }
 
         return $next($request);

@@ -14,10 +14,24 @@ use Spatie\Permission\PermissionRegistrar;
  */
 class AccessSync
 {
-    public function run(): void
+    public const ADMIN_CREATED = 'created';
+
+    public const ADMIN_EXISTS = 'exists';
+
+    public const ADMIN_NO_ENV = 'skipped_no_env';
+
+    public const ADMIN_INVALID_EMAIL = 'skipped_invalid_email';
+
+    public const ADMIN_EMAIL_IN_USE = 'skipped_email_in_use';
+
+    /**
+     * @return string one of the ADMIN_* constants (never contains the email or password)
+     */
+    public function run(): string
     {
         $this->syncRolesAndPermissions();
-        $this->createFirstAdmin();
+
+        return $this->createFirstAdmin();
     }
 
     public function syncRolesAndPermissions(): void
@@ -44,22 +58,26 @@ class AccessSync
      * Creates the first Admin from HRM_ADMIN_EMAIL / HRM_ADMIN_PASSWORD, only when
      * no admin exists and both values are set. Never logs or prints the password.
      */
-    public function createFirstAdmin(): void
+    public function createFirstAdmin(): string
     {
+        if (User::role('admin')->exists()) {
+            return self::ADMIN_EXISTS;
+        }
+
         $email = trim((string) config('hrm.admin.email'));
         $password = (string) config('hrm.admin.password');
 
-        if ($email === '' || $password === '' || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
-            return;
+        if ($email === '' || $password === '') {
+            return self::ADMIN_NO_ENV;
         }
 
-        if (User::role('admin')->exists()) {
-            return;
+        if (filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+            return self::ADMIN_INVALID_EMAIL;
         }
 
         // Never take over an existing account that is not an admin.
-        if (User::where('email', $email)->exists()) {
-            return;
+        if (User::whereRaw('lower(email) = ?', [strtolower($email)])->exists()) {
+            return self::ADMIN_EMAIL_IN_USE;
         }
 
         $user = new User(['name' => 'Administrator', 'email' => $email, 'password' => $password]);
@@ -67,5 +85,7 @@ class AccessSync
         $user->is_active = true;
         $user->save();
         $user->assignRole('admin');
+
+        return self::ADMIN_CREATED;
     }
 }

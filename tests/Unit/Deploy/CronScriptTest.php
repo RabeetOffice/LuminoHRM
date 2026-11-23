@@ -37,6 +37,10 @@ if [ "$1" = "$FAIL_ON" ]; then
     echo "boom from $1"
     exit 1
 fi
+if [ "$1" = "hrm:sync-access" ]; then
+    echo "access_sync roles=4 permissions=25 admin=${STUB_ADMIN:-created}"
+    exit 0
+fi
 echo "stub ok: $1"
 
 SH;
@@ -159,6 +163,7 @@ it('generates the key when empty and runs the post-deploy commands once per rele
         'key:generate --force',
         'config:clear',
         'migrate --force',
+        'hrm:sync-access',
         'config:cache',
         'route:cache',
         'view:cache',
@@ -194,7 +199,7 @@ it('runs the post-deploy commands again for a new release id', function () {
     writeRelease($this->appDir, 'r2');
     runCron($this->appDir, $this->stub, $this->sharedDir);
 
-    expect(cronCalls($this->sharedDir))->toBe(['config:clear', 'migrate --force', 'config:cache', 'route:cache', 'view:cache', 'schedule:run'])
+    expect(cronCalls($this->sharedDir))->toBe(['config:clear', 'migrate --force', 'hrm:sync-access', 'config:cache', 'route:cache', 'view:cache', 'schedule:run'])
         ->and(trim(file_get_contents($this->sharedDir.'/release.done')))->toBe('r2');
 });
 
@@ -206,13 +211,13 @@ it('leaves release.done unwritten when a step fails, logs the output and retries
     runCron($this->appDir, $this->stub, $this->sharedDir, ['FAIL_ON' => 'route:cache']);
 
     expect(is_file($this->sharedDir.'/release.done'))->toBeFalse()
-        ->and(cronCalls($this->sharedDir))->toBe(['config:clear', 'migrate --force', 'config:cache', 'route:cache'])
+        ->and(cronCalls($this->sharedDir))->toBe(['config:clear', 'migrate --force', 'hrm:sync-access', 'config:cache', 'route:cache'])
         ->and(file_get_contents($this->sharedDir.'/storage/logs/cron.log'))->toContain('boom from route:cache');
 
     // next minute, the fault is gone: the whole sequence runs again and succeeds
     unlink($this->sharedDir.'/calls.txt');
     runCron($this->appDir, $this->stub, $this->sharedDir);
-    expect(cronCalls($this->sharedDir))->toBe(['config:clear', 'migrate --force', 'config:cache', 'route:cache', 'view:cache', 'schedule:run'])
+    expect(cronCalls($this->sharedDir))->toBe(['config:clear', 'migrate --force', 'hrm:sync-access', 'config:cache', 'route:cache', 'view:cache', 'schedule:run'])
         ->and(trim(file_get_contents($this->sharedDir.'/release.done')))->toBe('r1');
 });
 
@@ -253,7 +258,7 @@ function readyEnv(object $t): void
     file_put_contents($t->sharedDir.'/.env', "APP_KEY=base64:x\n");
 }
 
-const FULL_RUN = ['config:clear', 'migrate --force', 'config:cache', 'route:cache', 'view:cache', 'schedule:run'];
+const FULL_RUN = ['config:clear', 'migrate --force', 'hrm:sync-access', 'config:cache', 'route:cache', 'view:cache', 'schedule:run'];
 
 it('does not trigger while one late file is missing and reports the missing count', function () {
     readyEnv($this);
@@ -613,4 +618,39 @@ it('creates shared/ private (modes are only meaningful off Windows)', function (
     runCron($this->appDir, $this->stub, $this->sharedDir);
 
     expect(substr(sprintf('%o', fileperms($this->sharedDir)), -3))->toBe('700');
+});
+
+it('runs hrm:sync-access right after migrate and publishes its sanitised line as access= in status.txt', function () {
+    readyEnv($this);
+    writeRelease($this->appDir, 'r1');
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+
+    expect(cronCalls($this->sharedDir))->toBe(FULL_RUN)
+        ->and(readStatus($this->appDir)['access'])->toBe('access_sync roles=4 permissions=25 admin=created')
+        ->and(cronLog($this->sharedDir))->toContain('access sync: access_sync roles=4 permissions=25 admin=created');
+
+    // the value persists across runs that do not run the post-deploy step
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    expect(readStatus($this->appDir)['access'])->toBe('access_sync roles=4 permissions=25 admin=created');
+});
+
+it('drops anything outside lowercase letters, digits, space, = and _ and truncates the access line to 120 chars', function () {
+    readyEnv($this);
+    writeRelease($this->appDir, 'r1');
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['STUB_ADMIN' => 'Boss@Example.com-'.str_repeat('a', 200)]);
+
+    $line = readStatus($this->appDir)['access'];
+    expect($line)->toMatch('/^[a-z0-9 =_]+$/')
+        ->and(strlen($line))->toBe(120)
+        ->and($line)->not->toContain('@');
+});
+
+it('treats a failing hrm:sync-access as a post-deploy failure and retries', function () {
+    readyEnv($this);
+    writeRelease($this->appDir, 'r1');
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['FAIL_ON' => 'hrm:sync-access']);
+
+    expect(is_file($this->sharedDir.'/release.done'))->toBeFalse()
+        ->and(cronCalls($this->sharedDir))->toBe(['config:clear', 'migrate --force', 'hrm:sync-access'])
+        ->and(readStatus($this->appDir)['state'])->toBe('post_deploy_failed');
 });

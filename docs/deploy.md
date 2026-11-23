@@ -78,7 +78,7 @@ uses no cookies.
    `shared/release.pending`; file timestamps are not used). Until then `cron.log` says
    `upload still in progress: <reason>` (for example `3 of 8331 files missing, first: ...`) and nothing runs,
    including the scheduler. Then it runs
-   `config:clear`, `migrate --force`, `config:cache`, `route:cache`, `view:cache`, and only
+   `config:clear`, `migrate --force`, `hrm:sync-access`, `config:cache`, `route:cache`, `view:cache`, and only
    then records the release in `shared/release.done`. On failure it logs the
    command output and retries every minute.
 
@@ -135,6 +135,22 @@ and invalidates encrypted data, so normally leave it empty). The config cache is
 A seed is only staged when `-SeedEnvFile` is passed, so routine deploys never touch `shared/.env`
 (note that a deploy replaces the document root, and with it any seed from an earlier upload).
 
+## Creating the first Admin
+
+Production runs no seeder and has no shell, so the first Admin is created by the post-deploy step
+(`artisan hrm:sync-access`, which runs right after `migrate --force` and before `config:cache`, on every
+post-deploy including the "shared/.env newer than release.done" rebuild):
+
+1. Put `HRM_ADMIN_EMAIL` and `HRM_ADMIN_PASSWORD` in your local env file (outside the repo) and deploy it with
+   `scripts\deploy.ps1 -SeedEnvFile <that file>`; upload.
+2. Within a minute read `deploy/hostinger/status.txt`: `access=access_sync roles=4 permissions=25 admin=created`
+   means the Admin exists. Other values: `admin=exists` (an admin already exists), `skipped_no_env`,
+   `skipped_invalid_email`, `skipped_email_in_use` (the email belongs to a non-admin account, which is never
+   taken over; use another email). The line never contains the email or password.
+3. Deploy again with a seed that no longer has `HRM_ADMIN_PASSWORD`, and change the password after first sign-in.
+
+The same command also repairs roles and permissions if they ever drift from `config/hrm.php`.
+
 ## Reading the server state
 
 `shared/` is outside the document root, so `cron.sh` publishes two plain-text files for the hosting
@@ -142,7 +158,7 @@ file API (denied over HTTP, rewritten every minute, removed by the next deploy u
 
 - `deploy/hostinger/status.txt`: `time`, `release`, `release_done`, `state`
   (`waiting_for_env`, `upload_in_progress`, `post_deploy_failed`, `ok`), `detail`, `env_present`,
-  `app_key_set`, `php`, `proc_open`, `last_migrate`. No secrets and no command output.
+  `app_key_set`, `php`, `proc_open`, `last_migrate`, `access` (result line of the last `hrm:sync-access`). No secrets and no command output.
 - `deploy/hostinger/status.log`: the last 40 lines `cron.sh` wrote itself (raw artisan output is not copied;
   for that, `shared/storage/logs/cron.log` is the full log).
 ## Check that a deploy worked

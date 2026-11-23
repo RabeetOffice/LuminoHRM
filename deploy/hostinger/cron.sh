@@ -11,7 +11,10 @@
 #   4. after a deploy (release.txt differs from shared/release.done, or .env is
 #      newer than release.done) AND the uploaded tree is complete (see below):
 #      config:clear (so migrate sees the current shared/.env, not a stale cached
-#      config), migrate, config:cache, route:cache, view:cache;
+#      config), migrate, hrm:sync-access (roles, permissions, first Admin from
+#      HRM_ADMIN_*; reads the freshly cleared config, so it runs BEFORE config:cache and
+#      sees a newly seeded env), config:cache, route:cache, view:cache. The .env-newer-
+#      than-release.done path runs this same full sequence;
 #   5. artisan schedule:run.
 # Everything is appended to shared/storage/logs/cron.log. Nothing is printed
 # (cron would mail it) and env values are never echoed.
@@ -210,6 +213,8 @@ write_status() {
     fi
     st_last=''
     [ -f "$SHARED/last_migrate" ] && st_last=$(tr -d '\r\n' < "$SHARED/last_migrate")
+    st_access=''
+    [ -f "$SHARED/last_access" ] && st_access=$(tr -cd 'a-z0-9 =_' < "$SHARED/last_access" | cut -c1-120)
     php_info=$("$PHP_BIN" -r 'echo PHP_VERSION, " ", function_exists("proc_open") ? "yes" : "no";' 2>/dev/null)
     st_php=unknown
     st_proc=unknown
@@ -229,6 +234,7 @@ write_status() {
         echo "php=$st_php"
         echo "proc_open=$st_proc"
         echo "last_migrate=$st_last"
+        echo "access=$st_access"
     } > "$st_tmp" && mv -f "$st_tmp" "$SCRIPT_DIR/status.txt"
     # Only the lines this script wrote itself: they start with a UTC timestamp.
     grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z ' "$LOG_FILE" 2>/dev/null | tail -n 40 > "$SCRIPT_DIR/status.log.tmp.$$" \
@@ -352,10 +358,16 @@ main() {
 
     if [ "$need" = 1 ]; then
         log "post-deploy for release $release"
-        for cmd in "config:clear" "migrate --force" "config:cache" "route:cache" "view:cache"; do
+        for cmd in "config:clear" "migrate --force" "hrm:sync-access" "config:cache" "route:cache" "view:cache"; do
             # shellcheck disable=SC2086
             if artisan $cmd; then
                 log "ok: artisan $cmd"
+                if [ "$cmd" = "hrm:sync-access" ]; then
+                    # One line of [a-z0-9 =_] (no email, no password); sanitise anyway.
+                    access_line=$(grep -m1 '^access_sync ' "$OUT_FILE" | tr -cd 'a-z0-9 =_' | cut -c1-120)
+                    printf '%s\n' "$access_line" > "$SHARED/last_access"
+                    log "access sync: ${access_line:-no result line}"
+                fi
             else
                 STATE=post_deploy_failed
                 DETAIL="artisan $cmd failed (release $release)"

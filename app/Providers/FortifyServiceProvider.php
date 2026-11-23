@@ -51,8 +51,20 @@ class FortifyServiceProvider extends ServiceProvider
         Fortify::authenticateUsing(function (Request $request) {
             $user = User::where(Fortify::username(), $request->input(Fortify::username()))->first();
 
-            if (! $user || ! Hash::check((string) $request->input('password'), $user->password)) {
+            $password = (string) $request->input('password');
+
+            if (! $user) {
+                Hash::make($password); // same work as a real check: no timing difference for unknown emails
+
                 return null;
+            }
+
+            if (! Hash::check($password, $user->password)) {
+                return null;
+            }
+
+            if (Hash::needsRehash($user->password)) {
+                $user->forceFill(['password' => $password])->saveQuietly();
             }
 
             if (! $user->is_active) {
@@ -65,7 +77,13 @@ class FortifyServiceProvider extends ServiceProvider
         });
 
         Event::listen(Login::class, function (Login $event) {
-            if ($event->user instanceof User && $event->user->is_active) {
+            // Real sign-ins only. A remember-cookie restore also fires Login (remember=true)
+            // on any request, so require the sign-in routes themselves.
+            if (
+                $event->user instanceof User
+                && $event->user->is_active
+                && request()->routeIs('login.store', 'two-factor.login.store', 'passkey.login')
+            ) {
                 $event->user->forceFill(['last_login_at' => now()])->saveQuietly();
             }
         });
