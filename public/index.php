@@ -6,7 +6,10 @@ use Illuminate\Http\Request;
 define('LARAVEL_START', microtime(true));
 
 // Determine if the application is in maintenance mode...
-if (file_exists($maintenance = __DIR__.'/../storage/framework/maintenance.php')) {
+// (storage lives in ../../shared/storage on the shared host; see bootstrap/app.php)
+$storage = is_dir($shared = dirname(__DIR__, 2).'/shared') ? $shared.'/storage' : __DIR__.'/../storage';
+
+if (file_exists($maintenance = $storage.'/framework/maintenance.php')) {
     require $maintenance;
 }
 

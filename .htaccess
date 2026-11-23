@@ -1,0 +1,47 @@
+# Web root shim for shared hosting where the document root cannot point at public/.
+# This file sits in the document root (the application root) and serves the app
+# from public/ without a /public prefix in URLs.
+#
+# Order matters: 1. HTTPS redirect  2. deny list  3. rewrite to public/
+
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # 1. HTTP -> HTTPS (301) for everything except:
+    #    - /iclock/... : the attendance machine can only speak plain HTTP;
+    #    - local development hosts (localhost, 127.0.0.1, [::1], *.test).
+    #    Lives here (not in public/.htaccess) because this is the first file
+    #    Apache reads for every request, and the only one that exists whichever
+    #    way the app is served; public/.htaccess stays the stock Laravel file.
+    RewriteCond %{HTTPS} !=on
+    RewriteCond %{HTTP:X-Forwarded-Proto} !https [NC]
+    RewriteCond %{REQUEST_URI} !^/iclock(/|$)
+    RewriteCond %{HTTP_HOST} !^(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?$ [NC]
+    RewriteCond %{HTTP_HOST} !\.test(:[0-9]+)?$ [NC]
+    RewriteCond %{HTTP_HOST} ^([^:]+)
+    RewriteRule ^ https://%1%{REQUEST_URI} [QSA,L,R=301]
+
+    # 2. Deny everything that is not meant to be served (403), even though the
+    #    rewrite below would also hide it: dotfiles (.env, .git, .htaccess ...,
+    #    but not /.well-known/), application directories, and root files.
+    RewriteRule (^|/)\.(?!well-known(/|$)) - [F,L]
+    RewriteRule ^(?:storage|vendor|bootstrap|config|database|routes|app|resources|tests|deploy|scripts|docs|node_modules)(?:/|$) - [F,L]
+    RewriteRule ^(?:artisan|composer\.[^/]*|package(?:-lock)?\.json|phpunit\.xml|[^/]*\.md)$ - [F,L]
+
+    # 3. Everything else is served from public/ (static files and index.php).
+    #    The (?!public/) guard stops the internal redirect from looping.
+    RewriteRule ^(?!public/)(.*)$ public/$1 [L]
+</IfModule>
+
+# Fallback if mod_rewrite is unavailable: never serve these root files.
+<FilesMatch "^(\.(?!well-known)[^/]*|artisan|composer\.(json|lock)|package(-lock)?\.json|phpunit\.xml)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>

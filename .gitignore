@@ -46,3 +46,6 @@ yarn-error.log
 
 # Superpowers workflow artifacts
 .superpowers/
+
+# Deploy staging directory
+/build/deploy/
