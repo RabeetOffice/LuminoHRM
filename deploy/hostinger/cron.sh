@@ -26,6 +26,17 @@
 # is done (release.txt == release.done) the manifest is never consulted, so the
 # scheduler and the .env-triggered config rebuild are not affected by it.
 #
+# Env seed: there is no file-write API for shared/, so deploy.ps1 -SeedEnvFile can
+# stage deploy/hostinger/env.seed. When it exists, this script installs it as
+# shared/.env (mode 600, atomically; an empty APP_KEY in the seed keeps the existing
+# key), deletes the seed and logs one line without values. The seed is not listed
+# in release.manifest. A newer .env triggers the config rebuild in the same run.
+#
+# Status (for reading through the hosting file API, where shared/ is out of reach):
+# every run that holds the lock ends by writing deploy/hostinger/status.txt (key=value,
+# no secrets, no command output) and status.log (the last 40 lines this script wrote
+# itself; raw artisan output, which is indented, is never copied).
+#
 # Environment overrides (used by the tests): PHP_BIN, LOG_MAX_BYTES,
 # LOCK_STALE_MINUTES, CONFIRM_RUNS.
 #
@@ -130,6 +141,74 @@ release_ready() {
     fi
     return 0
 }
+# Install deploy/hostinger/env.seed as shared/.env. Never logs values.
+install_seed() {
+    seed_tmp="$SHARED/.env.seed-tmp.$$"
+    seed_ok=1
+    if ! tr -d '\r' < "$SEED_FILE" > "$seed_tmp"; then
+        seed_ok=0
+    fi
+    if [ "$seed_ok" = 1 ]; then
+        seed_key=$(grep '^APP_KEY=' "$seed_tmp" | tail -n 1 | cut -d= -f2- | tr -d "\"' ")
+        if [ -z "$seed_key" ] && [ -f "$ENV_FILE" ]; then
+            old_key_raw=$(grep '^APP_KEY=' "$ENV_FILE" | tail -n 1 | cut -d= -f2- | tr -d '\r')
+            old_key=$(printf '%s' "$old_key_raw" | tr -d "\"' ")
+            if [ -n "$old_key" ]; then
+                { grep -v '^APP_KEY=' "$seed_tmp"; printf 'APP_KEY=%s\n' "$old_key_raw"; } > "$seed_tmp.2" \
+                    && mv -f "$seed_tmp.2" "$seed_tmp" || seed_ok=0
+            fi
+        fi
+    fi
+    if [ "$seed_ok" = 1 ] && chmod 600 "$seed_tmp" && mv -f "$seed_tmp" "$ENV_FILE"; then
+        rm -f "$SEED_FILE"
+        env_changed=1
+        log "installed shared/.env from seed"
+    else
+        rm -f "$seed_tmp" "$seed_tmp.2"
+        log "FAILED to install shared/.env from seed (seed left in place; ignoring it this run)"
+    fi
+}
+
+# Write deploy/hostinger/status.txt and status.log atomically. No secrets, no command output.
+write_status() {
+    st_release=''
+    st_done=''
+    [ -f "$RELEASE_FILE" ] && st_release=$(tr -d ' \r\n' < "$RELEASE_FILE")
+    [ -f "$DONE_FILE" ] && st_done=$(tr -d ' \r\n' < "$DONE_FILE")
+    st_env=no
+    st_key=no
+    if [ -f "$ENV_FILE" ]; then
+        st_env=yes
+        [ -n "$(grep '^APP_KEY=' "$ENV_FILE" | tail -n 1 | cut -d= -f2- | tr -d "\"' \r")" ] && st_key=yes
+    fi
+    st_last=''
+    [ -f "$SHARED/last_migrate" ] && st_last=$(tr -d '\r\n' < "$SHARED/last_migrate")
+    php_info=$("$PHP_BIN" -r 'echo PHP_VERSION, " ", function_exists("proc_open") ? "yes" : "no";' 2>/dev/null)
+    st_php=unknown
+    st_proc=unknown
+    if [ -n "$php_info" ]; then
+        st_php=${php_info% *}
+        st_proc=${php_info#* }
+    fi
+    st_tmp="$SCRIPT_DIR/status.txt.tmp.$$"
+    {
+        echo "time=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        echo "release=$st_release"
+        echo "release_done=$st_done"
+        echo "state=$STATE"
+        echo "detail=$DETAIL"
+        echo "env_present=$st_env"
+        echo "app_key_set=$st_key"
+        echo "php=$st_php"
+        echo "proc_open=$st_proc"
+        echo "last_migrate=$st_last"
+    } > "$st_tmp" && mv -f "$st_tmp" "$SCRIPT_DIR/status.txt"
+    # Only the lines this script wrote itself: they start with a UTC timestamp.
+    grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z ' "$LOG_FILE" 2>/dev/null | tail -n 40 > "$SCRIPT_DIR/status.log.tmp.$$" \
+        && mv -f "$SCRIPT_DIR/status.log.tmp.$$" "$SCRIPT_DIR/status.log"
+    rm -f "$st_tmp" "$SCRIPT_DIR/status.log.tmp.$$"
+}
+
 main() {
     SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd) || exit 1
     APP_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd) || exit 1
@@ -138,12 +217,16 @@ main() {
     ENV_FILE="$SHARED/.env"
     RELEASE_FILE="$SCRIPT_DIR/release.txt"
     MANIFEST_FILE="$SCRIPT_DIR/release.manifest"
+    SEED_FILE="$SCRIPT_DIR/env.seed"
     PENDING_FILE="$SHARED/release.pending"
     DONE_FILE="$SHARED/release.done"
     LOCK_DIR="$SHARED/cron.lock"
     LOG_DIR="$STORAGE/logs"
     LOG_FILE="$LOG_DIR/cron.log"
     OUT_FILE="$SHARED/cron.out.$$"
+    STATE=ok
+    DETAIL=
+    env_changed=0
 
     # 1. Shared layout (idempotent).
     for d in app/private app/public framework/cache/data framework/sessions framework/views logs; do
@@ -165,12 +248,19 @@ main() {
     if ! acquire_lock; then
         exit 0   # another run is active; it will do the work
     fi
-    trap 'rm -rf "$LOCK_DIR" "$OUT_FILE"' EXIT
+    trap 'write_status; rm -rf "$LOCK_DIR" "$OUT_FILE"' EXIT
     trap 'exit 1' HUP INT TERM
     rm -f "$SHARED"/cron.out.*   # leftovers of killed runs (we hold the lock)
 
+    # 1b. Env seed (see header): install before looking for shared/.env.
+    if [ -f "$SEED_FILE" ]; then
+        install_seed
+    fi
+
     # 2. Wait for the environment file (created separately, never by a deploy).
     if [ ! -f "$ENV_FILE" ]; then
+        STATE=waiting_for_env
+        DETAIL="shared/.env not created yet"
         log "waiting for shared/.env (not created yet); nothing to do"
         exit 0
     fi
@@ -192,6 +282,8 @@ main() {
             log "APP_KEY generated"
             rm -f "$DONE_FILE"   # cached config would hold the old (empty) key
         else
+            STATE=post_deploy_failed
+            DETAIL="artisan key:generate failed"
             log "key:generate FAILED"
             log_output
             exit 0
@@ -206,17 +298,22 @@ main() {
     [ -f "$DONE_FILE" ] && done_id=$(tr -d ' \r\n' < "$DONE_FILE")
     need=0
     if [ -z "$release" ]; then
+        DETAIL="no release.txt; post-deploy skipped"
         log "no deploy/hostinger/release.txt; skipping post-deploy step"
     elif [ "$release" = "$done_id" ]; then
         # Release already done: never consult the manifest. Only a newer .env needs
         # a config rebuild (config is cached).
         rm -f "$PENDING_FILE"
-        [ "$ENV_FILE" -nt "$DONE_FILE" ] && need=1
+        if [ "$env_changed" = 1 ] || [ "$ENV_FILE" -nt "$DONE_FILE" ]; then
+            need=1
+        fi
     else
         # New release: only when the upload is complete and confirmed.
         if release_ready "$release"; then
             need=1
         else
+            STATE=upload_in_progress
+            DETAIL="$not_ready_reason"
             log "upload still in progress: $not_ready_reason (release $release; will retry)"
             post_deploy_ok=0
         fi
@@ -229,6 +326,8 @@ main() {
             if artisan $cmd; then
                 log "ok: artisan $cmd"
             else
+                STATE=post_deploy_failed
+                DETAIL="artisan $cmd failed (release $release)"
                 log "FAILED: artisan $cmd (release $release stays pending, will retry)"
                 log_output
                 post_deploy_ok=0
@@ -237,6 +336,8 @@ main() {
         done
         if [ "$post_deploy_ok" = 1 ]; then
             echo "$release" > "$DONE_FILE"
+            date -u '+%Y-%m-%dT%H:%M:%SZ' > "$SHARED/last_migrate"
+            DETAIL="release $release done"
             rm -f "$PENDING_FILE"
             log "release $release done"
         fi
@@ -248,6 +349,7 @@ main() {
             # Only log when something actually ran.
             grep -qi 'no scheduled commands' "$OUT_FILE" || { log "schedule:run"; log_output; }
         else
+            DETAIL="schedule:run failed"
             log "FAILED: artisan schedule:run"
             log_output
         fi

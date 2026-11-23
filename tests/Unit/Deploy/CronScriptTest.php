@@ -27,6 +27,7 @@ function cronLayout(): array
     $stub = $root.'/fakephp.sh';
     $script = <<<'SH'
 #!/bin/sh
+if [ "$1" = "-r" ]; then echo "8.4.0-stub yes"; exit 0; fi
 shift
 echo "$*" >> "$STUB_CALLS"
 if [ "$1" = "key:generate" ]; then
@@ -377,4 +378,142 @@ it('parses the whole script up front by running everything from main()', functio
 
     expect(array_slice($nonEmpty, -2))->toBe(['main "$@"', 'exit $?'])
         ->and(implode("\n", $lines))->toContain('main() {');
+});
+
+function writeSeed(string $app, string $content): void
+{
+    file_put_contents($app.'/deploy/hostinger/env.seed', $content);
+}
+
+function readStatus(string $app): array
+{
+    $out = [];
+    foreach (explode("\n", trim(file_get_contents($app.'/deploy/hostinger/status.txt'))) as $line) {
+        [$k, $v] = array_pad(explode('=', $line, 2), 2, '');
+        $out[$k] = $v;
+    }
+
+    return $out;
+}
+
+it('installs the env seed as shared/.env, removes the seed and logs without values', function () {
+    writeSeed($this->appDir, "APP_NAME=Seeded\nAPP_KEY=base64:seedkey\nDB_PASSWORD=FAKEPASS123\n");
+
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+
+    expect(file_get_contents($this->sharedDir.'/.env'))->toBe("APP_NAME=Seeded\nAPP_KEY=base64:seedkey\nDB_PASSWORD=FAKEPASS123\n")
+        ->and(is_file($this->appDir.'/deploy/hostinger/env.seed'))->toBeFalse()
+        ->and(cronLog($this->sharedDir))->toContain('installed shared/.env from seed')
+        ->not->toContain('FAKEPASS123')->not->toContain('seedkey');
+
+    if (PHP_OS_FAMILY !== 'Windows') {
+        expect(substr(sprintf('%o', fileperms($this->sharedDir.'/.env')), -3))->toBe('600');
+    }
+});
+
+it('strips carriage returns from a CRLF seed', function () {
+    writeSeed($this->appDir, "APP_NAME=Seeded\r\nAPP_KEY=base64:k\r\n");
+
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+
+    expect(file_get_contents($this->sharedDir.'/.env'))->toBe("APP_NAME=Seeded\nAPP_KEY=base64:k\n");
+});
+
+it('keeps the existing APP_KEY when the seed has an empty one', function () {
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    file_put_contents($this->sharedDir.'/.env', "APP_KEY=base64:oldkey/+=\nDB_PASSWORD=old\n");
+    writeSeed($this->appDir, "APP_NAME=New\nAPP_KEY=\nDB_PASSWORD=newpass\n");
+
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+
+    $env = file_get_contents($this->sharedDir.'/.env');
+    expect($env)->toContain("APP_KEY=base64:oldkey/+=\n")->toContain('DB_PASSWORD=newpass')->toContain('APP_NAME=New')
+        ->not->toContain('DB_PASSWORD=old')
+        ->and(substr_count($env, 'APP_KEY='))->toBe(1)
+        ->and(cronCalls($this->sharedDir))->not->toContain('key:generate --force');
+});
+
+it('lets a non-empty seed APP_KEY replace the old key', function () {
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    file_put_contents($this->sharedDir.'/.env', "APP_KEY=base64:oldkey\n");
+    writeSeed($this->appDir, "APP_KEY=base64:newkey\n");
+
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+
+    expect(file_get_contents($this->sharedDir.'/.env'))->toBe("APP_KEY=base64:newkey\n");
+});
+
+it('rebuilds the config cache in the same run that installs a new seed', function () {
+    readyEnv($this);
+    writeRelease($this->appDir, 'r1');
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    expect(trim(file_get_contents($this->sharedDir.'/release.done')))->toBe('r1');
+    unlink($this->sharedDir.'/calls.txt');
+
+    writeSeed($this->appDir, "APP_KEY=base64:k2\nHRM_DEVICE_SERIALS=SN1\n");
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+
+    expect(cronCalls($this->sharedDir))->toBe(FULL_RUN)
+        ->and(file_get_contents($this->sharedDir.'/.env'))->toContain('HRM_DEVICE_SERIALS=SN1');
+});
+
+it('writes status.txt for waiting_for_env, upload_in_progress and ok', function () {
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    $s = readStatus($this->appDir);
+    expect($s['state'])->toBe('waiting_for_env')
+        ->and($s['detail'])->toBe('shared/.env not created yet')
+        ->and($s['env_present'])->toBe('no')->and($s['app_key_set'])->toBe('no')
+        ->and($s['php'])->toBe('8.4.0-stub')->and($s['proc_open'])->toBe('yes')
+        ->and($s['last_migrate'])->toBe('')
+        ->and($s['time'])->toMatch('/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/');
+
+    file_put_contents($this->sharedDir.'/.env', "APP_KEY=base64:x\n");
+    writeRelease($this->appDir, 'r5', late: false);
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    $s = readStatus($this->appDir);
+    expect($s['state'])->toBe('upload_in_progress')
+        ->and($s['detail'])->toBe('1 of 5 files missing, first: vendor/symfony/deep/pkg/late.php')
+        ->and($s['release'])->toBe('r5')->and($s['release_done'])->toBe('')
+        ->and($s['env_present'])->toBe('yes')->and($s['app_key_set'])->toBe('yes');
+
+    writeRelease($this->appDir, 'r5');
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    $s = readStatus($this->appDir);
+    expect($s['state'])->toBe('ok')
+        ->and($s['release_done'])->toBe('r5')
+        ->and($s['detail'])->toBe('release r5 done')
+        ->and($s['last_migrate'])->toMatch('/^\d{4}-/');
+});
+
+it('reports post_deploy_failed with the failing command name only', function () {
+    readyEnv($this);
+    writeRelease($this->appDir, 'r6');
+
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['FAIL_ON' => 'migrate']);
+
+    $s = readStatus($this->appDir);
+    expect($s['state'])->toBe('post_deploy_failed')
+        ->and($s['detail'])->toBe('artisan migrate --force failed (release r6)')
+        ->and(file_get_contents($this->appDir.'/deploy/hostinger/status.txt'))->not->toContain('boom');
+});
+
+it('never leaks env values into status.txt, status.log or cron.log, and status.log has only own lines', function () {
+    writeSeed($this->appDir, "APP_KEY=base64:seedkey\nDB_PASSWORD=FAKEPASS123\n");
+    writeRelease($this->appDir, 'r7');
+
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['FAIL_ON' => 'config:cache']);   // artisan output ("boom ...") lands in cron.log
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+
+    foreach (['status.txt', 'status.log'] as $f) {
+        $text = file_get_contents($this->appDir.'/deploy/hostinger/'.$f);
+        expect($text)->not->toContain('FAKEPASS123')->not->toContain('seedkey');
+    }
+    expect(cronLog($this->sharedDir))->not->toContain('FAKEPASS123')->not->toContain('seedkey');
+
+    $log = file_get_contents($this->appDir.'/deploy/hostinger/status.log');
+    expect($log)->toContain('installed shared/.env from seed')->not->toContain('boom')->not->toContain('    |');
+    foreach (array_filter(explode("\n", $log)) as $line) {
+        expect($line)->toMatch('/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ /');
+    }
+    expect(count(array_filter(explode("\n", $log))))->toBeLessThanOrEqual(40);
 });

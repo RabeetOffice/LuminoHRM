@@ -78,3 +78,13 @@ it('exempts exactly the iclock request lines from the https redirect (pattern ex
         expect(preg_match($pattern, $line))->toBe(0, "should be redirected: $line");
     }
 });
+
+it('denies the env seed and status files under deploy/', function () {
+    preg_match('/RewriteRule (\^\(\?:storage\|\S+\)) - \[F,L\]/', rootHtaccess(), $m);
+    $pattern = '#'.$m[1].'#';
+
+    foreach (['deploy/hostinger/env.seed', 'deploy/hostinger/status.txt', 'deploy/hostinger/status.log', 'deploy/hostinger/cron.sh'] as $path) {
+        expect(preg_match($pattern, $path))->toBe(1, "should be denied: $path");
+    }
+    expect(preg_match($pattern, 'build/assets/app.js'))->toBe(0);
+});

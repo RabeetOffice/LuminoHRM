@@ -49,3 +49,7 @@ yarn-error.log
 
 # Deploy staging directory
 /build/deploy/
+/deploy/hostinger/env.seed
+/deploy/hostinger/status.*
+/deploy/hostinger/release.txt
+/deploy/hostinger/release.manifest

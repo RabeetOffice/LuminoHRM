@@ -4,6 +4,9 @@
     Does NOT upload anything. See docs/deploy.md.
 
 .DESCRIPTION
+    -SeedEnvFile <path> stages that file as deploy\hostinger\env.seed (not in release.manifest);
+    cron.sh installs it as shared/.env and deletes it. See docs/deploy.md.
+
     1. refuses to run with uncommitted changes (unless -AllowDirty)
     2. runs the test suite (stops on failure)
     3. npm run build
@@ -15,7 +18,11 @@
 #>
 [CmdletBinding()]
 param(
-    [switch]$AllowDirty
+    [switch]$AllowDirty,
+
+    # Optional local env file (kept OUTSIDE the repo, or git-ignored) to install as shared/.env
+    # on the server via deploy/hostinger/env.seed. Contents are never printed.
+    [string]$SeedEnvFile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,6 +60,21 @@ if (-not $ComposerPhar) {
 }
 
 Set-Location $RepoRoot
+
+# --- 0. seed env file: validate before doing any work ----------------------
+$SeedPath = $null
+if ($SeedEnvFile) {
+    if (-not (Test-Path -LiteralPath $SeedEnvFile -PathType Leaf)) {
+        throw "Seed env file not found: $SeedEnvFile"
+    }
+    $SeedPath = (Resolve-Path -LiteralPath $SeedEnvFile).Path
+    if ($SeedPath.StartsWith($RepoRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        git check-ignore -q -- "$SeedPath"
+        if ($LASTEXITCODE -ne 0) {
+            throw 'The seed env file is inside the git working tree and not git-ignored. Keep it outside the repository.'
+        }
+    }
+}
 
 # Put PHP 8.4 first on PATH for this script only (npm scripts and composer scripts call bare "php").
 $env:PATH = "$PhpDir;$env:PATH"
@@ -139,6 +161,11 @@ foreach ($rel in @('public\hot', 'public\storage')) {
 # composer sometimes installs a package from source, leaving a .git directory in vendor: not needed at runtime
 Get-ChildItem -LiteralPath (Join-Path $Stage 'vendor') -Recurse -Force -Directory -Filter '.git' -ErrorAction SilentlyContinue |
     Sort-Object { $_.FullName.Length } -Descending | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+# env seed (optional), staged last so the cleanup above cannot remove it
+if ($SeedPath) {
+    Copy-Item -LiteralPath $SeedPath -Destination (Join-Path $Stage 'deploy\hostinger\env.seed') -Force
+    Write-Host 'Seed env file staged as deploy\hostinger\env.seed (contents not shown).' -ForegroundColor Yellow
+}
 # the uploader treats a package.json as a Node app: it must never be in the staging directory
 Get-ChildItem -LiteralPath $Stage -Recurse -Force -File -Filter 'package.json' |
     Where-Object { $_.FullName -notmatch '\\vendor\\' } | Remove-Item -Force
@@ -154,7 +181,7 @@ Write-Utf8NoBom (Join-Path $Stage 'deploy\hostinger\release.txt') ($releaseId + 
 
 # --- 7b. manifest: lets cron.sh tell a complete upload from a half-finished one ---
 # "release <id>" then the relative path (forward slashes, LF) of EVERY staged file.
-# Left out: the manifest and release.txt themselves, and what the uploader is known to
+# Left out: the manifest and release.txt themselves, env.seed and status files (cron.sh removes or rewrites them), and what the uploader is known to
 # skip or what is not needed (.env*, .git, node_modules, the storage skeleton, which
 # cron.sh recreates under ../shared).
 $manifestLines = New-Object System.Collections.ArrayList
@@ -165,6 +192,7 @@ $paths = Get-ChildItem -LiteralPath $Stage -Recurse -Force -File | ForEach-Objec
 }
 foreach ($rel in ($paths | Sort-Object)) {
     if ($rel -eq 'deploy/hostinger/release.txt' -or $rel -eq 'deploy/hostinger/release.manifest') { continue }
+    if ($rel -eq 'deploy/hostinger/env.seed' -or $rel -like 'deploy/hostinger/status.*') { continue }
     if ($rel -like 'storage/*') { continue }
     if ($rel -match '(^|/)(node_modules|\.git)/') { continue }
     if ($rel -match '(^|/)\.env[^/]*$') { continue }

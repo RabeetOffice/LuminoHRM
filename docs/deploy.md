@@ -106,18 +106,39 @@ to `shared/storage/logs/cron.log`, which is rotated at about 1 MB (one `.1` back
 2. Run `scripts\deploy.ps1` and upload `build\deploy\` as above.
 3. Within a minute `cron.sh` creates `shared/storage/...` and logs
    "waiting for shared/.env".
-4. Create `shared/.env` from `deploy/hostinger/env.production.example`:
-   copy it, replace `__DB_PASSWORD__` with the database password, leave
-   `APP_KEY=` empty, and set `HRM_DEVICE_SERIALS` when a machine serial is known.
-   The password is entered only on the server, never in git or in chat logs.
+4. Create the production env file (there is no way to write `shared/` directly, so it travels as a seed):
+   copy `deploy/hostinger/env.production.example` to a file OUTSIDE the repository (for example
+   `C:\Users\<you>\lumino-hrm-prod.env`), replace `__DB_PASSWORD__`, leave `APP_KEY=` empty, set
+   `HRM_DEVICE_SERIALS` when a machine serial is known, then deploy with
+   `scripts\deploy.ps1 -SeedEnvFile C:\Users\<you>\lumino-hrm-prod.env` and upload. The script copies it to
+   `deploy/hostinger/env.seed` in the staging directory (never printed, not in `release.manifest`, refused if
+   it sits inside the git tree without being git-ignored). On its next run `cron.sh` installs it as
+   `shared/.env` (mode 600, atomically), deletes the seed and logs `installed shared/.env from seed`. The
+   password is never in git. The seed is under `deploy/`, which `.htaccess` denies over HTTP; it is also
+   gone from the server within a minute of arriving.
 5. Within a minute `cron.sh` generates `APP_KEY` into `shared/.env`, runs the
    post-deploy step (migrations create the tables) and records the release.
 6. Check the deploy (below).
 
-Later changes to `shared/.env` (for example `HRM_DEVICE_SERIALS`) are picked up
-automatically within a minute: cron sees `.env` is newer than `release.done` and
-rebuilds the cached config.
+## Changing a production setting
 
+`shared/.env` can only be changed through the seed. Edit your local env file (outside the repo), run
+`scripts\deploy.ps1 -SeedEnvFile <that file>` and upload. `cron.sh` replaces `shared/.env`; if the seed's
+`APP_KEY` is empty the existing key is kept (a non-empty `APP_KEY` replaces it, which logs everyone out
+and invalidates encrypted data, so normally leave it empty). The config cache is rebuilt in the same run.
+A seed is only staged when `-SeedEnvFile` is passed, so routine deploys never touch `shared/.env`
+(note that a deploy replaces the document root, and with it any seed from an earlier upload).
+
+## Reading the server state
+
+`shared/` is outside the document root, so `cron.sh` publishes two plain-text files for the hosting
+file API (denied over HTTP, rewritten every minute, removed by the next deploy until cron runs again):
+
+- `deploy/hostinger/status.txt`: `time`, `release`, `release_done`, `state`
+  (`waiting_for_env`, `upload_in_progress`, `post_deploy_failed`, `ok`), `detail`, `env_present`,
+  `app_key_set`, `php`, `proc_open`, `last_migrate`. No secrets and no command output.
+- `deploy/hostinger/status.log`: the last 40 lines `cron.sh` wrote itself (raw artisan output is not copied;
+  for that, `shared/storage/logs/cron.log` is the full log).
 ## Check that a deploy worked
 
 - `https://hrm.luminocrm.online/login` shows the login page.
