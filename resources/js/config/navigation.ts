@@ -1,0 +1,382 @@
+import type { InertiaLinkProps } from '@inertiajs/react';
+import {
+    Building2,
+    CalendarCheck,
+    CalendarClock,
+    CalendarDays,
+    CalendarRange,
+    Clock,
+    DoorOpen,
+    FileText,
+    LayoutGrid,
+    Laptop,
+    Network,
+    Package,
+    ScrollText,
+    Settings,
+    ShieldCheck,
+    Star,
+    TrendingUp,
+    UserCircle,
+    Users,
+    Wallet,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import { toUrl } from '@/lib/utils';
+import { dashboard } from '@/routes';
+
+/**
+ * One sidebar entry. `permission` lists the permission names that unlock it:
+ * a user holding any one of them sees the entry. An entry without a
+ * permission is visible to every signed-in user.
+ *
+ * `ready` defaults to true. Entries whose page does not exist yet carry their
+ * final URL with `ready: false`; a later phase flips the flag when the page
+ * ships. Children inherit the parent permission and may add their own.
+ */
+export type NavItem = {
+    title: string;
+    href?: NonNullable<InertiaLinkProps['href']>;
+    icon?: LucideIcon;
+    permission?: string | string[];
+    children?: NavItem[];
+    ready?: boolean;
+};
+
+export type NavGroup = { label: string; items: NavItem[] };
+
+export type FilterOptions = {
+    /** Keep entries flagged `ready: false` (used to test the full structure). */
+    includeUnready?: boolean;
+};
+
+const unready = { ready: false } as const;
+
+export const navigation: NavGroup[] = [
+    {
+        label: 'Overview',
+        items: [
+            { title: 'Dashboard', href: dashboard(), icon: LayoutGrid },
+            {
+                title: 'Calendar',
+                href: '/calendar',
+                icon: CalendarDays,
+                ...unready,
+            },
+        ],
+    },
+    {
+        label: 'Workforce',
+        items: [
+            {
+                title: 'Employees',
+                href: '/employees',
+                icon: Users,
+                permission: ['employees.view-all', 'employees.view-team'],
+                ...unready,
+            },
+            {
+                title: 'Organization Chart',
+                href: '/organization-chart',
+                icon: Network,
+                permission: ['employees.view-all', 'employees.view-team'],
+                ...unready,
+            },
+            {
+                title: 'Departments & Designations',
+                href: '/organization',
+                icon: Building2,
+                permission: 'org.manage',
+                ...unready,
+            },
+            {
+                title: 'Attendance',
+                icon: Clock,
+                permission: ['attendance.view-all', 'attendance.view-team'],
+                children: [
+                    { title: 'Daily', href: '/attendance/daily', ...unready },
+                    {
+                        title: 'Monthly',
+                        href: '/attendance/monthly',
+                        ...unready,
+                    },
+                    {
+                        title: 'Correction Requests',
+                        href: '/attendance/corrections',
+                        ...unready,
+                    },
+                    {
+                        title: 'Shifts',
+                        href: '/attendance/shifts',
+                        ...unready,
+                    },
+                    {
+                        title: 'Raw Punches',
+                        href: '/attendance/punches',
+                        ...unready,
+                    },
+                ],
+            },
+            {
+                title: 'Leave',
+                icon: CalendarCheck,
+                permission: ['leave.approve-all', 'leave.approve-team'],
+                children: [
+                    { title: 'Requests', href: '/leave/requests', ...unready },
+                    { title: 'Balances', href: '/leave/balances', ...unready },
+                    { title: 'Leave Types', href: '/leave/types', ...unready },
+                    { title: 'Holidays', href: '/leave/holidays', ...unready },
+                ],
+            },
+        ],
+    },
+    {
+        label: 'Growth',
+        items: [
+            {
+                title: 'Performance',
+                icon: TrendingUp,
+                permission: ['performance.manage', 'performance.review-team'],
+                children: [
+                    { title: 'KPIs', href: '/performance/kpis', ...unready },
+                    {
+                        title: 'Reviews',
+                        href: '/performance/reviews',
+                        ...unready,
+                    },
+                ],
+            },
+        ],
+    },
+    {
+        label: 'Finance & Assets',
+        items: [
+            {
+                title: 'Payroll',
+                icon: Wallet,
+                permission: 'payroll.view',
+                children: [
+                    {
+                        title: 'Salary Profiles',
+                        href: '/payroll/salary-profiles',
+                        ...unready,
+                    },
+                    {
+                        title: 'Payroll Runs',
+                        href: '/payroll/runs',
+                        ...unready,
+                    },
+                    {
+                        title: 'Payslips',
+                        href: '/payroll/payslips',
+                        ...unready,
+                    },
+                    {
+                        title: 'Loans & Advances',
+                        href: '/payroll/loans',
+                        ...unready,
+                    },
+                ],
+            },
+            {
+                title: 'Assets',
+                icon: Laptop,
+                permission: ['assets.assign', 'assets.view-team'],
+                children: [
+                    { title: 'All Assets', href: '/assets', ...unready },
+                    {
+                        title: 'Assignments',
+                        href: '/assets/assignments',
+                        ...unready,
+                    },
+                ],
+            },
+        ],
+    },
+    {
+        label: 'Exit',
+        items: [
+            {
+                title: 'Resignations & Clearance',
+                href: '/exit',
+                icon: DoorOpen,
+                permission: ['exit.clearance', 'exit.approve-team'],
+                ...unready,
+            },
+        ],
+    },
+    {
+        label: 'System',
+        items: [
+            {
+                title: 'Settings',
+                href: '/hrm-settings',
+                icon: Settings,
+                permission: ['settings.manage', 'settings.attendance-leave'],
+                ...unready,
+            },
+            {
+                title: 'Users & Roles',
+                href: '/users',
+                icon: ShieldCheck,
+                permission: 'users.manage',
+                ...unready,
+            },
+            {
+                title: 'Audit Log',
+                href: '/audit-log',
+                icon: ScrollText,
+                permission: 'audit.view',
+                ...unready,
+            },
+        ],
+    },
+    {
+        label: 'My Space',
+        items: [
+            {
+                title: 'My Profile',
+                href: '/my/profile',
+                icon: UserCircle,
+                ...unready,
+            },
+            {
+                title: 'My Attendance',
+                href: '/my/attendance',
+                icon: CalendarClock,
+                ...unready,
+            },
+            {
+                title: 'My Leaves',
+                href: '/my/leaves',
+                icon: CalendarRange,
+                ...unready,
+            },
+            {
+                title: 'My Payslips',
+                href: '/my/payslips',
+                icon: FileText,
+                ...unready,
+            },
+            {
+                title: 'My Assets',
+                href: '/my/assets',
+                icon: Package,
+                ...unready,
+            },
+            {
+                title: 'My Reviews',
+                href: '/my/reviews',
+                icon: Star,
+                ...unready,
+            },
+        ],
+    },
+];
+
+const permitted = (
+    permission: NavItem['permission'],
+    held: Set<string>,
+): boolean => {
+    if (permission === undefined) {
+        return true;
+    }
+
+    const needed = Array.isArray(permission) ? permission : [permission];
+
+    return needed.length === 0 || needed.some((p) => held.has(p));
+};
+
+function filterItems(
+    items: NavItem[],
+    held: Set<string>,
+    needle: string,
+    includeUnready: boolean,
+    parentMatched: boolean,
+): NavItem[] {
+    const result: NavItem[] = [];
+
+    for (const item of items) {
+        if (!includeUnready && item.ready === false) {
+            continue;
+        }
+
+        if (!permitted(item.permission, held)) {
+            continue;
+        }
+
+        const matches =
+            needle === '' || item.title.toLowerCase().includes(needle);
+
+        if (!item.children) {
+            if (matches || parentMatched) {
+                result.push(item);
+            }
+
+            continue;
+        }
+
+        // A matching parent keeps all of its visible children; otherwise only
+        // the matching ones survive, and a parent with none is dropped.
+        const children = filterItems(
+            item.children,
+            held,
+            needle,
+            includeUnready,
+            parentMatched || matches,
+        );
+
+        if (children.length > 0) {
+            result.push({ ...item, children });
+        }
+    }
+
+    return result;
+}
+
+/**
+ * Drops entries flagged `ready: false` (unless `includeUnready`), then entries
+ * the user lacks permission for, then entries not matching `query`. Parents
+ * left without children and groups left without items are dropped.
+ */
+export function filterNavigation(
+    groups: NavGroup[],
+    permissions: string[],
+    query = '',
+    options: FilterOptions = {},
+): NavGroup[] {
+    const held = new Set(permissions);
+    const needle = query.trim().toLowerCase();
+    const includeUnready = options.includeUnready ?? false;
+
+    return groups
+        .map((group) => ({
+            ...group,
+            items: filterItems(
+                group.items,
+                held,
+                needle,
+                includeUnready,
+                false,
+            ),
+        }))
+        .filter((group) => group.items.length > 0);
+}
+
+/**
+ * The href of the entry that owns `path`: the longest entry URL equal to the
+ * path or a parent segment of it (so /assets/assignments beats /assets, and
+ * /employees/5 lights up Employees). Considers every entry, ready or not.
+ */
+export function activeHref(
+    path: string,
+    groups: NavGroup[] = navigation,
+): string | undefined {
+    const hrefs = groups
+        .flatMap((g) => g.items)
+        .flatMap((i) => [i, ...(i.children ?? [])])
+        .flatMap((i) => (i.href === undefined ? [] : [toUrl(i.href)]))
+        .filter((h) => path === h || path.startsWith(h + '/'));
+
+    return hrefs.sort((a, b) => b.length - a.length)[0];
+}

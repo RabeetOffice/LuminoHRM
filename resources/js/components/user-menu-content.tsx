@@ -1,5 +1,5 @@
 import { Link, router } from '@inertiajs/react';
-import { LogOut, Settings } from 'lucide-react';
+import { LogOut, Palette, ShieldCheck, User as UserIcon } from 'lucide-react';
 import {
     DropdownMenuGroup,
     DropdownMenuItem,
@@ -9,7 +9,9 @@ import {
 import { UserInfo } from '@/components/user-info';
 import { useMobileNavigation } from '@/hooks/use-mobile-navigation';
 import { logout } from '@/routes';
+import { edit as appearance } from '@/routes/appearance';
 import { edit } from '@/routes/profile';
+import { edit as security } from '@/routes/security';
 import type { User } from '@/types';
 
 type Props = {
@@ -40,8 +42,30 @@ export function UserMenuContent({ user }: Props) {
                         prefetch
                         onClick={cleanup}
                     >
-                        <Settings className="mr-2" />
-                        Settings
+                        <UserIcon className="mr-2" />
+                        Profile
+                    </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                    <Link
+                        className="block w-full cursor-pointer"
+                        href={security()}
+                        prefetch
+                        onClick={cleanup}
+                    >
+                        <ShieldCheck className="mr-2" />
+                        Security
+                    </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                    <Link
+                        className="block w-full cursor-pointer"
+                        href={appearance()}
+                        prefetch
+                        onClick={cleanup}
+                    >
+                        <Palette className="mr-2" />
+                        Appearance
                     </Link>
                 </DropdownMenuItem>
             </DropdownMenuGroup>
@@ -55,7 +79,7 @@ export function UserMenuContent({ user }: Props) {
                     data-test="logout-button"
                 >
                     <LogOut className="mr-2" />
-                    Log out
+                    Sign out
                 </Link>
             </DropdownMenuItem>
         </>
