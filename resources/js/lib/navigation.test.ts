@@ -72,10 +72,22 @@ test('an item with several permissions shows when the user has any one', () => {
 });
 
 describe('ready flag', () => {
-    test('only Dashboard is rendered by default', () => {
+    test('only pages that exist are rendered by default', () => {
         const r = filterNavigation(navigation, allPermissions);
-        expect(r.map((g) => g.label)).toEqual(['Overview']);
+        expect(r.map((g) => g.label)).toEqual(['Overview', 'Workforce']);
         expect(r[0].items.map((i) => i.title)).toEqual(['Dashboard']);
+        expect(r[1].items.map((i) => i.title)).toEqual([
+            'Departments & Designations',
+        ]);
+    });
+
+    test('Departments & Designations is for admin and hr only', () => {
+        const titles = (perms: string[]) =>
+            filterNavigation(navigation, perms).flatMap((g) =>
+                g.items.map((i) => i.title),
+            );
+        expect(titles(['org.manage'])).toContain('Departments & Designations');
+        expect(titles([])).not.toContain('Departments & Designations');
     });
 
     test('unready items are hidden even when a search matches them', () => {

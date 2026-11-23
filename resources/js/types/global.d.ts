@@ -12,6 +12,7 @@ declare module '@inertiajs/core' {
             name: string;
             app: { timezone: string };
             auth: Auth;
+            flash: { success: string | null; error: string | null };
             sidebarOpen: boolean;
             [key: string]: unknown;
         };

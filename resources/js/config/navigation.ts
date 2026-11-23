@@ -24,6 +24,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { toUrl } from '@/lib/utils';
 import { dashboard } from '@/routes';
+import { index as organizationIndex } from '@/routes/organization';
 
 /**
  * One sidebar entry. `permission` lists the permission names that unlock it:
@@ -84,10 +85,9 @@ export const navigation: NavGroup[] = [
             },
             {
                 title: 'Departments & Designations',
-                href: '/organization',
+                href: organizationIndex(),
                 icon: Building2,
                 permission: 'org.manage',
-                ...unready,
             },
             {
                 title: 'Attendance',
