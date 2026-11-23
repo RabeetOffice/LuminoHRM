@@ -24,6 +24,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { toUrl } from '@/lib/utils';
 import { dashboard } from '@/routes';
+import { index as hrmSettingsIndex } from '@/routes/hrm-settings';
 import { index as organizationIndex } from '@/routes/organization';
 
 /**
@@ -210,10 +211,9 @@ export const navigation: NavGroup[] = [
         items: [
             {
                 title: 'Settings',
-                href: '/hrm-settings',
+                href: hrmSettingsIndex(),
                 icon: Settings,
                 permission: ['settings.manage', 'settings.attendance-leave'],
-                ...unready,
             },
             {
                 title: 'Users & Roles',

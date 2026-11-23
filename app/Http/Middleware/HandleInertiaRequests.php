@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Support\Branding;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 
@@ -38,8 +39,13 @@ class HandleInertiaRequests extends Middleware
         return [
             ...parent::share($request),
             'name' => config('app.name'),
-            'app' => [
-                'timezone' => config('app.timezone'),
+            // Company settings the shell needs. Display only: PHP's and the app's timezone are not changed by it.
+            'app' => fn () => [
+                'timezone' => settings('company.timezone'),
+                'name' => settings('company.name'),
+                'accent' => Branding::accent(),
+                'logoUrl' => Branding::url(settings('branding.logo')),
+                'logoDarkUrl' => Branding::url(settings('branding.logo_dark')),
             ],
             'auth' => [
                 'user' => $request->user(),

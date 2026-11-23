@@ -50,4 +50,80 @@ return [
     // Every role is created even if it holds no permission (employee).
     'roles' => ['admin', 'hr', 'manager', 'employee'],
 
+    /*
+    | Settings groups: group => permissions of which a user needs ANY ONE to open and save it.
+    | The order is the order of the left-hand list on the Settings screen. To add a group
+    | (for example "zkteco" in Phase 3): add it here, add its keys under 'defaults', add a
+    | FormRequest in App\Http\Requests\HrmSettings and register it in HrmSettingsController::REQUESTS,
+    | and add a panel in resources/js/components/settings. No other code changes.
+    */
+    'settings_groups' => [
+        'company' => ['settings.manage'],
+        'branding' => ['settings.manage'],
+        'attendance' => ['settings.manage', 'settings.attendance-leave'],
+        'leave' => ['settings.manage', 'settings.attendance-leave'],
+        'payroll' => ['settings.manage'],
+        'email' => ['settings.manage'],
+        'letters' => ['settings.manage'],
+    ],
+
+    // Date formats offered in Settings > Company (PHP date() syntax). The stored value must be one of these.
+    'date_formats' => ['d M Y', 'd/m/Y', 'm/d/Y', 'Y-m-d', 'd-m-Y', 'M d, Y'],
+
+    /*
+    | Default for every setting, and the list of keys a group may store: Settings::set() ignores
+    | anything not declared here. A default's PHP type is the stored type (15 stays an int).
+    | Read with settings('group.key'). A default null means "nothing saved yet".
+    */
+    'defaults' => [
+        'company' => [
+            'name' => 'Lumino Digital',
+            'address' => '',
+            'currency' => 'PKR',
+            'timezone' => 'Asia/Karachi',
+            'date_format' => 'd M Y',
+        ],
+        'branding' => [
+            'accent' => '#10b77f',
+            // Paths on the private disk, written by the Branding settings only.
+            'logo' => null,
+            'logo_dark' => null,
+        ],
+        'attendance' => [
+            'shift_start' => '09:00',
+            'shift_end' => '18:00',
+            'grace_minutes' => 15,
+            'weekly_offs' => ['saturday', 'sunday'],
+            'late_rule_count' => 3,
+            'half_day_hours' => 4,
+            'overtime_enabled' => false,
+            'overtime_min_minutes' => 30,
+        ],
+        'leave' => [
+            'hr_step_enabled' => true,
+            'carry_forward_cap' => 0,
+            'prorate_new_joiners' => true,
+        ],
+        'payroll' => [
+            'day_pay_basis' => 'calendar_days', // calendar_days | thirty | working_days
+            'default_tax_mode' => 'none',
+            'leave_encashment' => false,
+            'notice_period_days' => 30,
+            'payslip_footer' => '',
+        ],
+        'email' => [
+            // An empty host means "use the mailer from .env".
+            'host' => '',
+            'port' => 587,
+            'username' => '',
+            'password' => '', // encrypted with Crypt, never sent to the browser
+            'encryption' => 'tls', // tls | ssl | none
+            'from_address' => '',
+            'from_name' => '',
+        ],
+        'letters' => [
+            'experience_template' => "To whom it may concern,\n\nThis is to certify that {employee_name} worked with {company_name} as {designation} in the {department} department from {joining_date} to {last_working_day}.\n\nDuring this time we found the employee diligent and dependable. We wish them every success.\n\nSincerely,\nHuman Resources\n{company_name}",
+        ],
+    ],
+
 ];

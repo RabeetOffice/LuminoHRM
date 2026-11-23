@@ -2,6 +2,8 @@
 
 namespace App\Providers;
 
+use App\Support\MailSettings;
+use App\Support\SettingsStore;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
@@ -15,7 +17,12 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // One read of the settings table per request or job; the container drops it between units of work.
+        $this->app->scoped(SettingsStore::class);
+
+        // Email settings are applied the first time a mailer is needed, not at boot:
+        // pages that send no mail run no settings query, and artisan commands never touch the table.
+        $this->app->resolving('mail.manager', fn () => MailSettings::apply());
     }
 
     /**

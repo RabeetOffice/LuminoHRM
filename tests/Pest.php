@@ -28,3 +28,42 @@ function userWithRole(string $role): App\Models\User
 
     return $user;
 }
+
+/**
+ * A complete valid payload for PUT /hrm-settings/attendance, merged with $overrides.
+ *
+ * @param  array<string, mixed>  $overrides
+ * @return array<string, mixed>
+ */
+function validAttendance(array $overrides = []): array
+{
+    return array_merge([
+        'shift_start' => '09:00',
+        'shift_end' => '18:00',
+        'grace_minutes' => 15,
+        'weekly_offs' => ['saturday', 'sunday'],
+        'late_rule_count' => 3,
+        'half_day_hours' => 4,
+        'overtime_enabled' => false,
+        'overtime_min_minutes' => 30,
+    ], $overrides);
+}
+
+/**
+ * A complete valid payload for PUT /hrm-settings/email, merged with $overrides.
+ *
+ * @param  array<string, mixed>  $overrides
+ * @return array<string, mixed>
+ */
+function validEmail(array $overrides = []): array
+{
+    return array_merge([
+        'host' => 'smtp.example.com',
+        'port' => 587,
+        'username' => 'mailer',
+        'password' => '',
+        'encryption' => 'tls',
+        'from_address' => 'hr@example.com',
+        'from_name' => 'Lumino HR',
+    ], $overrides);
+}

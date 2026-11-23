@@ -10,7 +10,13 @@ declare module '@inertiajs/core' {
     export interface InertiaConfig {
         sharedPageProps: {
             name: string;
-            app: { timezone: string };
+            app: {
+                timezone: string;
+                name: string;
+                accent: string;
+                logoUrl: string | null;
+                logoDarkUrl: string | null;
+            };
             auth: Auth;
             flash: { success: string | null; error: string | null };
             sidebarOpen: boolean;
