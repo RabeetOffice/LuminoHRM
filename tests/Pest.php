@@ -15,3 +15,16 @@ use Tests\TestCase;
 
 pest()->extend(TestCase::class)->use(RefreshDatabase::class)->in('Feature');
 pest()->extend(TestCase::class)->in('Unit');
+
+/**
+ * Seeds roles and permissions (idempotent) and returns an active, verified user holding $role.
+ */
+function userWithRole(string $role): App\Models\User
+{
+    test()->seed(Database\Seeders\RolePermissionSeeder::class);
+
+    $user = App\Models\User::factory()->create();
+    $user->assignRole($role);
+
+    return $user;
+}

@@ -4,14 +4,22 @@ export type User = {
     email: string;
     avatar?: string;
     email_verified_at: string | null;
+    is_active?: boolean;
+    last_login_at?: string | null;
     two_factor_enabled?: boolean;
     created_at: string;
     updated_at: string;
     [key: string]: unknown;
 };
 
+export type Role = 'admin' | 'hr' | 'manager' | 'employee';
+
 export type Auth = {
     user: User;
+    /** One of the four role names, or '' when the user has no role. */
+    role: string;
+    /** Permission names the user holds, e.g. 'org.manage'. */
+    permissions: string[];
 };
 
 export type Passkey = {

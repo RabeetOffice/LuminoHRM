@@ -4,12 +4,18 @@ namespace App\Providers;
 
 
 use App\Actions\Fortify\ResetUserPassword;
+use App\Http\Middleware\EnsureUserIsActive;
+use App\Models\User;
+use Illuminate\Auth\Events\Login;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rules\Password;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Laravel\Fortify\Features;
 use Laravel\Fortify\Fortify;
@@ -32,6 +38,37 @@ class FortifyServiceProvider extends ServiceProvider
         $this->configureActions();
         $this->configureViews();
         $this->configureRateLimiting();
+        $this->configureAuthentication();
+    }
+
+    /**
+     * Refuse inactive users at password sign-in (also covers the two-factor
+     * hand-off, which uses this same callback) and record the last sign-in.
+     * Passkey sign-ins do not use this callback; EnsureUserIsActive covers them.
+     */
+    private function configureAuthentication(): void
+    {
+        Fortify::authenticateUsing(function (Request $request) {
+            $user = User::where(Fortify::username(), $request->input(Fortify::username()))->first();
+
+            if (! $user || ! Hash::check((string) $request->input('password'), $user->password)) {
+                return null;
+            }
+
+            if (! $user->is_active) {
+                throw ValidationException::withMessages([
+                    Fortify::username() => EnsureUserIsActive::MESSAGE,
+                ]);
+            }
+
+            return $user;
+        });
+
+        Event::listen(Login::class, function (Login $event) {
+            if ($event->user instanceof User && $event->user->is_active) {
+                $event->user->forceFill(['last_login_at' => now()])->saveQuietly();
+            }
+        });
     }
 
     /**
