@@ -26,6 +26,7 @@ import { toUrl } from '@/lib/utils';
 import { dashboard } from '@/routes';
 import { index as hrmSettingsIndex } from '@/routes/hrm-settings';
 import { index as organizationIndex } from '@/routes/organization';
+import { index as usersIndex } from '@/routes/users';
 
 /**
  * One sidebar entry. `permission` lists the permission names that unlock it:
@@ -217,10 +218,9 @@ export const navigation: NavGroup[] = [
             },
             {
                 title: 'Users & Roles',
-                href: '/users',
+                href: usersIndex(),
                 icon: ShieldCheck,
                 permission: 'users.manage',
-                ...unready,
             },
             {
                 title: 'Audit Log',

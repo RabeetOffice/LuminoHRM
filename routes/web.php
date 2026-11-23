@@ -4,6 +4,7 @@ use App\Http\Controllers\BrandingMediaController;
 use App\Http\Controllers\DepartmentController;
 use App\Http\Controllers\DesignationController;
 use App\Http\Controllers\Settings\HrmSettingsController;
+use App\Http\Controllers\UserController;
 use App\Support\Branding;
 use Illuminate\Support\Facades\Route;
 
@@ -24,6 +25,15 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/', [DepartmentController::class, 'index'])->name('organization.index');
         Route::resource('departments', DepartmentController::class)->only(['store', 'update', 'destroy']);
         Route::resource('designations', DesignationController::class)->only(['store', 'update', 'destroy']);
+    });
+
+    // Users and roles. No delete route: accounts are disabled, never removed.
+    Route::middleware('can:users.manage')->prefix('users')->name('users.')->group(function () {
+        Route::get('/', [UserController::class, 'index'])->name('index');
+        Route::post('/', [UserController::class, 'store'])->name('store');
+        Route::put('{user}', [UserController::class, 'update'])->name('update');
+        Route::patch('{user}/active', [UserController::class, 'toggle'])->name('toggle');
+        Route::post('{user}/send-reset', [UserController::class, 'sendReset'])->name('send-reset');
     });
 
     // Settings. Per-group authorisation lives in the group's FormRequest and the controller.

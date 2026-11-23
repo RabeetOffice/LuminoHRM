@@ -83,7 +83,10 @@ describe('ready flag', () => {
         expect(r[1].items.map((i) => i.title)).toEqual([
             'Departments & Designations',
         ]);
-        expect(r[2].items.map((i) => i.title)).toEqual(['Settings']);
+        expect(r[2].items.map((i) => i.title)).toEqual([
+            'Settings',
+            'Users & Roles',
+        ]);
     });
 
     test('Settings is for admin and hr (either settings permission)', () => {
@@ -95,6 +98,18 @@ describe('ready flag', () => {
         expect(titles(['settings.attendance-leave'])).toContain('Settings');
         expect(titles(['org.manage'])).not.toContain('Settings');
         expect(titles([])).not.toContain('Settings');
+    });
+
+    test('Users & Roles is for admin only (users.manage)', () => {
+        const titles = (perms: string[]) =>
+            filterNavigation(navigation, perms).flatMap((g) =>
+                g.items.map((i) => i.title),
+            );
+        expect(titles(['users.manage'])).toContain('Users & Roles');
+        expect(titles(['settings.manage', 'org.manage'])).not.toContain(
+            'Users & Roles',
+        );
+        expect(titles([])).not.toContain('Users & Roles');
     });
 
     test('Departments & Designations is for admin and hr only', () => {
