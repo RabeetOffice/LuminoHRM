@@ -468,7 +468,7 @@ None of these block phases 0 to 2. Each has a default the build will use until t
 | 11 | Import BioTime history? | No |
 | 12 | Who are the first Admin and HR users? | One Admin account created at install |
 | 13 | Pay cycle: is salary for a calendar month, paid after the month ends? Or a cutoff cycle (such as 26th to 25th), or paid before month end? | Calendar month, paid in the first days of the next month. **Must be confirmed before phase 5.** |
-| 14 | Is BioTime used today for attendance or payroll, so the machine must stay on it until the HRM's attendance is ready? | Yes; switch for good at phase 3. **Must be confirmed before phase 0.** |
+| 14 | Is BioTime used today for attendance or payroll, so the machine must stay on it until the HRM's attendance is ready? | **Answered 23 Nov 2026: yes, BioTime is in use.** The machine stays on BioTime, apart from the short phase 0 test, and switches for good at phase 3. |
 
 ## 15. Left to the builder
 
