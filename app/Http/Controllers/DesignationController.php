@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\DesignationRequest;
 use App\Models\Designation;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
 
@@ -39,7 +40,12 @@ class DesignationController extends Controller
             return back()->with('error', $reason);
         }
 
-        $designation->delete();
+        try {
+            $designation->delete();
+        } catch (QueryException) {
+            // A foreign key (employees, from Phase 2) still references this designation.
+            return back()->with('error', 'This designation is still in use.');
+        }
 
         return back()->with('success', 'Designation deleted.');
     }

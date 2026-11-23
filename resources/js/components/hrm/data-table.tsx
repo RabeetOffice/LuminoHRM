@@ -68,8 +68,11 @@ type Props<T> = {
     search?: SearchConfig;
     /** Rendered next to the search box: filter dropdowns, view toggles. */
     toolbar?: ReactNode;
-    /** Rendered above the toolbar inside the card, e.g. <StatusTabs>. */
-    header?: ReactNode;
+    /**
+     * Draw the card border, radius and shadow (default). Pass false when the
+     * table sits inside a card you already draw, e.g. under <StatusTabs>.
+     */
+    bordered?: boolean;
     /** Shown when there are no rows. */
     emptyText: string;
     /** Accessible name for the table. */
@@ -95,7 +98,7 @@ export function DataTable<T>({
     perPageParam = 'per_page',
     search,
     toolbar,
-    header,
+    bordered = true,
     emptyText,
     label,
     className,
@@ -159,12 +162,11 @@ export function DataTable<T>({
     return (
         <div
             className={cn(
-                'overflow-hidden rounded-xl border bg-card shadow-xs',
+                'overflow-hidden bg-card',
+                bordered && 'rounded-xl border shadow-xs',
                 className,
             )}
         >
-            {header}
-
             {hasToolbar && (
                 <div className="flex flex-col gap-3 border-b p-3 sm:flex-row sm:items-center sm:p-4">
                     {search && (

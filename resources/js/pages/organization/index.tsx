@@ -11,6 +11,7 @@ import type {
 } from '@/components/hrm/data-table';
 import { PageHeader } from '@/components/hrm/page-header';
 import { StatusTabs } from '@/components/hrm/status-tabs';
+import { statusPanelId, statusTabId } from '@/lib/tabs';
 import { DepartmentDialog } from '@/components/organization/department-dialog';
 import type { DepartmentRow } from '@/components/organization/department-dialog';
 import { DesignationDialog } from '@/components/organization/designation-dialog';
@@ -56,7 +57,7 @@ type Deleting =
     | null;
 
 const ALL_DEPARTMENTS = 'all';
-const PANEL_ID = 'organization-panel';
+const ID_PREFIX = 'organization';
 
 const dateFormat = new Intl.DateTimeFormat('en-GB', {
     day: 'numeric',
@@ -233,7 +234,7 @@ export default function Organization({
     const tabs = (
         <StatusTabs
             label="Organization sections"
-            panelId={PANEL_ID}
+            idPrefix={ID_PREFIX}
             value={tab}
             onChange={switchTab}
             tabs={[
@@ -283,80 +284,87 @@ export default function Organization({
                     }
                 />
 
-                <div id={PANEL_ID} role="tabpanel">
-                    {tab === 'departments' ? (
-                        <DataTable
-                            key="departments"
-                            label="Departments"
-                            header={tabs}
-                            columns={departmentColumns}
-                            rows={departments.data}
-                            rowKey={(row) => row.id}
-                            pagination={departments}
-                            pageParam="dept_page"
-                            search={{
-                                value: filters.search,
-                                placeholder: 'Search departments',
-                                label: 'Search departments',
-                            }}
-                            emptyText={
-                                searching
-                                    ? 'No departments match your search.'
-                                    : 'No departments yet. Add the first one to get started.'
-                            }
-                        />
-                    ) : (
-                        <DataTable
-                            key="designations"
-                            label="Designations"
-                            header={tabs}
-                            columns={designationColumns}
-                            rows={designations.data}
-                            rowKey={(row) => row.id}
-                            pagination={designations}
-                            pageParam="desig_page"
-                            search={{
-                                value: filters.search,
-                                placeholder: 'Search designations',
-                                label: 'Search designations',
-                            }}
-                            toolbar={
-                                <Select
-                                    value={
-                                        filters.department_id === null
-                                            ? ALL_DEPARTMENTS
-                                            : String(filters.department_id)
-                                    }
-                                    onValueChange={filterByDepartment}
-                                >
-                                    <SelectTrigger
-                                        className="w-full sm:w-52"
-                                        aria-label="Filter by department"
+                <div className="overflow-hidden rounded-xl border bg-card shadow-xs">
+                    {tabs}
+                    <div
+                        id={statusPanelId(ID_PREFIX)}
+                        role="tabpanel"
+                        aria-labelledby={statusTabId(ID_PREFIX, tab)}
+                    >
+                        {tab === 'departments' ? (
+                            <DataTable
+                                key="departments"
+                                label="Departments"
+                                bordered={false}
+                                columns={departmentColumns}
+                                rows={departments.data}
+                                rowKey={(row) => row.id}
+                                pagination={departments}
+                                pageParam="dept_page"
+                                search={{
+                                    value: filters.search,
+                                    placeholder: 'Search departments',
+                                    label: 'Search departments',
+                                }}
+                                emptyText={
+                                    searching
+                                        ? 'No departments match your search.'
+                                        : 'No departments yet. Add the first one to get started.'
+                                }
+                            />
+                        ) : (
+                            <DataTable
+                                key="designations"
+                                label="Designations"
+                                bordered={false}
+                                columns={designationColumns}
+                                rows={designations.data}
+                                rowKey={(row) => row.id}
+                                pagination={designations}
+                                pageParam="desig_page"
+                                search={{
+                                    value: filters.search,
+                                    placeholder: 'Search designations',
+                                    label: 'Search designations',
+                                }}
+                                toolbar={
+                                    <Select
+                                        value={
+                                            filters.department_id === null
+                                                ? ALL_DEPARTMENTS
+                                                : String(filters.department_id)
+                                        }
+                                        onValueChange={filterByDepartment}
                                     >
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value={ALL_DEPARTMENTS}>
-                                            All departments
-                                        </SelectItem>
-                                        {departmentOptions.map((option) => (
-                                            <SelectItem
-                                                key={option.id}
-                                                value={String(option.id)}
-                                            >
-                                                {option.name}
+                                        <SelectTrigger
+                                            className="w-full sm:w-52"
+                                            aria-label="Filter by department"
+                                        >
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value={ALL_DEPARTMENTS}>
+                                                All departments
                                             </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            }
-                            emptyText={
-                                searching || filters.department_id !== null
-                                    ? 'No designations match your filters.'
-                                    : 'No designations yet. Add a department first, then its job titles.'
-                            }
-                        />
-                    )}
+                                            {departmentOptions.map((option) => (
+                                                <SelectItem
+                                                    key={option.id}
+                                                    value={String(option.id)}
+                                                >
+                                                    {option.name}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                }
+                                emptyText={
+                                    searching || filters.department_id !== null
+                                        ? 'No designations match your filters.'
+                                        : 'No designations yet. Add a department first, then its job titles.'
+                                }
+                            />
+                        )}
+                    </div>
                 </div>
             </div>
 

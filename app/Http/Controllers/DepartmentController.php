@@ -6,6 +6,7 @@ use App\Http\Requests\DepartmentRequest;
 use App\Models\Department;
 use App\Models\Designation;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -22,7 +23,10 @@ class DepartmentController extends Controller
 {
     public const PER_PAGE_OPTIONS = [10, 25, 50];
 
-    public function index(Request $request): Response
+    /** @var array<string, int> page parameter => real last page, for pages requested past the end */
+    private array $clamped = [];
+
+    public function index(Request $request): Response|RedirectResponse
     {
         $tab = $request->query('tab') === 'designations' ? 'designations' : 'departments';
         $perPage = $this->perPage($request);
@@ -45,26 +49,37 @@ class DepartmentController extends Controller
             ->orderBy('name')
             ->orderBy('id');
 
+        $departmentsPage = $this->page(
+            $departments, $perPage, 'dept_page', $request,
+            fn (Department $d) => [
+                'id' => $d->id,
+                'name' => $d->name,
+                'designations_count' => $d->designations_count,
+                'created_at' => $d->created_at?->toIso8601String(),
+            ],
+        );
+        $designationsPage = $this->page(
+            $designations, $perPage, 'desig_page', $request,
+            fn (Designation $g) => [
+                'id' => $g->id,
+                'name' => $g->name,
+                'department_id' => $g->department_id,
+                'department_name' => $g->department->name,
+                'created_at' => $g->created_at?->toIso8601String(),
+            ],
+        );
+
+        // A page past the end (for example after deleting the last row of the
+        // last page): send the browser to the real page so the address is right.
+        if ($this->clamped !== []) {
+            return redirect()->to($request->fullUrlWithQuery(
+                array_map(fn (int $page) => $page === 1 ? null : $page, $this->clamped),
+            ));
+        }
+
         return Inertia::render('organization/index', [
-            'departments' => $this->page(
-                $departments, $perPage, 'dept_page', $request,
-                fn (Department $d) => [
-                    'id' => $d->id,
-                    'name' => $d->name,
-                    'designations_count' => $d->designations_count,
-                    'created_at' => $d->created_at?->toIso8601String(),
-                ],
-            ),
-            'designations' => $this->page(
-                $designations, $perPage, 'desig_page', $request,
-                fn (Designation $g) => [
-                    'id' => $g->id,
-                    'name' => $g->name,
-                    'department_id' => $g->department_id,
-                    'department_name' => $g->department->name,
-                    'created_at' => $g->created_at?->toIso8601String(),
-                ],
-            ),
+            'departments' => $departmentsPage,
+            'designations' => $designationsPage,
             // Totals for the tab badges: never narrowed by search or filters.
             'counts' => [
                 'departments' => Department::count(),
@@ -108,7 +123,12 @@ class DepartmentController extends Controller
             return back()->with('error', $reason);
         }
 
-        $department->delete();
+        try {
+            $department->delete();
+        } catch (QueryException) {
+            // A designation was added after the check above; the restrict foreign key refused.
+            return back()->with('error', "Move or delete this department's designations first.");
+        }
 
         return back()->with('success', 'Department deleted.');
     }
@@ -137,13 +157,13 @@ class DepartmentController extends Controller
     {
         $escaped = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], mb_strtolower($term));
 
-        return $query->orWhereRaw("LOWER({$column}) LIKE ? ESCAPE '!'", ['%'.$escaped.'%']);
+        return $query->whereRaw("LOWER({$column}) LIKE ? ESCAPE '!'", ['%'.$escaped.'%']);
     }
 
     /**
      * Paginates a query under its own page parameter and maps rows to arrays.
      * A page past the end (for example after deleting the last row of the last
-     * page) falls back to the last page.
+     * page) is recorded in $clamped so index() can redirect to the real page.
      *
      * @template TModel of \Illuminate\Database\Eloquent\Model
      *
@@ -160,6 +180,7 @@ class DepartmentController extends Controller
         $paginator = $query->paginate($perPage, ['*'], $pageName, $page);
 
         if ($page > $paginator->lastPage()) {
+            $this->clamped[$pageName] = $paginator->lastPage();
             $paginator = $query->paginate($perPage, ['*'], $pageName, $paginator->lastPage());
         }
 

@@ -29,10 +29,14 @@ class DesignationRequest extends FormRequest
         return [
             'department_id' => ['required', 'integer', 'exists:departments,id'],
             'name' => [
-                'required', 'string', 'max:100',
+                'bail', 'required', 'string', 'max:100',
                 function (string $attribute, mixed $value, Closure $fail) use ($designation): void {
+                    if (! is_string($value)) {
+                        return;
+                    }
+
                     $taken = Designation::query()
-                        ->where('department_id', (int) $this->input('department_id'))
+                        ->where('department_id', (int) (is_scalar($this->input('department_id')) ? $this->input('department_id') : 0))
                         ->whereRaw('LOWER(name) = ?', [Names::key($value)])
                         ->when($designation, fn ($q) => $q->whereKeyNot($designation->id))
                         ->exists();

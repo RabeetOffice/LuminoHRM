@@ -28,8 +28,12 @@ class DepartmentRequest extends FormRequest
 
         return [
             'name' => [
-                'required', 'string', 'max:100',
+                'bail', 'required', 'string', 'max:100',
                 function (string $attribute, mixed $value, Closure $fail) use ($department): void {
+                    if (! is_string($value)) {
+                        return;
+                    }
+
                     $taken = Department::query()
                         ->whereRaw('LOWER(name) = ?', [Names::key($value)])
                         ->when($department, fn ($q) => $q->whereKeyNot($department->id))

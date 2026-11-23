@@ -2,6 +2,8 @@
 
 use App\Models\Department;
 use App\Models\Designation;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 
 it('lets admin and hr manage departments', function (string $role) {
     $this->actingAs(userWithRole($role))->post('/organization/departments', ['name' => 'Engineering'])->assertRedirect();
@@ -130,4 +132,86 @@ it('sorts departments by name', function () {
     Department::create(['name' => 'Alpha']);
     $this->actingAs(userWithRole('admin'))->get('/organization')
         ->assertInertia(fn ($p) => $p->where('departments.data.0.name', 'Alpha'));
+});
+
+it('treats percent and underscore in the search as literal characters', function () {
+    Department::create(['name' => '100% Remote']);
+    Department::create(['name' => 'Plan_B']);
+    Department::create(['name' => 'Planxb']);
+    $admin = userWithRole('admin');
+
+    $this->actingAs($admin)->get('/organization?search='.urlencode('%'))
+        ->assertInertia(fn ($p) => $p->has('departments.data', 1)->where('departments.data.0.name', '100% Remote'));
+    $this->actingAs($admin)->get('/organization?search='.urlencode('n_b'))
+        ->assertInertia(fn ($p) => $p->has('departments.data', 1)->where('departments.data.0.name', 'Plan_B'));
+});
+
+it('redirects a page past the end to the real last page', function () {
+    Department::factory()->count(12)->create();
+    $admin = userWithRole('admin');
+
+    $response = $this->actingAs($admin)->get('/organization?dept_page=99&tab=departments')->assertRedirect();
+    parse_str((string) parse_url($response->headers->get('Location'), PHP_URL_QUERY), $query);
+    expect($query)->toBe(['dept_page' => '2', 'tab' => 'departments']);
+    $this->actingAs($admin)->get('/organization?dept_page=2&per_page=25')
+        ->assertRedirect('/organization?per_page=25');
+});
+
+it('does not fail on array-valued query parameters', function () {
+    Department::factory()->count(3)->create();
+    $this->actingAs(userWithRole('admin'))
+        ->get('/organization?tab[]=x&search[]=y&per_page[]=25&dept_page[]=2&desig_page[]=3&department_id[]=1')
+        ->assertOk()
+        ->assertInertia(fn ($p) => $p
+            ->where('filters.tab', 'departments')
+            ->where('filters.search', '')
+            ->where('filters.per_page', 10)
+            ->where('filters.department_id', null));
+});
+
+it('returns a validation error, not a server error, for array-valued names', function () {
+    $admin = userWithRole('admin');
+    $d = Department::create(['name' => 'A']);
+    $g = $d->designations()->create(['name' => 'G']);
+
+    $this->actingAs($admin)->post('/organization/departments', ['name' => ['x']])->assertSessionHasErrors('name');
+    $this->actingAs($admin)->put("/organization/departments/{$d->id}", ['name' => ['x']])->assertSessionHasErrors('name');
+    $this->actingAs($admin)->post('/organization/designations', ['name' => ['x'], 'department_id' => $d->id])->assertSessionHasErrors('name');
+    $this->actingAs($admin)->put("/organization/designations/{$g->id}", ['name' => ['x'], 'department_id' => $d->id])->assertSessionHasErrors('name');
+    $this->actingAs($admin)->post('/organization/designations', ['name' => 'Ok', 'department_id' => [1]])->assertSessionHasErrors('department_id');
+});
+
+it('enforces the restrict foreign key in the database itself', function () {
+    if (DB::getDriverName() === 'sqlite') {
+        expect((int) DB::selectOne('PRAGMA foreign_keys')->foreign_keys)->toBe(1);
+    }
+
+    $d = Department::create(['name' => 'Engineering']);
+    $d->designations()->create(['name' => 'Developer']);
+
+    expect(fn () => DB::table('departments')->where('id', $d->id)->delete())->toThrow(QueryException::class);
+    expect(Department::find($d->id))->not->toBeNull();
+});
+
+it('shows the friendly message when a designation appears after the check and the foreign key refuses', function () {
+    $d = Department::create(['name' => 'Engineering']);
+    $admin = userWithRole('admin');
+
+    // Runs after deleteBlocker() has passed, just before the DELETE statement.
+    Department::deleting(function (Department $department) {
+        DB::table('designations')->insert([
+            'name' => 'Late arrival', 'department_id' => $department->id,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+    });
+
+    try {
+        $this->actingAs($admin)->delete("/organization/departments/{$d->id}")
+            ->assertRedirect()
+            ->assertSessionHas('error', 'Move or delete this department\'s designations first.');
+    } finally {
+        Department::flushEventListeners();
+    }
+
+    expect(Department::find($d->id))->not->toBeNull();
 });

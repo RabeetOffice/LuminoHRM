@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import type { KeyboardEvent } from 'react';
+import { nextTabIndex, statusPanelId, statusTabId } from '@/lib/tabs';
 import { cn } from '@/lib/utils';
 
 export type StatusTab = {
@@ -15,42 +16,33 @@ type Props = {
     onChange: (key: string) => void;
     /** Accessible name for the tab list, e.g. "Organization sections". */
     label?: string;
-    /** id of the element these tabs control; set role="tabpanel" on it. */
-    panelId?: string;
+    /**
+     * Prefix for the generated ids. The tab panel must have
+     * id={statusPanelId(idPrefix)} and aria-labelledby={statusTabId(idPrefix, activeKey)}.
+     */
+    idPrefix: string;
     className?: string;
 };
 
 /**
  * Status tabs with counts (All / Active / Inactive ...). Purely presentational:
  * the parent decides what a tab does, usually a server-driven visit.
- * Arrow keys, Home and End move between tabs.
+ * Arrow keys, Home and End move between tabs; focus stays on the newly selected
+ * tab, so keep the tab list outside any part of the page that remounts when the
+ * tab changes.
  */
 export function StatusTabs({
     tabs,
     value,
     onChange,
     label,
-    panelId,
+    idPrefix,
     className,
 }: Props) {
     const refs = useRef<Record<string, HTMLButtonElement | null>>({});
 
     const onKeyDown = (event: KeyboardEvent, index: number) => {
-        const last = tabs.length - 1;
-        const target =
-            event.key === 'ArrowRight'
-                ? index === last
-                    ? 0
-                    : index + 1
-                : event.key === 'ArrowLeft'
-                  ? index === 0
-                      ? last
-                      : index - 1
-                  : event.key === 'Home'
-                    ? 0
-                    : event.key === 'End'
-                      ? last
-                      : null;
+        const target = nextTabIndex(event.key, index, tabs.length);
 
         if (target === null) {
             return;
@@ -84,7 +76,8 @@ export function StatusTabs({
                         type="button"
                         role="tab"
                         aria-selected={active}
-                        aria-controls={panelId}
+                        id={statusTabId(idPrefix, tab.key)}
+                        aria-controls={statusPanelId(idPrefix)}
                         tabIndex={active ? 0 : -1}
                         onClick={() => onChange(tab.key)}
                         onKeyDown={(event) => onKeyDown(event, index)}
