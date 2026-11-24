@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Attendance;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\ShiftRequest;
+use App\Models\Attendance;
 use App\Models\Employee;
 use App\Models\Shift;
 use App\Support\Attendance\RebuildMarks;
@@ -18,7 +19,8 @@ use Inertia\Response;
  * (area attendance) inside the same transaction as the change.
  *
  * Changing a shift's rules flags today's and later pending days of its people for a rebuild (RebuildMarks); closed
- * days keep the values they were closed with.
+ * days are not flagged, though something else (a late punch, a holiday change) may still recalculate them later.
+ * A shift recorded on any attendance day cannot be deleted, so those days keep naming the shift they were worked with.
  */
 class ShiftController extends Controller
 {
@@ -129,6 +131,11 @@ class ShiftController extends Controller
 
         if ($shift->employees()->exists()) {
             return "Move this shift's employees first.";
+        }
+
+        // Deleting would null attendances.shift_id (null-on-delete) and lose which shift those days were worked out with.
+        if (Attendance::query()->where('shift_id', $shift->id)->exists()) {
+            return 'This shift is recorded on past attendance days and cannot be deleted.';
         }
 
         return null;

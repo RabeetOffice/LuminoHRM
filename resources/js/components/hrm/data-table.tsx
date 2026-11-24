@@ -59,9 +59,10 @@ type Props<T> = {
     columns: DataTableColumn<T>[];
     rows: T[];
     rowKey: (row: T) => string | number;
-    pagination: DataTablePagination;
-    /** Query-string parameter holding this table's page number, e.g. "page" or "dept_page". */
-    pageParam: string;
+    /** Omit for a short list the server sends whole: no footer, no page or rows-per-page controls. */
+    pagination?: DataTablePagination;
+    /** Query-string parameter holding this table's page number, e.g. "page" or "dept_page". Default "page". */
+    pageParam?: string;
     /** Query-string parameter for rows per page. Default "per_page". */
     perPageParam?: string;
     /** Adds a debounced (300 ms) search box. Omit for tables without search. */
@@ -101,7 +102,7 @@ export function DataTable<T>({
     rows,
     rowKey,
     pagination,
-    pageParam,
+    pageParam = 'page',
     perPageParam = 'per_page',
     search,
     toolbar,
@@ -165,7 +166,9 @@ export function DataTable<T>({
         return () => clearTimeout(timer);
     }, [term, searchParam, pageParam]);
 
-    const { current_page: current, last_page: last, total } = pagination;
+    const current = pagination?.current_page ?? 1;
+    const last = pagination?.last_page ?? 1;
+    const total = pagination?.total ?? 0;
     const hasToolbar = search !== undefined || toolbar !== undefined;
     const emptyBlock = (
         <>
@@ -278,7 +281,7 @@ export function DataTable<T>({
                 )}
             </div>
 
-            {total > 0 && (
+            {pagination && total > 0 && (
                 <div className="flex flex-col gap-3 border-t p-3 text-sm sm:flex-row sm:items-center sm:justify-between sm:p-4">
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-muted-foreground">
                         <span>

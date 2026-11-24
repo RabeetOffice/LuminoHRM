@@ -39,6 +39,10 @@ type Props = {
     onClose: () => void;
 };
 
+/** Closed days are not flagged by a shift change, but other changes may still recalculate them. */
+export const CLOSED_DAYS_NOTE =
+    'Days already closed keep their values unless they are recalculated later, for example by a late punch or a holiday change.';
+
 export const dayLabel = (day: string) =>
     day.charAt(0).toUpperCase() + day.slice(1);
 
@@ -85,7 +89,10 @@ export function ShiftDialog({ shift, weekdays, onClose }: Props) {
     };
 
     return (
-        <Dialog open onOpenChange={(open) => !open && onClose()}>
+        <Dialog
+            open
+            onOpenChange={(open) => !open && !form.processing && onClose()}
+        >
             <DialogContent className="sm:max-w-lg">
                 <form onSubmit={submit} className="grid gap-5" noValidate>
                     <DialogHeader>
@@ -231,8 +238,8 @@ export function ShiftDialog({ shift, weekdays, onClose }: Props) {
                     {shift && shift.employees_count > 0 && (
                         <p className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
                             Changing the hours or rules recalculates today and
-                            later days for the people on this shift. Days
-                            already closed keep their values.
+                            later days for the people on this shift.{' '}
+                            {CLOSED_DAYS_NOTE}
                         </p>
                     )}
 

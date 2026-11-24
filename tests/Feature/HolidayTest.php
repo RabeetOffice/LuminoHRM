@@ -101,6 +101,29 @@ it('does not fail on an array-valued year', function () {
         ->assertOk()->assertInertia(fn ($p) => $p->where('filters.year', 2026));
 });
 
+it('returns to the saved date\'s year after adding or moving a holiday', function () {
+    hoToday();
+    $admin = userWithRole('admin');
+
+    $this->actingAs($admin)->from('/leave/holidays?year=2026')
+        ->post('/leave/holidays', ['name' => 'New Year', 'date' => '2027-01-01'])
+        ->assertSessionHasNoErrors()
+        ->assertRedirect(route('holidays.index', ['year' => 2027]));
+
+    $holiday = Holiday::where('name', 'New Year')->firstOrFail();
+
+    $this->actingAs($admin)->from('/leave/holidays?year=2027')
+        ->put("/leave/holidays/{$holiday->id}", ['name' => 'New Year', 'date' => '2028-01-01'])
+        ->assertSessionHasNoErrors()
+        ->assertRedirect(route('holidays.index', ['year' => 2028]));
+
+    // A refused save goes back to the form's page with the error.
+    $this->actingAs($admin)->from('/leave/holidays?year=2028')
+        ->post('/leave/holidays', ['name' => 'Again', 'date' => '2028-01-01'])
+        ->assertSessionHasErrors('date')
+        ->assertRedirect('/leave/holidays?year=2028');
+});
+
 // ---------------------------------------------------------------- rules
 
 it('rejects a second holiday on the same date, but lets a holiday keep its own date', function () {

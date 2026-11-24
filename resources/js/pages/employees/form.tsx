@@ -32,6 +32,7 @@ import { useUnsavedChangesGuard } from '@/hooks/use-unsaved-changes';
 import { formatClockRange } from '@/lib/clock-time';
 import {
     designationsFor,
+    explicitShiftChoices,
     firstTabWithError,
     formatCnic,
     tabsWithErrors,
@@ -235,6 +236,8 @@ function EmployeeFormPage({
     );
 
     const defaultShift = shifts.find((shift) => shift.is_default);
+    // "Company default (...)" already stands for the default shift; it is listed by name only for someone pinned to it.
+    const shiftChoices = explicitShiftChoices(shifts, employee?.shift_id);
 
     const withErrors = tabsWithErrors(errors);
 
@@ -636,7 +639,7 @@ function EmployeeFormPage({
                                 ? `Company default (${defaultShift.name})`
                                 : 'Company default'}
                         </SelectItem>
-                        {shifts.map((shift) => (
+                        {shiftChoices.map((shift) => (
                             <SelectItem key={shift.id} value={String(shift.id)}>
                                 {shift.name}
                                 <span className="ml-1.5 text-muted-foreground">

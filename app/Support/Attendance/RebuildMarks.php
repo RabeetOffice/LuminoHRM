@@ -16,7 +16,7 @@ class RebuildMarks
 {
     /**
      * A shift's rules changed: today's and later days of the people who work it that are not closed yet. Closed days
-     * keep the values they were closed with. People with no shift of their own work the default shift.
+     * are not flagged here. People with no shift of their own work the default shift.
      *
      * @return int the number of days flagged
      */
@@ -38,6 +38,16 @@ class RebuildMarks
     public static function forEmployeesWithoutShift(): int
     {
         return self::forEmployeesFromToday(Employee::query()->select('id')->whereNull('shift_id'));
+    }
+
+    /**
+     * One employee's shift or attendance-exempt flag changed: their days from today on that are not closed yet.
+     *
+     * @return int the number of days flagged
+     */
+    public static function forEmployee(int $employeeId): int
+    {
+        return self::forEmployeesFromToday(Employee::query()->select('id')->whereKey($employeeId));
     }
 
     /**

@@ -73,7 +73,7 @@ class HolidayController extends Controller
             return back()->withErrors(['date' => 'There is already a holiday on this date.']);
         }
 
-        return back()->with('success', 'Holiday added.');
+        return $this->toYearOf($date)->with('success', 'Holiday added.');
     }
 
     public function update(HolidayRequest $request, Holiday $holiday): RedirectResponse
@@ -94,7 +94,7 @@ class HolidayController extends Controller
             return back()->withErrors(['date' => 'There is already a holiday on this date.']);
         }
 
-        return back()->with('success', 'Holiday updated.');
+        return $this->toYearOf($newDate)->with('success', 'Holiday updated.');
     }
 
     public function destroy(Holiday $holiday): RedirectResponse
@@ -107,6 +107,12 @@ class HolidayController extends Controller
         });
 
         return back()->with('success', 'Holiday deleted.');
+    }
+
+    /** The list for the year of a saved date, so a holiday saved into another year does not seem to vanish. */
+    private function toYearOf(string $date): RedirectResponse
+    {
+        return to_route('holidays.index', ['year' => (int) substr($date, 0, 4)]);
     }
 
     /** The year asked for, or this year when it is missing or unusable. */

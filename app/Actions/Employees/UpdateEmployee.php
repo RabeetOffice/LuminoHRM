@@ -6,6 +6,7 @@ use App\Exceptions\AccountRuleViolation;
 use App\Models\Employee;
 use App\Models\User;
 use App\Support\Attendance\PunchIngestor;
+use App\Support\Attendance\RebuildMarks;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeRoles;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -89,6 +90,11 @@ class UpdateEmployee
             // A new or changed machine user ID moves the punches stored under it (and marks their days for a rebuild).
             if ($current->wasChanged('device_user_id')) {
                 app(PunchIngestor::class)->relink($current, is_string($oldDeviceUserId) ? $oldDeviceUserId : null);
+            }
+
+            // Another shift, or exempt on or off, changes how their open days from today are worked out.
+            if ($current->wasChanged(['shift_id', 'attendance_exempt'])) {
+                RebuildMarks::forEmployee((int) $current->getKey());
             }
 
             $satellites = $this->writer->saveSatellites($current, $data);

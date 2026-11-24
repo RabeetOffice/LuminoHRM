@@ -7,10 +7,11 @@ use App\Support\Names;
 use Closure;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Validator;
 
 /**
  * Add or edit a shift. Same-day shifts only (the end must be after the start); grace 0 to 120 minutes; half day 1 to
- * 12 hours; weekly offs a subset of the lowercase day names. Which shift is the default is not set here
+ * 12 hours and no longer than the shift; weekly offs a subset of the lowercase day names. Which shift is the default is not set here
  * (ShiftController::makeDefault).
  */
 class ShiftRequest extends FormRequest
@@ -56,6 +57,33 @@ class ShiftRequest extends FormRequest
             'half_day_hours' => ['bail', 'required', 'numeric', 'decimal:0,2', 'between:1,12'],
             'weekly_offs' => ['present', 'array', 'max:7'],
             'weekly_offs.*' => ['bail', 'string', 'distinct', Rule::in(config('hrm.attendance.weekdays'))],
+        ];
+    }
+
+    /**
+     * Once each field is valid on its own: the half-day threshold cannot be longer than the shift itself, or every
+     * full day worked would count as a half day.
+     *
+     * @return array<int, Closure(Validator): void>
+     */
+    public function after(): array
+    {
+        return [
+            function (Validator $validator): void {
+                $errors = $validator->errors();
+
+                if ($errors->hasAny(['start_time', 'end_time', 'half_day_hours'])) {
+                    return;
+                }
+
+                $minutes = fn (string $time): int => (int) substr($time, 0, 2) * 60 + (int) substr($time, 3, 2);
+                $length = $minutes((string) $this->input('end_time')) - $minutes((string) $this->input('start_time'));
+
+                if ((float) $this->input('half_day_hours') * 60 > $length) {
+                    $hours = rtrim(rtrim(number_format($length / 60, 2, '.', ''), '0'), '.');
+                    $errors->add('half_day_hours', "The half day cannot be longer than the shift ({$hours} hours).");
+                }
+            },
         ];
     }
 

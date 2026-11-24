@@ -1,10 +1,12 @@
 import { Head, router, usePage } from '@inertiajs/react';
-import { CalendarDays, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Pencil, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import HolidayController from '@/actions/App/Http/Controllers/HolidayController';
 import { HolidayDialog } from '@/components/holidays/holiday-dialog';
 import type { HolidayRow } from '@/components/holidays/holiday-dialog';
 import { ConfirmDialog } from '@/components/hrm/confirm-dialog';
+import { DataTable } from '@/components/hrm/data-table';
+import type { DataTableColumn } from '@/components/hrm/data-table';
 import { PageHeader } from '@/components/hrm/page-header';
 import { Button } from '@/components/ui/button';
 import {
@@ -14,14 +16,6 @@ import {
     SelectTrigger,
     SelectValue,
 } from '@/components/ui/select';
-import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from '@/components/ui/table';
 import { useCan } from '@/hooks/use-can';
 import { formatDate } from '@/lib/format-date';
 import { nextTableUrl } from '@/lib/table-query';
@@ -42,7 +36,9 @@ export default function Holidays({ holidays, years, filters }: Props) {
     const canEdit = can('settings.attendance-leave');
 
     const [editing, setEditing] = useState<HolidayRow | 'new' | null>(null);
+    // The last row asked about stays set while the dialog animates closed, so its text does not change mid-close.
     const [deleting, setDeleting] = useState<HolidayRow | null>(null);
+    const [confirmOpen, setConfirmOpen] = useState(false);
     const [busy, setBusy] = useState(false);
 
     const chooseYear = (value: string) => {
@@ -51,6 +47,11 @@ export default function Holidays({ holidays, years, filters }: Props) {
             {},
             { preserveScroll: true, preserveState: true, replace: true },
         );
+    };
+
+    const askDelete = (holiday: HolidayRow) => {
+        setDeleting(holiday);
+        setConfirmOpen(true);
     };
 
     const confirmDelete = () => {
@@ -63,10 +64,69 @@ export default function Holidays({ holidays, years, filters }: Props) {
             onStart: () => setBusy(true),
             onFinish: () => {
                 setBusy(false);
-                setDeleting(null);
+                setConfirmOpen(false);
             },
         });
     };
+
+    const columns: DataTableColumn<HolidayRow>[] = [
+        {
+            key: 'date',
+            header: 'Date',
+            className: 'whitespace-nowrap tabular-nums',
+            cell: (holiday) => (
+                <div className="grid gap-1">
+                    {formatDate(holiday.date, dateFormat)}
+                    {/* The Day column is hidden on phones. */}
+                    <span className="text-xs text-muted-foreground sm:hidden">
+                        {holiday.weekday}
+                    </span>
+                </div>
+            ),
+        },
+        {
+            key: 'day',
+            header: 'Day',
+            className: 'hidden text-muted-foreground sm:table-cell',
+            cell: (holiday) => holiday.weekday,
+        },
+        {
+            key: 'name',
+            header: 'Name',
+            className: 'font-medium',
+            cell: (holiday) => holiday.name,
+        },
+        {
+            key: 'actions',
+            header: <span className="sr-only">Actions</span>,
+            className: 'w-24',
+            cell: (holiday) =>
+                canEdit && (
+                    <div className="flex justify-end gap-1">
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-8"
+                            aria-label={`Edit ${holiday.name}`}
+                            title="Edit"
+                            onClick={() => setEditing(holiday)}
+                        >
+                            <Pencil />
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-8 text-destructive hover:text-destructive"
+                            aria-label={`Delete ${holiday.name}`}
+                            title="Delete"
+                            onClick={() => askDelete(holiday)}
+                        >
+                            <Trash2 />
+                        </Button>
+                    </div>
+                ),
+        },
+    ];
 
     return (
         <>
@@ -85,133 +145,70 @@ export default function Holidays({ holidays, years, filters }: Props) {
                     }
                 />
 
-                <div className="overflow-hidden rounded-xl border bg-card shadow-xs">
-                    <div className="flex flex-col gap-3 border-b p-4 sm:flex-row sm:items-center sm:justify-between">
-                        <p className="text-sm text-muted-foreground">
-                            {holidays.length === 1
-                                ? '1 holiday'
-                                : `${holidays.length} holidays`}{' '}
-                            in {filters.year}
-                        </p>
-                        <Select
-                            value={String(filters.year)}
-                            onValueChange={chooseYear}
-                        >
-                            <SelectTrigger
-                                className="w-full sm:w-36"
-                                aria-label="Year"
-                            >
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {years.map((year) => (
-                                    <SelectItem key={year} value={String(year)}>
-                                        {year}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                    </div>
-
-                    {holidays.length === 0 ? (
-                        <div className="flex flex-col items-center gap-2 px-4 py-14 text-center">
-                            <CalendarDays
-                                aria-hidden="true"
-                                className="size-8 text-muted-foreground"
-                            />
+                <DataTable
+                    label={`Holidays in ${filters.year}`}
+                    columns={columns}
+                    rows={holidays}
+                    rowKey={(holiday) => holiday.id}
+                    toolbar={
+                        <>
                             <p className="text-sm text-muted-foreground">
-                                No holidays in {filters.year} yet.
+                                {holidays.length === 1
+                                    ? '1 holiday'
+                                    : `${holidays.length} holidays`}{' '}
+                                in {filters.year}
                             </p>
-                            {canEdit && (
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="mt-2"
-                                    onClick={() => setEditing('new')}
+                            <Select
+                                value={String(filters.year)}
+                                onValueChange={chooseYear}
+                            >
+                                <SelectTrigger
+                                    className="w-full sm:w-36"
+                                    aria-label="Year"
                                 >
-                                    <Plus />
-                                    Add holiday
-                                </Button>
-                            )}
-                        </div>
-                    ) : (
-                        <Table aria-label={`Holidays in ${filters.year}`}>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Date</TableHead>
-                                    <TableHead className="hidden sm:table-cell">
-                                        Day
-                                    </TableHead>
-                                    <TableHead>Name</TableHead>
-                                    <TableHead className="w-24">
-                                        <span className="sr-only">Actions</span>
-                                    </TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {holidays.map((holiday) => (
-                                    <TableRow key={holiday.id}>
-                                        <TableCell className="whitespace-nowrap tabular-nums">
-                                            {formatDate(
-                                                holiday.date,
-                                                dateFormat,
-                                            )}
-                                        </TableCell>
-                                        <TableCell className="hidden text-muted-foreground sm:table-cell">
-                                            {holiday.weekday}
-                                        </TableCell>
-                                        <TableCell className="font-medium">
-                                            {holiday.name}
-                                        </TableCell>
-                                        <TableCell>
-                                            {canEdit && (
-                                                <div className="flex justify-end gap-1">
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="icon"
-                                                        className="size-8"
-                                                        aria-label={`Edit ${holiday.name}`}
-                                                        title="Edit"
-                                                        onClick={() =>
-                                                            setEditing(holiday)
-                                                        }
-                                                    >
-                                                        <Pencil />
-                                                    </Button>
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="icon"
-                                                        className="size-8 text-destructive hover:text-destructive"
-                                                        aria-label={`Delete ${holiday.name}`}
-                                                        title="Delete"
-                                                        onClick={() =>
-                                                            setDeleting(holiday)
-                                                        }
-                                                    >
-                                                        <Trash2 />
-                                                    </Button>
-                                                </div>
-                                            )}
-                                        </TableCell>
-                                    </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
-                    )}
-                </div>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {years.map((year) => (
+                                        <SelectItem
+                                            key={year}
+                                            value={String(year)}
+                                        >
+                                            {year}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </>
+                    }
+                    emptyText={`No holidays in ${filters.year} yet.`}
+                    emptyAction={
+                        canEdit && (
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setEditing('new')}
+                            >
+                                <Plus />
+                                Add holiday
+                            </Button>
+                        )
+                    }
+                />
             </div>
 
             {editing !== null && (
                 <HolidayDialog
                     key={editing === 'new' ? 'new' : editing.id}
                     holiday={editing === 'new' ? null : editing}
+                    year={filters.year}
                     onClose={() => setEditing(null)}
                 />
             )}
 
             <ConfirmDialog
-                open={deleting !== null}
-                onOpenChange={(open) => !open && setDeleting(null)}
+                open={confirmOpen}
+                onOpenChange={setConfirmOpen}
                 title="Delete holiday?"
                 description={
                     deleting

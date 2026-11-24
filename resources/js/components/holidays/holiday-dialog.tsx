@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
+import { firstDateIn } from '@/lib/holidays';
 
 export type HolidayRow = {
     id: number;
@@ -26,14 +27,19 @@ export type HolidayRow = {
 type Props = {
     /** The holiday being edited, or null to add a new one. */
     holiday: HolidayRow | null;
+    /** The year being viewed: a new holiday's date starts in it. */
+    year: number;
     onClose: () => void;
 };
 
-/** Add / edit dialog. Mount it only while open (with a key) so the form starts fresh. */
-export function HolidayDialog({ holiday, onClose }: Props) {
+/**
+ * Add / edit dialog. Mount it only while open (with a key) so the form starts fresh. After a save the server shows
+ * the year of the saved date.
+ */
+export function HolidayDialog({ holiday, year, onClose }: Props) {
     const form = useForm({
         name: holiday?.name ?? '',
-        date: holiday?.date ?? '',
+        date: holiday?.date ?? firstDateIn(year),
     });
     const { data, errors } = form;
 
@@ -50,7 +56,10 @@ export function HolidayDialog({ holiday, onClose }: Props) {
     };
 
     return (
-        <Dialog open onOpenChange={(open) => !open && onClose()}>
+        <Dialog
+            open
+            onOpenChange={(open) => !open && !form.processing && onClose()}
+        >
             <DialogContent>
                 <form onSubmit={submit} className="grid gap-4" noValidate>
                     <DialogHeader>

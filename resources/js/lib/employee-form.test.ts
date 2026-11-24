@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     FORM_TABS,
     designationsFor,
+    explicitShiftChoices,
     firstTabWithError,
     formatCnic,
     tabForField,
@@ -100,5 +101,31 @@ describe('designationsFor', () => {
 
     it('is empty until a department is chosen', () => {
         expect(designationsFor(all, '')).toEqual([]);
+    });
+});
+
+describe('explicitShiftChoices', () => {
+    const shifts = [
+        { id: 1, name: 'General', is_default: true },
+        { id: 2, name: 'Early', is_default: false },
+        { id: 3, name: 'Late', is_default: false },
+    ];
+
+    it('leaves out the default shift, which "Company default" stands for', () => {
+        expect(explicitShiftChoices(shifts, null).map((s) => s.id)).toEqual([
+            2, 3,
+        ]);
+        expect(
+            explicitShiftChoices(shifts, undefined).map((s) => s.id),
+        ).toEqual([2, 3]);
+        expect(explicitShiftChoices(shifts, 3).map((s) => s.id)).toEqual([
+            2, 3,
+        ]);
+    });
+
+    it('keeps the default shift for a person already pinned to it', () => {
+        expect(explicitShiftChoices(shifts, 1).map((s) => s.id)).toEqual([
+            1, 2, 3,
+        ]);
     });
 });

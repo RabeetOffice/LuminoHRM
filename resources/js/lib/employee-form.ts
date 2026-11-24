@@ -91,3 +91,16 @@ export function designationsFor<T extends { department_id: number }>(
         ? []
         : designations.filter((d) => String(d.department_id) === departmentId);
 }
+
+/**
+ * The shifts to list under "Company default (...)" in the employee form's Shift select: every shift but the default,
+ * which that first entry already stands for. A person pinned to the default shift (their own shift_id is the default's
+ * id) keeps it listed, so the stored value still shows and is not lost on save.
+ */
+export function explicitShiftChoices<
+    T extends { id: number; is_default: boolean },
+>(shifts: T[], pinnedShiftId: number | null | undefined): T[] {
+    return shifts.filter(
+        (shift) => !shift.is_default || shift.id === pinnedShiftId,
+    );
+}

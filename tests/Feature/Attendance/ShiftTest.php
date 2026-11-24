@@ -140,6 +140,63 @@ it('validates each field', function (array $overrides, string $field) {
     'offs not a list' => [['weekly_offs' => 'sunday'], 'weekly_offs'],
 ]);
 
+it('rejects a half day longer than the shift, with the message on half_day_hours', function () {
+    $this->actingAs(userWithRole('admin'))
+        ->post('/attendance/shifts', shPayload(['start_time' => '09:00', 'end_time' => '12:00', 'half_day_hours' => 3.5]))
+        ->assertSessionHasErrors(['half_day_hours' => 'The half day cannot be longer than the shift (3 hours).']);
+    expect(Shift::where('name', 'Early')->exists())->toBeFalse();
+
+    // Exactly the shift's length is allowed.
+    $this->actingAs(userWithRole('admin'))
+        ->post('/attendance/shifts', shPayload(['start_time' => '09:00', 'end_time' => '12:00', 'half_day_hours' => 3]))
+        ->assertSessionHasNoErrors();
+
+    $shift = Shift::where('name', 'Early')->firstOrFail();
+    $this->actingAs(userWithRole('admin'))
+        ->put("/attendance/shifts/{$shift->id}", shPayload(['start_time' => '09:00', 'end_time' => '10:30', 'half_day_hours' => 2]))
+        ->assertSessionHasErrors(['half_day_hours' => 'The half day cannot be longer than the shift (1.5 hours).']);
+});
+
+it('rejects renaming a shift to another shift\'s name in a different case', function () {
+    $early = Shift::factory()->create(['name' => 'Early']);
+    $late = Shift::factory()->create(['name' => 'Late']);
+
+    $this->actingAs(userWithRole('admin'))->put("/attendance/shifts/{$late->id}", shPayload(['name' => 'eARLY']))
+        ->assertSessionHasErrors(['name' => 'A shift with this name already exists.']);
+    expect($late->fresh()->name)->toBe('Late')->and($early->fresh()->name)->toBe('Early');
+});
+
+it('audits a shift update with the changed fields', function () {
+    $shift = Shift::factory()->create(['name' => 'Early', 'grace_minutes' => 15]);
+
+    $this->actingAs(userWithRole('admin'))->put("/attendance/shifts/{$shift->id}", shPayload(['name' => 'Early', 'grace_minutes' => 20]))
+        ->assertSessionHasNoErrors();
+
+    $entries = Activity::where('log_name', 'attendance')->where('description', 'Shift updated')->get();
+    expect($entries)->toHaveCount(1)
+        ->and($entries[0]->subject_id)->toBe($shift->id)
+        ->and($entries[0]->properties['attributes']['grace_minutes'])->toBe(20)
+        ->and($entries[0]->properties['old']['grace_minutes'])->toBe(15);
+});
+
+it('audits make-default as one entry per shift whose flag moved', function () {
+    $old = Shift::default();
+    $shift = Shift::factory()->create(['name' => 'Ramadan']);
+    $before = Activity::max('id') ?? 0;
+
+    $this->actingAs(userWithRole('admin'))->post("/attendance/shifts/{$shift->id}/make-default")->assertSessionHas('success');
+
+    $entries = Activity::where('id', '>', $before)->where('log_name', 'attendance')->orderBy('id')->get();
+    expect($entries->pluck('description')->all())->toBe(['Shift updated', 'Shift updated'])
+        ->and($entries->pluck('subject_id')->all())->toBe([$old->id, $shift->id])
+        ->and($entries[0]->properties['attributes']['is_default'])->toBeFalse()
+        ->and($entries[1]->properties['attributes']['is_default'])->toBeTrue();
+
+    // Asking again changes nothing and writes nothing.
+    $this->actingAs(userWithRole('admin'))->post("/attendance/shifts/{$shift->id}/make-default")->assertSessionHas('info');
+    expect(Activity::where('id', '>', $before)->count())->toBe(2);
+});
+
 it('accepts the edges of each range and no weekly offs at all', function () {
     $this->actingAs(userWithRole('admin'))
         ->post('/attendance/shifts', shPayload(['grace_minutes' => 0, 'half_day_hours' => 1, 'weekly_offs' => []]))
@@ -178,6 +235,17 @@ it('will not delete a shift that employees work', function () {
         ->assertSessionHas('error', "Move this shift's employees first.");
     expect($shift->fresh())->not->toBeNull()
         ->and($employee->fresh()->shift_id)->toBe($shift->id);
+});
+
+it('will not delete a shift recorded on past attendance days, keeping the record', function () {
+    $shift = Shift::factory()->create();
+    $employee = Employee::factory()->create(); // since moved to the default shift
+    $day = Attendance::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-20', 'shift_id' => $shift->id, 'closed' => true]);
+
+    $this->actingAs(userWithRole('admin'))->delete("/attendance/shifts/{$shift->id}")
+        ->assertSessionHas('error', 'This shift is recorded on past attendance days and cannot be deleted.');
+    expect($shift->fresh())->not->toBeNull()
+        ->and($day->fresh()->shift_id)->toBe($shift->id);
 });
 
 it('returns 404 for an unknown shift', function () {
@@ -318,3 +386,43 @@ it('lets HR save the shift and exempt flag from the employee form, but not a man
     $this->actingAs(userWithRole('hr'))->put("/employees/{$employee->id}", $payload)->assertSessionHasNoErrors();
     expect($employee->fresh()->shift_id)->toBe($shift->id)->and($employee->fresh()->attendance_exempt)->toBeTrue();
 });
+
+it('marks the employee\'s open days from today when their shift or exempt flag changes, and nothing otherwise', function (array $change) {
+    shToday();
+    $dept = Department::factory()->create();
+    $desig = Designation::factory()->create(['department_id' => $dept->id]);
+    $shift = Shift::factory()->create();
+    $employee = Employee::factory()->create(['department_id' => $dept->id, 'designation_id' => $desig->id, 'joining_date' => '2024-03-01']);
+    $other = Employee::factory()->create();
+
+    $yesterday = Attendance::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-23']);
+    $closed = Attendance::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-24', 'closed' => true]);
+    $tomorrow = Attendance::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-25']);
+    $manual = Attendance::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-26', 'is_manual' => true]);
+    $notMine = Attendance::factory()->create(['employee_id' => $other->id, 'date' => '2026-11-25']);
+
+    $payload = fn (array $overrides) => array_merge([
+        'first_name' => $employee->first_name, 'last_name' => $employee->last_name, 'email' => $employee->email,
+        'department_id' => $dept->id, 'designation_id' => $desig->id, 'joining_date' => '2024-03-01',
+        'employment_type' => $employee->employment_type, 'status' => $employee->status,
+        'shift_id' => null, 'attendance_exempt' => false,
+    ], $overrides);
+
+    $hr = userWithRole('hr');
+
+    // An unrelated change marks nothing.
+    $this->actingAs($hr)->put("/employees/{$employee->id}", $payload(['last_name' => 'Renamed']))->assertSessionHasNoErrors();
+    expect($tomorrow->fresh()->needs_rebuild)->toBeFalse();
+
+    $values = array_map(fn ($v) => $v === 'shift' ? $shift->id : $v, $change);
+    $this->actingAs($hr)->put("/employees/{$employee->id}", $payload(['last_name' => 'Renamed', ...$values]))->assertSessionHasNoErrors();
+
+    expect($tomorrow->fresh()->needs_rebuild)->toBeTrue()
+        ->and($yesterday->fresh()->needs_rebuild)->toBeFalse()
+        ->and($closed->fresh()->needs_rebuild)->toBeFalse()
+        ->and($manual->fresh()->needs_rebuild)->toBeFalse()
+        ->and($notMine->fresh()->needs_rebuild)->toBeFalse();
+})->with([
+    'shift' => [['shift_id' => 'shift']],
+    'exempt flag' => [['attendance_exempt' => true]],
+]);
