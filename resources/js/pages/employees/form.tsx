@@ -75,7 +75,7 @@ type Props = {
     statusOptions: string[];
     roleOptions: { value: string; label: string }[];
     roleLocked: boolean;
-    can: { editCode: boolean };
+    can: { editCode: boolean; edit: boolean };
 };
 
 const NONE = 'none';
@@ -713,6 +713,17 @@ function EmployeeFormPage({
                     }
                 />
 
+                {!can.edit && (
+                    <div
+                        role="note"
+                        className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+                    >
+                        This person has an Admin or HR login, so only an Admin
+                        can edit this record. That includes your own record if
+                        you are HR.
+                    </div>
+                )}
+
                 <form
                     onSubmit={submit}
                     noValidate
@@ -764,7 +775,10 @@ function EmployeeFormPage({
                         <Button variant="outline" asChild>
                             <Link href={index()}>Cancel</Link>
                         </Button>
-                        <Button type="submit" disabled={form.processing}>
+                        <Button
+                            type="submit"
+                            disabled={form.processing || !can.edit}
+                        >
                             {form.processing && <Spinner />}
                             {editing ? 'Save Changes' : 'Add Employee'}
                         </Button>

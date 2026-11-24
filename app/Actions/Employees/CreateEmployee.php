@@ -81,6 +81,8 @@ class CreateEmployee
     /** @param  array<string, mixed>  $data */
     private function persist(array $data, User $by, bool $mayEditCode, bool $explicitCode): Employee
     {
+        $this->writer->reset(); // a deadlock retry runs this again
+
         $attributes = $this->writer->employeeAttributes($data, $mayEditCode);
         $attributes['employee_code'] = $explicitCode ? $attributes['employee_code'] : EmployeeCode::next();
         $attributes['status'] ??= 'active';

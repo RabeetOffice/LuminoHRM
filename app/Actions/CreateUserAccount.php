@@ -52,13 +52,13 @@ class CreateUserAccount
      * when there is one). No email is sent, so a caller that writes more in the same transaction (the employee
      * form) can send the link once everything has been committed.
      */
-    public function create(string $name, string $email, string $role): User
+    public function create(string $name, string $email, string $role, ?User $actor = null): User
     {
         if (! in_array($role, config('hrm.roles'), true)) {
             throw new InvalidArgumentException("Unknown role [{$role}].");
         }
 
-        return DB::transaction(function () use ($name, $email, $role) {
+        return DB::transaction(function () use ($name, $email, $role, $actor) {
             $user = new User;
             $user->name = Names::normalise($name);
             $user->email = Str::lower(trim($email));
@@ -74,6 +74,7 @@ class CreateUserAccount
                 "Account created with role {$role}",
                 $user,
                 ['attributes' => ['name' => $user->name, 'email' => $user->email, 'role' => $role]],
+                $actor,
             );
 
             return $user;

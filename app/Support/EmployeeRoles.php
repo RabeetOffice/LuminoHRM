@@ -27,6 +27,18 @@ final class EmployeeRoles
         return is_string($name) ? $name : null;
     }
 
+    public const PRIVILEGED_MESSAGE = 'This login belongs to an Admin or HR account. Ask an Admin to make this change.';
+
+    /**
+     * Whether $by may touch this login through the employee screens (link it, change its name or email, change its
+     * status, delete it). Only an Admin may touch an account whose CURRENT role is admin or hr. Call it with the role
+     * as stored, before the request's changes.
+     */
+    public static function mayTouchAccount(User $by, ?User $account): bool
+    {
+        return $account === null || $by->hasRole('admin') || ! self::isLockedFor($by, self::currentRole($account));
+    }
+
     /** @return list<string> */
     public static function assignable(User $by): array
     {

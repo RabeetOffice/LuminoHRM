@@ -9,7 +9,9 @@ use App\Models\EmployeeBankAccount;
 use App\Models\EmployeeContact;
 use App\Models\User;
 use App\Notifications\SetPasswordNotification;
+use App\Support\EmployeeRoles;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Password;
@@ -73,7 +75,7 @@ function ewEditPayload(Employee $employee, array $overrides = []): array
     $date = fn ($d) => $d?->format('Y-m-d');
 
     return array_merge([
-        'first_name' => $employee->first_name, 'last_name' => $employee->last_name, 'email' => $employee->email,
+        'employee_code' => $employee->employee_code, 'first_name' => $employee->first_name, 'last_name' => $employee->last_name, 'email' => $employee->email,
         'phone' => $employee->phone, 'dob' => $date($employee->dob), 'gender' => $employee->gender, 'cnic' => $employee->cnic,
         'department_id' => $employee->department_id, 'designation_id' => $employee->designation_id, 'manager_id' => $employee->manager_id,
         'joining_date' => $date($employee->joining_date), 'probation_end_date' => $date($employee->probation_end_date),
@@ -318,7 +320,7 @@ it('rolls everything back when creating the account fails', function () {
     $hr = userWithRole('hr');
     $this->app->bind(CreateUserAccount::class, fn () => new class extends CreateUserAccount
     {
-        public function create(string $name, string $email, string $role): User
+        public function create(string $name, string $email, string $role, ?User $actor = null): User
         {
             throw new RuntimeException('boom');
         }
@@ -366,15 +368,15 @@ it('links an existing account that has no employee, keeping its role and sending
     Notification::assertNothingSent();
 });
 
-it('links the first admin (no employee record) when HR creates their employee record', function () {
-    $admin = userWithRole('admin');
-    $admin->forceFill(['email' => 'boss@corp.test'])->save();
-    $hr = userWithRole('hr');
+it('lets an Admin link the first admin account (no employee record), keeping its role when the default is posted', function () {
+    $first = userWithRole('admin');
+    $first->forceFill(['email' => 'boss@corp.test'])->save();
+    $actor = userWithRole('admin');
 
-    $this->actingAs($hr)->post('/employees', ewPayload(['email' => 'boss@corp.test', 'role' => 'employee']))->assertSessionHasNoErrors();
+    $this->actingAs($actor)->post('/employees', ewPayload(['email' => 'boss@corp.test', 'role' => 'employee']))->assertSessionHasNoErrors();
 
-    expect($admin->fresh()->employee_id)->toBe(Employee::where('email', 'boss@corp.test')->value('id'))
-        ->and($admin->fresh()->hasRole('admin'))->toBeTrue();
+    expect($first->fresh()->employee_id)->toBe(Employee::where('email', 'boss@corp.test')->value('id'))
+        ->and($first->fresh()->hasRole('admin'))->toBeTrue();
 });
 
 it('changes the role of a linked account only when the actor is allowed to', function () {
@@ -478,12 +480,13 @@ it('refuses HR changing the role of an admin or HR user on edit, with 403', func
     expect($user->fresh()->hasRole($current))->toBeTrue()->and($employee->fresh()->first_name)->not->toBe('Changed');
 })->with(['admin', 'hr']);
 
-it('accepts the unchanged role HR sees read-only for an admin or HR user', function (string $current) {
-    [$employee] = ewExisting($current);
+it('refuses HR any edit of an admin or HR person, even with the unchanged role, and stores nothing', function (string $current) {
+    [$employee, $user] = ewExisting($current);
 
-    $this->actingAs(userWithRole('hr'))->put("/employees/{$employee->id}", ewEditPayload($employee, ['role' => $current, 'first_name' => 'Changed']))->assertSessionHasNoErrors();
+    $this->actingAs(userWithRole('hr'))->put("/employees/{$employee->id}", ewEditPayload($employee, ['role' => $current, 'first_name' => 'Changed']))
+        ->assertSessionHasErrors(['email' => EmployeeRoles::PRIVILEGED_MESSAGE]);
 
-    expect($employee->fresh()->first_name)->toBe('Changed');
+    expect($employee->fresh()->first_name)->toBe($employee->first_name)->and($user->fresh()->name)->toBe($user->name);
 })->with(['admin', 'hr']);
 
 it('lets HR change employee to manager and an admin change any role on edit', function () {
@@ -818,24 +821,38 @@ it('allows a last working day up to a year ahead', function () {
     $this->actingAs($hr)->patch("/employees/{$employee->id}/status", ['status' => 'resigned', 'last_working_day' => $day])->assertSessionHasNoErrors();
 });
 
-it('will not disable the last active admin and changes nothing', function () {
-    [$employee, $admin] = ewExisting('admin');
-    $hr = userWithRole('hr');
+it('refuses HR a status change on an admin or HR person and leaves the login on', function (string $current) {
+    [$employee, $user] = ewExisting($current);
 
-    $this->actingAs($hr)->patch("/employees/{$employee->id}/status", ['status' => 'inactive'])
+    $this->actingAs(userWithRole('hr'))->patch("/employees/{$employee->id}/status", ['status' => 'inactive'])
+        ->assertSessionHas('error', EmployeeRoles::PRIVILEGED_MESSAGE);
+
+    expect($employee->fresh()->status)->toBe('active')->and($user->fresh()->is_active)->toBeTrue();
+})->with(['admin', 'hr']);
+
+it('keeps the last active admin: an Admin cannot disable the only remaining one, and nothing changes', function () {
+    [$otherEmployee, $other] = ewExisting('admin');
+    $admin = userWithRole('admin');
+    $own = employeeFor($admin, ['joining_date' => '2024-03-01']);
+
+    $this->actingAs($admin)->patch("/employees/{$otherEmployee->id}/status", ['status' => 'inactive'])->assertSessionHasNoErrors();
+    expect($other->fresh()->is_active)->toBeFalse();
+
+    $this->actingAs($admin)->patch("/employees/{$own->id}/status", ['status' => 'inactive'])
         ->assertSessionHas('error', 'There must be at least one active Admin.');
 
-    expect($employee->fresh()->status)->toBe('active')->and($admin->fresh()->is_active)->toBeTrue();
+    expect($own->fresh()->status)->toBe('active')->and($admin->fresh()->is_active)->toBeTrue();
 });
 
-it('will not let you disable your own account through a status change', function () {
-    $hr = userWithRole('hr');
-    $own = employeeFor($hr, ['joining_date' => '2024-03-01']);
+it('will not let an Admin disable their own account through a status change', function () {
+    $admin = userWithRole('admin');
+    userWithRole('admin');
+    $own = employeeFor($admin, ['joining_date' => '2024-03-01']);
 
-    $this->actingAs($hr)->patch("/employees/{$own->id}/status", ['status' => 'inactive'])
+    $this->actingAs($admin)->patch("/employees/{$own->id}/status", ['status' => 'inactive'])
         ->assertSessionHas('error', 'You cannot change your own role or disable your own account.');
 
-    expect($own->fresh()->status)->toBe('active')->and($hr->fresh()->is_active)->toBeTrue();
+    expect($own->fresh()->status)->toBe('active')->and($admin->fresh()->is_active)->toBeTrue();
 });
 
 it('changes the status of an employee that has no login account', function () {
@@ -915,4 +932,170 @@ it('deletes an employee that has no login account', function () {
     $this->actingAs(userWithRole('admin'))->delete("/employees/{$e->id}")->assertRedirect('/employees');
 
     expect(Employee::find($e->id))->toBeNull();
+});
+
+// ---------------------------------------------------------------- privileged accounts (fix round 1)
+
+/** The state of an account that a refused request must leave alone. */
+function ewAccountState(User $user): array
+{
+    $user = $user->fresh();
+
+    return [$user->name, $user->email, $user->is_active, $user->employee_id, $user->roles()->pluck('name')->all()];
+}
+
+it('refuses HR every kind of edit on an admin, an HR person and their own record, and stores nothing', function (string $target, array $change) {
+    $hr = userWithRole('hr');
+    if ($target === 'self') {
+        $employee = employeeFor($hr, ['joining_date' => '2024-03-01']);
+        $account = $hr;
+    } else {
+        [$employee, $account] = ewExisting($target);
+    }
+    $columns = ['first_name', 'last_name', 'email', 'phone', 'manager_id', 'department_id'];
+    $stateBefore = ewAccountState($account);
+    $employeeBefore = $employee->fresh()->only($columns);
+
+    $response = $this->actingAs($hr)->put("/employees/{$employee->id}", ewEditPayload($employee, $change));
+
+    expect($response->status())->toBeIn([302, 403]);
+    if ($response->status() === 302) {
+        $response->assertSessionHasErrors(['email' => EmployeeRoles::PRIVILEGED_MESSAGE]);
+    }
+    expect(ewAccountState($account))->toBe($stateBefore)
+        ->and($employee->fresh()->only($columns))->toBe($employeeBefore);
+})->with(['admin', 'hr', 'self'])->with([
+    'email' => [['email' => 'hr.controls@evil.test']],
+    'name' => [['first_name' => 'Renamed']],
+    'role' => [['role' => 'employee']],
+    'unrelated field' => [['phone' => '0999']],
+]);
+
+it('lets an Admin change the email, name and role of an HR person', function () {
+    [$employee, $account] = ewExisting('hr');
+
+    $this->actingAs(userWithRole('admin'))->put("/employees/{$employee->id}", ewEditPayload($employee, ['email' => 'new.hr@corp.test', 'first_name' => 'Renamed', 'role' => 'manager']))
+        ->assertSessionHasNoErrors();
+
+    $account->refresh();
+    expect($account->email)->toBe('new.hr@corp.test')->and($account->name)->toContain('Renamed')->and($account->hasRole('manager'))->toBeTrue();
+});
+
+it('refuses HR linking an existing admin or HR account on create, and changes nothing', function (string $role) {
+    $account = User::factory()->create(['email' => 'ayesha.khan@corp.test', 'name' => 'Existing Person']);
+    $account->assignRole($role);
+    $before = ewAccountState($account);
+
+    $this->actingAs(userWithRole('hr'))->post('/employees', ewPayload(['role' => 'employee']))
+        ->assertSessionHasErrors(['email' => EmployeeRoles::PRIVILEGED_MESSAGE]);
+
+    expect(Employee::count())->toBe(0)->and(ewAccountState($account))->toBe($before);
+})->with(['admin', 'hr']);
+
+it('refuses HR linking an existing admin or HR account while editing an employee without a login', function (string $role) {
+    $account = User::factory()->create(['email' => 'boss@corp.test', 'name' => 'The Boss']);
+    $account->assignRole($role);
+    $employee = Employee::factory()->create(['email' => 'nologin@corp.test']);
+    $before = ewAccountState($account);
+
+    $this->actingAs(userWithRole('hr'))->put("/employees/{$employee->id}", ewEditPayload($employee, ['email' => 'boss@corp.test']))
+        ->assertSessionHasErrors(['email' => EmployeeRoles::PRIVILEGED_MESSAGE]);
+
+    expect(ewAccountState($account))->toBe($before)->and($employee->fresh()->email)->toBe('nologin@corp.test');
+})->with(['admin', 'hr']);
+
+it('lets an Admin link an existing account while editing an employee without a login', function () {
+    $account = User::factory()->create(['email' => 'boss@corp.test']);
+    $account->assignRole('admin');
+    $employee = Employee::factory()->create(['email' => 'nologin@corp.test']);
+
+    $this->actingAs(userWithRole('admin'))->put("/employees/{$employee->id}", ewEditPayload($employee, ['email' => 'boss@corp.test', 'role' => 'employee']))
+        ->assertSessionHasNoErrors();
+
+    expect($account->fresh()->employee_id)->toBe($employee->id)->and($account->fresh()->hasRole('admin'))->toBeTrue();
+});
+
+it('lets HR link an existing account that is not admin or HR while editing', function () {
+    $account = User::factory()->create(['email' => 'plain@corp.test']);
+    $account->assignRole('manager');
+    $employee = Employee::factory()->create(['email' => 'nologin@corp.test']);
+
+    $this->actingAs(userWithRole('hr'))->put("/employees/{$employee->id}", ewEditPayload($employee, ['email' => 'plain@corp.test']))->assertSessionHasNoErrors();
+
+    expect($account->fresh()->employee_id)->toBe($employee->id)->and($account->fresh()->hasRole('manager'))->toBeTrue();
+});
+
+it('tells the edit page when the viewer may not edit', function () {
+    [$adminEmployee] = ewExisting('admin');
+    [$plainEmployee] = ewExisting('employee');
+    $hr = userWithRole('hr');
+    $admin = userWithRole('admin');
+
+    expect($this->actingAs($hr)->get("/employees/{$adminEmployee->id}/edit")->viewData('page')['props']['can']['edit'])->toBeFalse()
+        ->and($this->actingAs($hr)->get("/employees/{$plainEmployee->id}/edit")->viewData('page')['props']['can']['edit'])->toBeTrue()
+        ->and($this->actingAs($admin)->get("/employees/{$adminEmployee->id}/edit")->viewData('page')['props']['can']['edit'])->toBeTrue();
+});
+
+it('leaves a login that an Admin disabled separately alone when active is posted again', function () {
+    [$employee, $user] = ewExisting('employee');
+    $user->forceFill(['is_active' => false])->save();
+    $before = Activity::where('log_name', 'employees')->count();
+
+    $this->actingAs(userWithRole('hr'))->patch("/employees/{$employee->id}/status", ['status' => 'active'])->assertSessionHasNoErrors();
+
+    expect($user->fresh()->is_active)->toBeFalse()->and(Activity::where('log_name', 'employees')->count())->toBe($before);
+});
+
+it('leaves the login alone for a change inside the active group', function () {
+    [$employee, $user] = ewExisting('employee');
+    $user->forceFill(['is_active' => false])->save();
+
+    $this->actingAs(userWithRole('hr'))->patch("/employees/{$employee->id}/status", ['status' => 'probation'])->assertSessionHasNoErrors();
+
+    expect($employee->fresh()->status)->toBe('probation')->and($user->fresh()->is_active)->toBeFalse();
+});
+
+it('re-enables the login on a real move from inactive back to active, with an audit entry', function () {
+    [$employee, $user] = ewExisting('employee', ['status' => 'inactive']);
+    $user->forceFill(['is_active' => false])->save();
+
+    $this->actingAs(userWithRole('hr'))->patch("/employees/{$employee->id}/status", ['status' => 'active'])->assertSessionHasNoErrors();
+
+    expect($user->fresh()->is_active)->toBeTrue()->and($employee->fresh()->status)->toBe('active')
+        ->and(Activity::where('log_name', 'employees')->where('description', 'Employee status changed')->count())->toBe(1);
+});
+
+it('answers a blank code on edit with a validation error, not a 500', function () {
+    [$employee] = ewExisting('employee', ['employee_code' => 'LD-0010']);
+
+    $this->actingAs(userWithRole('admin'))->put("/employees/{$employee->id}", ewEditPayload($employee, ['employee_code' => '']))->assertSessionHasErrors('employee_code');
+
+    expect($employee->fresh()->employee_code)->toBe('LD-0010');
+});
+
+it('unlinks, not deletes, an account that existed before the employee record', function () {
+    [$employee, $user] = ewExisting('employee');
+
+    $this->actingAs(userWithRole('admin'))->delete("/employees/{$employee->id}")->assertRedirect('/employees');
+
+    expect(Employee::find($employee->id))->toBeNull()->and(User::find($user->id))->not->toBeNull()->and($user->fresh()->employee_id)->toBeNull();
+});
+
+it('deletes the account made with the employee together with its password links', function () {
+    $this->actingAs(userWithRole('hr'))->post('/employees', ewPayload());
+    $e = Employee::firstOrFail();
+    $email = $e->user->email;
+    DB::table('password_reset_tokens')->updateOrInsert(['email' => $email], ['token' => 'x', 'created_at' => now()]);
+
+    $this->actingAs(userWithRole('admin'))->delete("/employees/{$e->id}")->assertRedirect('/employees');
+
+    expect(User::where('email', $email)->exists())->toBeFalse()->and(DB::table('password_reset_tokens')->where('email', $email)->exists())->toBeFalse();
+});
+
+it('records the acting user as the causer of the account creation entry', function () {
+    $hr = userWithRole('hr');
+    $this->actingAs($hr)->post('/employees', ewPayload());
+
+    $entry = Activity::where('log_name', 'users')->where('description', 'like', 'Account created with role%')->first();
+    expect($entry->causer_id)->toBe($hr->id);
 });

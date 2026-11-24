@@ -8,6 +8,7 @@ use App\Models\Employee;
 use App\Models\EmployeeBankAccount;
 use App\Models\EmployeeContact;
 use App\Models\User;
+use App\Support\Audit\Audit;
 use App\Support\EmployeeRoles;
 use App\Support\ManagerLoop;
 use App\Support\Names;
@@ -38,6 +39,9 @@ class EmployeeWriter
     ];
 
     public const CONTACT_FIELDS = ['address', 'emergency_name', 'emergency_phone'];
+
+    /** Audit description marking a login that was created together with its employee. */
+    public const CREATED_WITH_EMPLOYEE = 'Account created with employee record';
 
     public const BANK_FIELDS = ['bank_name', 'account_title', 'account_number'];
 
@@ -85,7 +89,14 @@ class EmployeeWriter
                 continue;
             }
 
-            $attributes[$field] = $this->clean($field, $data[$field]);
+            $value = $this->clean($field, $data[$field]);
+
+            // The code is never blank: a blank means "keep it" (create assigns the next one itself).
+            if ($field === 'employee_code' && $value === null) {
+                continue;
+            }
+
+            $attributes[$field] = $value;
         }
 
         return $attributes;
@@ -218,8 +229,10 @@ class EmployeeWriter
 
         if ($existing === null) {
             $role = EmployeeRoles::resolve($by, null, $postedRole) ?? EmployeeRoles::DEFAULT;
-            $user = $this->createAccount->create($employee->full_name, $employee->email, $role);
+            $user = $this->createAccount->create($employee->full_name, $employee->email, $role, $by);
             $user->forceFill(['employee_id' => $employee->getKey()])->save();
+            // Remembered so DeleteEmployee knows this login was made for this person (and may go with them).
+            Audit::record('users', self::CREATED_WITH_EMPLOYEE, $user, ['employee_id' => $employee->getKey()], $by);
             $this->createdUser = $user;
 
             return $user;
@@ -227,6 +240,10 @@ class EmployeeWriter
 
         if ($existing->employee_id !== null && (int) $existing->employee_id !== (int) $employee->getKey()) {
             throw ValidationException::withMessages(['email' => 'This email already belongs to the login of another employee.']);
+        }
+
+        if (! EmployeeRoles::mayTouchAccount($by, $existing)) {
+            throw ValidationException::withMessages(['email' => EmployeeRoles::PRIVILEGED_MESSAGE]);
         }
 
         $current = EmployeeRoles::currentRole($existing);

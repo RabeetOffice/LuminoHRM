@@ -6,8 +6,10 @@ use App\Exceptions\AccountRuleViolation;
 use App\Models\Employee;
 use App\Models\User;
 use App\Support\Audit\Audit;
+use App\Support\EmployeeRoles;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Saves the employee form: the employee row, the contact and bank rows, and the linked account's name, email and role
@@ -53,7 +55,13 @@ class UpdateEmployee
         $this->writer->reset();
 
         $saved = DB::transaction(function () use ($employee, $data, $by): Employee {
+            $this->writer->reset(); // a deadlock retry runs this again
             $current = Employee::query()->whereKey($employee->getKey())->lockForUpdate()->firstOrFail();
+
+            // A privileged account (admin or hr, as stored now) is only edited by an Admin: nothing is written otherwise.
+            if (! EmployeeRoles::mayTouchAccount($by, $current->user)) {
+                throw ValidationException::withMessages(['email' => EmployeeRoles::PRIVILEGED_MESSAGE]);
+            }
 
             // The form never changes these two; status goes through ChangeEmployeeStatus.
             $attributes = $this->writer->employeeAttributes($data, $by->hasRole('admin'));

@@ -113,7 +113,8 @@ class EmployeeRequest extends FormRequest
         }
 
         if ($this->user()?->hasRole('admin')) {
-            $rules['employee_code'] = ['nullable', 'string', 'regex:'.self::CODE_PATTERN, Rule::unique('employees', 'employee_code')->ignore($id)];
+            // Blank means "assign" on create; on edit the code can be changed but never emptied.
+            $rules['employee_code'] = [$employee === null ? 'nullable' : 'required', 'string', 'regex:'.self::CODE_PATTERN, Rule::unique('employees', 'employee_code')->ignore($id)];
         }
 
         return $rules;
@@ -172,7 +173,7 @@ class EmployeeRequest extends FormRequest
     {
         $employee = $this->editing();
 
-        if ($employee !== null) {
+        if ($employee?->user !== null) {
             return [$employee->user, false];
         }
 

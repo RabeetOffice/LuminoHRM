@@ -6,8 +6,10 @@ use App\Exceptions\AccountRuleViolation;
 use App\Models\Employee;
 use App\Models\User;
 use App\Support\Audit\Audit;
+use App\Support\EmployeeRoles;
 use App\Support\LastAdminGuard;
 use Illuminate\Support\Facades\DB;
+use Spatie\Activitylog\Models\Activity;
 
 /**
  * Removes a mistaken employee record: the row, its satellites (database cascade) and its login account, which must never
@@ -44,10 +46,29 @@ class DeleteEmployee
             $current->disableLogging();
 
             if ($account !== null) {
-                LastAdminGuard::protect($account, function () use ($account, $by): void {
-                    Audit::record('users', 'Account deleted with its employee record', $account, [], $by);
-                    $account->delete();
-                });
+                if (! EmployeeRoles::mayTouchAccount($by, $account)) {
+                    throw new AccountRuleViolation(EmployeeRoles::PRIVILEGED_MESSAGE);
+                }
+
+                $madeWithEmployee = Activity::query()
+                    ->where('log_name', 'users')
+                    ->where('subject_type', $account->getMorphClass())
+                    ->where('subject_id', $account->getKey())
+                    ->where('description', EmployeeWriter::CREATED_WITH_EMPLOYEE)
+                    ->get()
+                    ->contains(fn (Activity $entry) => (int) ($entry->properties['employee_id'] ?? 0) === (int) $current->getKey());
+
+                if ($madeWithEmployee && $account->last_login_at === null) {
+                    // Made for this person and never used: it goes with them, and so do its password links.
+                    LastAdminGuard::protect($account, function () use ($account, $by): void {
+                        Audit::record('users', 'Account deleted with its employee record', $account, [], $by);
+                        DB::table('password_reset_tokens')->where('email', $account->email)->delete();
+                        $account->delete();
+                    });
+                } else {
+                    // The account existed before this record (or has been used): it stays, just unlinked.
+                    $account->forceFill(['employee_id' => null])->save();
+                }
             }
 
             $current->delete();

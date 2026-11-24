@@ -95,6 +95,8 @@ export function ManagerPicker({
         return () => {
             window.clearTimeout(timer);
             controller.abort();
+            // An aborted request never reaches then/catch, so clear the flag here.
+            setLoading(false);
         };
     }, [open, query, excludeId]);
 

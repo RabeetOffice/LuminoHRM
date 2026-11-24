@@ -280,7 +280,8 @@ class EmployeeController extends Controller
                 array_values(array_intersect(EmployeeRoles::ORDER, $roleChoices)),
             ),
             'roleLocked' => $roleLocked,
-            'can' => ['editCode' => $user->hasRole('admin')],
+            // edit: false when the record belongs to an Admin or HR login and the viewer is not an Admin (the server refuses the save too).
+            'can' => ['editCode' => $user->hasRole('admin'), 'edit' => EmployeeRoles::mayTouchAccount($user, $account)],
         ]);
     }
 

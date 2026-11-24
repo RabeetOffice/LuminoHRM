@@ -7,6 +7,7 @@ use App\Exceptions\AccountRuleViolation;
 use App\Models\Employee;
 use App\Models\User;
 use App\Support\Audit\Audit;
+use App\Support\EmployeeRoles;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
@@ -52,6 +53,19 @@ class ChangeEmployeeStatus
         return DB::transaction(function () use ($employee, $status, $day, $by): Employee {
             $current = Employee::query()->whereKey($employee->getKey())->lockForUpdate()->firstOrFail();
 
+            // Asking for what is already stored is a successful no-op: no write, no entry, the login is not touched.
+            if ($current->status === $status && EmployeeWriter::auditValue($current->last_working_day) === $day) {
+                return $current;
+            }
+
+            $account = $current->user;
+
+            // Only an Admin changes anything about an Admin or HR person (judged on the role as stored now).
+            if (! EmployeeRoles::mayTouchAccount($by, $account)) {
+                throw new AccountRuleViolation(EmployeeRoles::PRIVILEGED_MESSAGE);
+            }
+
+            $wasActive = ! in_array($current->status, self::DISABLING, true);
             $old = [
                 'status' => $current->status,
                 'last_working_day' => EmployeeWriter::auditValue($current->last_working_day),
@@ -60,27 +74,26 @@ class ChangeEmployeeStatus
             $current->disableLogging(); // the entry below is the record of this change
             $current->status = $status;
             $current->setAttribute('last_working_day', $day);
-            $changed = $current->isDirty();
             $current->save();
 
-            $account = $current->user;
+            // The login follows the status only when it moves between "can sign in" and "cannot"; a change inside a
+            // group (or a re-post) never touches an account an Admin disabled or enabled on the Users screen.
+            $willBeActive = ! in_array($status, self::DISABLING, true);
 
-            if ($account !== null) {
-                $this->setActive->handle($account, ! in_array($status, self::DISABLING, true), actor: $by);
+            if ($account !== null && $wasActive !== $willBeActive) {
+                $this->setActive->handle($account, $willBeActive, actor: $by);
             }
 
-            if ($changed) {
-                Audit::record(
-                    'employees',
-                    'Employee status changed',
-                    $current,
-                    [
-                        'old' => $old,
-                        'attributes' => ['status' => $status, 'last_working_day' => $day],
-                    ],
-                    $by,
-                );
-            }
+            Audit::record(
+                'employees',
+                'Employee status changed',
+                $current,
+                [
+                    'old' => $old,
+                    'attributes' => ['status' => $status, 'last_working_day' => $day],
+                ],
+                $by,
+            );
 
             return $current;
         }, attempts: 3);
