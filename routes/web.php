@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\BrandingMediaController;
 use App\Http\Controllers\DepartmentController;
 use App\Http\Controllers\DesignationController;
@@ -35,6 +36,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::patch('{user}/active', [UserController::class, 'toggle'])->name('toggle');
         Route::post('{user}/send-reset', [UserController::class, 'sendReset'])->name('send-reset');
     });
+
+    // Audit log: read-only. There is no route to change or delete an entry.
+    Route::get('audit-log', [AuditLogController::class, 'index'])->middleware('can:audit.view')->name('audit-log.index');
 
     // Settings. Per-group authorisation lives in the group's FormRequest and the controller.
     Route::prefix('hrm-settings')->name('hrm-settings.')->group(function () {

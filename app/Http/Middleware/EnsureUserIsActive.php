@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Support\Audit\Audit;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -20,6 +21,9 @@ class EnsureUserIsActive
         $user = $request->user();
 
         if ($user !== null && ! $user->is_active) {
+            // A disabled account that got in some other way (passkey, two-factor, an older session).
+            Audit::tryRecord('auth', 'Sign-in refused: account disabled', $user, causer: $user);
+
             Auth::guard()->logout();
             $request->session()->invalidate();
             $request->session()->regenerateToken();

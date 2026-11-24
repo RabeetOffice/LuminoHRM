@@ -7,6 +7,7 @@ use App\Models\Designation;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Support\Facades\DB;
 
 class DesignationController extends Controller
 {
@@ -15,7 +16,8 @@ class DesignationController extends Controller
     public function store(DesignationRequest $request): RedirectResponse
     {
         try {
-            Designation::create($request->validated());
+            // One transaction with the audit entry the model writes: no entry, no change.
+            DB::transaction(fn () => Designation::create($request->validated()));
         } catch (UniqueConstraintViolationException) {
             return back()->withErrors(['name' => self::DUPLICATE]);
         }
@@ -26,7 +28,7 @@ class DesignationController extends Controller
     public function update(DesignationRequest $request, Designation $designation): RedirectResponse
     {
         try {
-            $designation->update($request->validated());
+            DB::transaction(fn () => $designation->update($request->validated()));
         } catch (UniqueConstraintViolationException) {
             return back()->withErrors(['name' => self::DUPLICATE]);
         }
@@ -41,7 +43,7 @@ class DesignationController extends Controller
         }
 
         try {
-            $designation->delete();
+            DB::transaction(fn () => $designation->delete());
         } catch (QueryException) {
             // A foreign key (employees, from Phase 2) still references this designation.
             return back()->with('error', 'This designation is still in use.');

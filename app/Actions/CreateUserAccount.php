@@ -4,6 +4,7 @@ namespace App\Actions;
 
 use App\Models\User;
 use App\Notifications\SetPasswordNotification;
+use App\Support\Audit\Audit;
 use App\Support\Names;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -54,6 +55,14 @@ class CreateUserAccount
             $user->save();
             $user->syncRoles([$role]);
 
+            // Never the password (it is random and unknown). Inside the transaction: no entry, no account.
+            Audit::record(
+                'users',
+                "Account created with role {$role}",
+                $user,
+                ['attributes' => ['name' => $user->name, 'email' => $user->email, 'role' => $role]],
+            );
+
             return $user;
         });
 
@@ -69,6 +78,8 @@ class CreateUserAccount
             // Class only: the message can carry addresses or tokens.
             Log::warning('Set-password link could not be sent for a new account.', ['exception' => $e::class]);
         }
+
+        Audit::record('users', $this->linkSent ? 'Set-password link sent' : 'Set-password link failed', $user);
 
         return $user;
     }

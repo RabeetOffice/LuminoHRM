@@ -4,6 +4,7 @@ namespace App\Actions;
 
 use App\Exceptions\AccountRuleViolation;
 use App\Models\User;
+use App\Support\Audit\Audit;
 use App\Support\LastAdminGuard;
 use App\Support\Names;
 use Illuminate\Support\Str;
@@ -35,11 +36,27 @@ class UpdateUserAccount
                 throw new AccountRuleViolation(self::SELF_MESSAGE);
             }
 
+            $oldRoles = $account->roles()->pluck('name')->sort()->values()->all();
+
             // Email changes need no re-verification: these accounts are admin-managed.
+            // The model logs a name/email change itself (inside this transaction).
             $account->name = Names::normalise($name);
             $account->email = Str::lower(trim($email));
             $account->save();
             $account->syncRoles([$role]);
+
+            // Roles do not pass through model attributes, so the change is logged here, in the same transaction.
+            if ($oldRoles !== [$role]) {
+                $from = $oldRoles === [] ? 'no role' : implode(', ', $oldRoles);
+
+                Audit::record(
+                    'users',
+                    "Role changed from {$from} to {$role}",
+                    $account,
+                    ['old' => ['role' => $from], 'attributes' => ['role' => $role]],
+                    $actor,
+                );
+            }
 
             return $account;
         }, removesAdmin: $role !== 'admin');

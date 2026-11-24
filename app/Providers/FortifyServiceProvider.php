@@ -6,6 +6,7 @@ namespace App\Providers;
 use App\Actions\Fortify\ResetUserPassword;
 use App\Http\Middleware\EnsureUserIsActive;
 use App\Models\User;
+use App\Support\Audit\Audit;
 use Illuminate\Auth\Events\Login;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
@@ -68,6 +69,9 @@ class FortifyServiceProvider extends ServiceProvider
             }
 
             if (! $user->is_active) {
+                // The password was right but the account is disabled. Never blocks the refusal if logging fails.
+                Audit::tryRecord('auth', 'Sign-in refused: account disabled', $user, causer: $user);
+
                 throw ValidationException::withMessages([
                     Fortify::username() => EnsureUserIsActive::MESSAGE,
                 ]);

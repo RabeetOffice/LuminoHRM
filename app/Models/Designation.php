@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
+use Spatie\Activitylog\Models\Concerns\LogsActivity;
+use Spatie\Activitylog\Support\LogOptions;
 
 /**
  * @property int $id
@@ -18,9 +20,25 @@ use Illuminate\Support\Carbon;
 class Designation extends Model
 {
     /** @use HasFactory<DesignationFactory> */
-    use HasFactory;
+    use HasFactory, LogsActivity;
 
     protected $fillable = ['name', 'department_id'];
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->useLogName('organization')
+            ->logOnly(['name', 'department_id'])
+            ->logOnlyDirty()
+            ->dontLogEmptyChanges()
+            ->setDescriptionForEvent(fn (string $event) => "Designation {$event}");
+    }
+
+    /** Last known name, stored with each entry so it survives deletion. */
+    public function auditLabel(): string
+    {
+        return $this->name;
+    }
 
     /** @return BelongsTo<Department, $this> */
     public function department(): BelongsTo

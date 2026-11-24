@@ -14,6 +14,8 @@ use Illuminate\Support\Carbon;
 use Laravel\Fortify\Contracts\PasskeyUser;
 use Laravel\Fortify\PasskeyAuthenticatable;
 use Laravel\Fortify\TwoFactorAuthenticatable;
+use Spatie\Activitylog\Models\Concerns\LogsActivity;
+use Spatie\Activitylog\Support\LogOptions;
 use Spatie\Permission\Traits\HasRoles;
 
 /**
@@ -36,7 +38,35 @@ use Spatie\Permission\Traits\HasRoles;
 class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
 {
     /** @use HasFactory<UserFactory> */
-    use HasFactory, HasRoles, Notifiable, PasskeyAuthenticatable, TwoFactorAuthenticatable;
+    use HasFactory, HasRoles, LogsActivity, Notifiable, PasskeyAuthenticatable, TwoFactorAuthenticatable;
+
+    /**
+     * Only edits are logged by the model. Account creation, role changes and disabling/enabling are
+     * logged explicitly where they happen (CreateUserAccount, UpdateUserAccount, SetUserActive), because
+     * they do not pass through these attributes.
+     *
+     * @var list<string>
+     */
+    protected static array $recordEvents = ['updated'];
+
+    /**
+     * Allow-list: never password, remember_token, two-factor columns or sign-in timestamps.
+     */
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->useLogName('users')
+            ->logOnly(['name', 'email'])
+            ->logOnlyDirty()
+            ->dontLogEmptyChanges()
+            ->setDescriptionForEvent(fn (string $event) => 'Account details updated');
+    }
+
+    /** Last known name, stored with each entry. */
+    public function auditLabel(): string
+    {
+        return $this->name;
+    }
 
     /**
      * A disabled account gets no reset link. The public forgot-password form calls this after the broker has

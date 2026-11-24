@@ -3,6 +3,8 @@
 namespace App\Support;
 
 use App\Models\User;
+use App\Support\Audit\Audit;
+use Illuminate\Support\Facades\DB;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\PermissionRegistrar;
@@ -80,11 +82,18 @@ class AccessSync
             return self::ADMIN_EMAIL_IN_USE;
         }
 
-        $user = new User(['name' => 'Administrator', 'email' => $email, 'password' => $password]);
-        $user->email_verified_at = now();
-        $user->is_active = true;
-        $user->save();
-        $user->assignRole('admin');
+        // One transaction with its audit entry (no causer: this runs from a console command or a migration).
+        DB::transaction(function () use ($email, $password): void {
+            $user = new User(['name' => 'Administrator', 'email' => $email, 'password' => $password]);
+            $user->email_verified_at = now();
+            $user->is_active = true;
+            $user->save();
+            $user->assignRole('admin');
+
+            Audit::record('users', 'First admin created by system', $user, [
+                'attributes' => ['name' => $user->name, 'email' => $user->email, 'role' => 'admin'],
+            ]);
+        });
 
         return self::ADMIN_CREATED;
     }

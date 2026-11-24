@@ -8,6 +8,7 @@ use App\Actions\UpdateUserAccount;
 use App\Exceptions\AccountRuleViolation;
 use App\Http\Requests\UserRequest;
 use App\Models\User;
+use App\Support\Audit\Audit;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
@@ -171,8 +172,14 @@ class UserController extends Controller
         } catch (Throwable $e) {
             // Class only: the message can carry addresses or tokens.
             Log::warning('Password reset link could not be sent.', ['exception' => $e::class]);
+            Audit::record('users', 'Password reset link failed', $user);
 
             return back()->with('error', 'The password reset link could not be sent. Please try again later.');
+        }
+
+        // The email cannot be taken back, so the entry follows the send; a failure to write it surfaces as an error.
+        if ($status === Password::RESET_LINK_SENT) {
+            Audit::record('users', 'Password reset link sent', $user);
         }
 
         return match ($status) {

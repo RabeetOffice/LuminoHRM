@@ -3,6 +3,8 @@
 namespace App\Support;
 
 use App\Models\Setting;
+use App\Support\Audit\Audit;
+use App\Support\Audit\AuditLogAction;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -53,16 +55,60 @@ class Settings
             return;
         }
 
-        DB::transaction(function () use ($group, $accepted, $declared): void {
+        $before = static::group($group);
+
+        DB::transaction(function () use ($group, $accepted, $declared, $before): void {
+            $old = [];
+            $new = [];
+
             foreach ($accepted as $key => $value) {
+                $cast = static::cast($declared[$key], $value);
+
                 Setting::query()->updateOrCreate(
                     ['group' => $group, 'key' => $key],
-                    ['value' => json_encode(static::cast($declared[$key], $value), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)],
+                    ['value' => json_encode($cast, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)],
                 );
+
+                if ($before[$key] != $cast || gettype($before[$key]) !== gettype($cast)) {
+                    [$old["{$group}.{$key}"], $new["{$group}.{$key}"]] = static::auditValues($group, $key, $before[$key], $cast);
+                }
+            }
+
+            // Same transaction: if the entry cannot be written the settings are not saved either.
+            if ($new !== []) {
+                Audit::record('settings', ucfirst($group).' settings changed', null, ['old' => $old, 'attributes' => $new]);
             }
         });
 
         static::store()->forget();
+    }
+
+    /**
+     * What the audit log may show of a changed value. Secrets are never recorded, not even encrypted; files
+     * are recorded as a fact only.
+     *
+     * @return array{0: mixed, 1: mixed} old, new
+     */
+    protected static function auditValues(string $group, string $key, mixed $old, mixed $new): array
+    {
+        $dotted = "{$group}.{$key}";
+
+        if (in_array($dotted, (array) config('hrm.audit.secret_settings', []), true)) {
+            return [AuditLogAction::CHANGED, AuditLogAction::CHANGED];
+        }
+
+        if (in_array($dotted, (array) config('hrm.audit.file_settings', []), true)) {
+            $had = $old !== null && $old !== '';
+            $has = $new !== null && $new !== '';
+
+            return [$had ? '[file]' : '[none]', match (true) {
+                $has && $had => '[replaced]',
+                $has => '[added]',
+                default => '[removed]',
+            }];
+        }
+
+        return [$old, $new];
     }
 
     /**

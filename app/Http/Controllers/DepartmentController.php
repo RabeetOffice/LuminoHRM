@@ -11,6 +11,7 @@ use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -98,7 +99,8 @@ class DepartmentController extends Controller
     public function store(DepartmentRequest $request): RedirectResponse
     {
         try {
-            Department::create(['name' => $request->validated('name')]);
+            // One transaction with the audit entry the model writes: no entry, no change.
+            DB::transaction(fn () => Department::create(['name' => $request->validated('name')]));
         } catch (UniqueConstraintViolationException) {
             return back()->withErrors(['name' => 'A department with this name already exists.']);
         }
@@ -109,7 +111,7 @@ class DepartmentController extends Controller
     public function update(DepartmentRequest $request, Department $department): RedirectResponse
     {
         try {
-            $department->update(['name' => $request->validated('name')]);
+            DB::transaction(fn () => $department->update(['name' => $request->validated('name')]));
         } catch (UniqueConstraintViolationException) {
             return back()->withErrors(['name' => 'A department with this name already exists.']);
         }
@@ -124,7 +126,7 @@ class DepartmentController extends Controller
         }
 
         try {
-            $department->delete();
+            DB::transaction(fn () => $department->delete());
         } catch (QueryException) {
             // A designation was added after the check above; the restrict foreign key refused.
             return back()->with('error', "Move or delete this department's designations first.");

@@ -4,6 +4,7 @@ namespace App\Actions;
 
 use App\Exceptions\AccountRuleViolation;
 use App\Models\User;
+use App\Support\Audit\Audit;
 use App\Support\LastAdminGuard;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Password;
@@ -42,6 +43,14 @@ class SetUserActive
             }
 
             $account->save();
+
+            Audit::record(
+                'users',
+                $active ? 'Account enabled' : 'Account disabled',
+                $account,
+                ['old' => ['status' => $active ? 'disabled' : 'active'], 'attributes' => ['status' => $active ? 'active' : 'disabled']],
+                $actor,
+            );
 
             if (! $active) {
                 $this->endSessions($account);

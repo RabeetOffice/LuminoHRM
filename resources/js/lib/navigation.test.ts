@@ -86,7 +86,20 @@ describe('ready flag', () => {
         expect(r[2].items.map((i) => i.title)).toEqual([
             'Settings',
             'Users & Roles',
+            'Audit Log',
         ]);
+    });
+
+    test('Audit Log is for admin only', () => {
+        const titles = (perms: string[]) =>
+            filterNavigation(navigation, perms).flatMap((g) =>
+                g.items.map((i) => i.title),
+            );
+
+        expect(titles(['audit.view'])).toContain('Audit Log');
+        expect(titles(['settings.manage', 'users.manage'])).not.toContain(
+            'Audit Log',
+        );
     });
 
     test('Settings is for admin and hr (either settings permission)', () => {

@@ -24,6 +24,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { toUrl } from '@/lib/utils';
 import { dashboard } from '@/routes';
+import { index as auditLogIndex } from '@/routes/audit-log';
 import { index as hrmSettingsIndex } from '@/routes/hrm-settings';
 import { index as organizationIndex } from '@/routes/organization';
 import { index as usersIndex } from '@/routes/users';
@@ -224,10 +225,9 @@ export const navigation: NavGroup[] = [
             },
             {
                 title: 'Audit Log',
-                href: '/audit-log',
+                href: auditLogIndex(),
                 icon: ScrollText,
                 permission: 'audit.view',
-                ...unready,
             },
         ],
     },

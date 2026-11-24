@@ -67,6 +67,15 @@ return [
         'letters' => ['settings.manage'],
     ],
 
+    /*
+    | Settings the audit log never records a value for. Secret: only "[changed]" is recorded (a new secret setting
+    | must be listed here). File: the entry says added / replaced / removed, never a path or contents.
+    */
+    'audit' => [
+        'secret_settings' => ['email.password'],
+        'file_settings' => ['branding.logo', 'branding.logo_dark'],
+    ],
+
     // Date formats offered in Settings > Company (PHP date() syntax). The stored value must be one of these.
     'date_formats' => ['d M Y', 'd/m/Y', 'm/d/Y', 'Y-m-d', 'd-m-Y', 'M d, Y'],
 
