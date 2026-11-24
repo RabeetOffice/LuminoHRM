@@ -7,6 +7,7 @@ use App\Support\MailSettings;
 use App\Support\SettingsStore;
 use Carbon\CarbonImmutable;
 use Illuminate\Auth\Events\Failed;
+use Illuminate\Auth\Events\Lockout;
 use Illuminate\Auth\Events\Login;
 use Illuminate\Auth\Events\Logout;
 use Illuminate\Auth\Events\PasswordReset;
@@ -47,6 +48,7 @@ class AppServiceProvider extends ServiceProvider
         Event::listen(Login::class, [LogAuthEvents::class, 'onLogin']);
         Event::listen(Failed::class, [LogAuthEvents::class, 'onFailed']);
         Event::listen(Logout::class, [LogAuthEvents::class, 'onLogout']);
+        Event::listen(Lockout::class, [LogAuthEvents::class, 'onLockout']);
         Event::listen(PasswordReset::class, [LogAuthEvents::class, 'onPasswordReset']);
         Event::listen(TwoFactorAuthenticationEnabled::class, [LogAuthEvents::class, 'onTwoFactorEnabled']);
         Event::listen(TwoFactorAuthenticationConfirmed::class, [LogAuthEvents::class, 'onTwoFactorConfirmed']);

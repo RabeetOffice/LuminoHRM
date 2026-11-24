@@ -99,6 +99,32 @@ step when `release.txt` differs from `shared/release.done` (or when
 `artisan schedule:run` (skipped while a post-deploy step is failing). Output goes
 to `shared/storage/logs/cron.log`, which is rotated at about 1 MB (one `.1` backup).
 
+### What the scheduler runs (`routes/console.php`)
+
+`schedule:run` is the only thing cron calls; the application decides what is due:
+
+| What | When | Notes |
+| --- | --- | --- |
+| `queue:work --stop-when-empty --max-time=50 --tries=3` | every minute | Sends queued mail (set-password emails). `withoutOverlapping` with a 10 minute expiry. A fresh process each minute, so current Settings > Email values apply. |
+| `hrm:backup-database` | 02:00 `APP_TIMEZONE` (Asia/Karachi) | PDO-only SQL dump to `shared/storage/app/private/backups/lumino-hrm-YYYY-MM-DD.sql.gz`, 14 days kept. See [backup-restore.md](backup-restore.md). |
+| `queue:prune-failed --hours=168` | 03:30 daily | Drops failed jobs (encrypted payloads can hold reset tokens) after a week. |
+| `queue:prune-batches` | 03:35 daily | Only when the `job_batches` table exists. |
+
+`activitylog:clean` is deliberately not scheduled: the audit log is permanent.
+`schedule:run` runs these in the foreground, so a long queue run (up to about 50 s) keeps `cron.sh`'s lock for that
+time; the next minute's cron then exits at once and picks up again after it.
+
+### Real client address behind the CDN
+
+The host sits behind a CDN (`Server: hcdn`), so the connecting address Laravel sees may be the CDN's, and the
+audit log and `device_logs` would record that instead of the visitor or machine. Set `HRM_TRUSTED_PROXIES` in
+`shared/.env` (via the seed) to a comma-separated list of the CDN's addresses or CIDR ranges. Only requests
+whose connecting address is on that list have `X-Forwarded-For` and `X-Forwarded-Proto` believed. The default is
+empty (trust nobody; `request()->ip()` is the connecting address). Do not set `*`: any visitor could then forge
+the address recorded in the audit log. Find the right addresses by comparing the audit log IP of your own
+sign-in with your real address; if they differ, the logged address is the CDN's. `/iclock` is unaffected
+either way.
+
 ## First deploy (differs from routine ones)
 
 1. Create the cron entry above (it can exist before the first upload; it does
@@ -158,7 +184,8 @@ file API (denied over HTTP, rewritten every minute, removed by the next deploy u
 
 - `deploy/hostinger/status.txt`: `time`, `release`, `release_done`, `state`
   (`waiting_for_env`, `upload_in_progress`, `post_deploy_failed`, `ok`), `detail`, `env_present`,
-  `app_key_set`, `php`, `proc_open`, `last_migrate`, `access` (result line of the last `hrm:sync-access`). No secrets and no command output.
+  `app_key_set`, `php`, `proc_open`, `last_migrate`, `access` (result line of the last `hrm:sync-access`),
+  `last_backup` (finish time of the last nightly backup, empty if none yet) and `last_backup_ok` (`yes`, `no` or `unknown`). No secrets and no command output.
 - `deploy/hostinger/status.log`: the last 40 lines `cron.sh` wrote itself (raw artisan output is not copied;
   for that, `shared/storage/logs/cron.log` is the full log).
 ## Check that a deploy worked

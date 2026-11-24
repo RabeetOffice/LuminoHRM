@@ -60,3 +60,23 @@ describe('app timezone', () => {
         expect(formatLongDate(instant, 'UTC')).toBe('Monday, 23 November 2026');
     });
 });
+
+describe('invalid or missing app timezone', () => {
+    const instant = new Date('2026-11-22T20:00:00Z');
+
+    test('hourIn falls back to the browser zone instead of throwing', () => {
+        for (const bad of ['', 'Not/AZone', undefined, null] as unknown[]) {
+            const hour = hourIn(instant, bad as string);
+            expect(hour).toBeGreaterThanOrEqual(0);
+            expect(hour).toBeLessThanOrEqual(23);
+        }
+    });
+
+    test('formatLongDate falls back to the browser zone instead of throwing', () => {
+        for (const bad of ['', 'Not/AZone', undefined, null] as unknown[]) {
+            expect(formatLongDate(instant, bad as string)).toMatch(
+                /^\w+, \d{1,2} \w+ 2026$/,
+            );
+        }
+    });
+});

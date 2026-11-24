@@ -5,6 +5,7 @@ namespace App\Listeners;
 use App\Models\User;
 use App\Support\Audit\Audit;
 use Illuminate\Auth\Events\Failed;
+use Illuminate\Auth\Events\Lockout;
 use Illuminate\Auth\Events\Login;
 use Illuminate\Auth\Events\Logout;
 use Illuminate\Auth\Events\PasswordReset;
@@ -108,6 +109,30 @@ class LogAuthEvents
             $count === self::FAILED_LIMIT + 1 => 'marker',
             default => 'skip',
         };
+    }
+
+    /** At most one lockout entry per IP address per this many seconds (separate from the failed sign-in cap). */
+    public const LOCKOUT_WINDOW_SECONDS = 600;
+
+    public function onLockout(Lockout $event): void
+    {
+        $ip = $event->request->ip();
+
+        try {
+            // First lockout for this address in the window wins; the cache is the limiter. If it is down, record anyway.
+            if (! Cache::add('audit:lockout:'.sha1((string) $ip), 1, self::LOCKOUT_WINDOW_SECONDS)) {
+                return;
+            }
+        } catch (Throwable $e) {
+            report($e);
+        }
+
+        $email = $event->request->input(Fortify::username());
+
+        Audit::tryRecord('auth', 'Sign-in locked out: too many attempts', null, array_filter([
+            'attempted_email' => is_string($email) ? Audit::clean(trim($email)) : null,
+            'ip' => $ip,
+        ], fn ($v) => $v !== null));
     }
 
     public function onLogout(Logout $event): void

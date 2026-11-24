@@ -2,13 +2,14 @@
 
 namespace App\Providers;
 
-
 use App\Actions\Fortify\ResetUserPassword;
 use App\Http\Middleware\EnsureUserIsActive;
 use App\Models\User;
 use App\Support\Audit\Audit;
+use Illuminate\Auth\Events\Lockout;
 use Illuminate\Auth\Events\Login;
 use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Exceptions\ThrottleRequestsException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Hash;
@@ -142,7 +143,13 @@ class FortifyServiceProvider extends ServiceProvider
         RateLimiter::for('login', function (Request $request) {
             $throttleKey = Str::transliterate(Str::lower($request->input(Fortify::username())).'|'.$request->ip());
 
-            return Limit::perMinute(5)->by($throttleKey);
+            // The throttle middleware answers 429 itself and never fires the framework's Lockout event; fire it here
+            // (it is what writes the "Sign-in locked out" audit entry), then give the same 429 as before.
+            return Limit::perMinute(5)->by($throttleKey)->response(function (Request $request, array $headers) {
+                event(new Lockout($request));
+
+                throw new ThrottleRequestsException('Too Many Attempts.', null, $headers);
+            });
         });
 
         RateLimiter::for('passkeys', function (Request $request) {

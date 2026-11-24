@@ -72,12 +72,32 @@ export function greetingFor(
     return hour >= 12 && hour < 17 ? 'Good afternoon' : 'Good evening';
 }
 
+/**
+ * An unusable timezone (empty, missing or not an IANA name) must not blank the dashboard:
+ * return undefined so Intl uses the browser zone.
+ */
+function usableTimeZone(
+    timeZone: string | null | undefined,
+): string | undefined {
+    if (!timeZone) {
+        return undefined;
+    }
+
+    try {
+        new Intl.DateTimeFormat('en-GB', { timeZone });
+
+        return timeZone;
+    } catch {
+        return undefined;
+    }
+}
+
 /** Hour of day (0-23) of an instant in the given IANA timezone. */
 export function hourIn(date: Date, timeZone: string): number {
     const hour = new Intl.DateTimeFormat('en-GB', {
         hour: 'numeric',
         hourCycle: 'h23',
-        timeZone,
+        timeZone: usableTimeZone(timeZone),
     }).format(date);
 
     return Number(hour);
@@ -90,7 +110,7 @@ export function formatLongDate(date: Date, timeZone: string): string {
         day: 'numeric',
         month: 'long',
         year: 'numeric',
-        timeZone,
+        timeZone: usableTimeZone(timeZone),
     })
         .format(date)
         .replace(/^(\w+) /, '$1, ');

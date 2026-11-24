@@ -17,6 +17,27 @@ return [
         'password' => env('HRM_ADMIN_PASSWORD'),
     ],
 
+    /*
+    | Addresses (IPs or CIDR ranges) of reverse proxies / CDNs whose X-Forwarded-For and X-Forwarded-Proto are believed.
+    | Comma-separated in HRM_TRUSTED_PROXIES. Empty (the default) trusts none, so request()->ip() is the connecting address.
+    | Never use "*": any visitor could then forge the address written to the audit log and device_logs.
+    */
+    'trusted_proxies' => array_values(array_filter(
+        array_map('trim', explode(',', (string) env('HRM_TRUSTED_PROXIES', ''))),
+        fn (string $entry) => $entry !== '',
+    )),
+
+    /*
+    | Nightly database backup (php artisan hrm:backup-database). Files go to the "local" disk (private, never under public/).
+    | exclude_data: tables whose structure is dumped but whose rows are not (transient, or holding encrypted tokens).
+    | keep_days: backups dated more than this many days ago are deleted. rows_per_insert: rows per INSERT statement.
+    */
+    'backup' => [
+        'exclude_data' => ['cache', 'cache_locks', 'sessions', 'jobs', 'job_batches', 'failed_jobs'],
+        'keep_days' => 14,
+        'rows_per_insert' => 200,
+    ],
+
     // Permission => roles that hold it. Single source of truth for access control.
     // "My Space" pages need no permission: every signed-in user has them.
     'permissions' => [

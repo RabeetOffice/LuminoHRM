@@ -215,6 +215,18 @@ write_status() {
     [ -f "$SHARED/last_migrate" ] && st_last=$(tr -d '\r\n' < "$SHARED/last_migrate")
     st_access=''
     [ -f "$SHARED/last_access" ] && st_access=$(tr -cd 'a-z0-9 =_' < "$SHARED/last_access" | cut -c1-120)
+    # Nightly backup result, written by hrm:backup-database. Plain text tools only; any problem reads as unknown.
+    st_bk=''
+    st_bk_ok=unknown
+    bk_file="$STORAGE/app/private/backup-status/last-backup.json"
+    if [ -f "$bk_file" ]; then
+        st_bk=$(sed -n 's/.*"finished_at"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$bk_file" 2>/dev/null | head -n 1 | tr -cd '0-9A-Za-z:+.-' | cut -c1-40)
+        if grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$bk_file" 2>/dev/null; then
+            st_bk_ok=yes
+        elif grep -q '"ok"[[:space:]]*:[[:space:]]*false' "$bk_file" 2>/dev/null; then
+            st_bk_ok=no
+        fi
+    fi
     php_info=$("$PHP_BIN" -r 'echo PHP_VERSION, " ", function_exists("proc_open") ? "yes" : "no";' 2>/dev/null)
     st_php=unknown
     st_proc=unknown
@@ -235,6 +247,8 @@ write_status() {
         echo "proc_open=$st_proc"
         echo "last_migrate=$st_last"
         echo "access=$st_access"
+        echo "last_backup=$st_bk"
+        echo "last_backup_ok=$st_bk_ok"
     } > "$st_tmp" && mv -f "$st_tmp" "$SCRIPT_DIR/status.txt"
     # Only the lines this script wrote itself: they start with a UTC timestamp.
     grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z ' "$LOG_FILE" 2>/dev/null | tail -n 40 > "$SCRIPT_DIR/status.log.tmp.$$" \
