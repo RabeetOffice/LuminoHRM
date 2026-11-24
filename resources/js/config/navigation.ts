@@ -88,7 +88,6 @@ export const navigation: NavGroup[] = [
                 href: '/employees',
                 icon: Users,
                 permission: ['employees.view-all', 'employees.view-team'],
-                ...unready,
             },
             {
                 title: 'Organization Chart',

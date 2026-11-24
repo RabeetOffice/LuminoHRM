@@ -161,3 +161,23 @@ describe('delete rules', function () {
         expect((new EmployeeAccess($admin))->deleteBlockers($boss->refresh()))->toHaveCount(2);
     });
 });
+
+describe('string-typed ids (a driver that returns ids as strings)', function () {
+    it('agrees with the list scope on own record and direct reports', function () {
+        $t = team();
+        $user = userWithRole('manager');
+        $user->forceFill(['employee_id' => $t['manager']->id])->save();
+        $access = new EmployeeAccess($user->refresh());
+
+        // What a driver without native types hands back: every id as a string.
+        $own = (clone $t['manager'])->setRawAttributes(['id' => (string) $t['manager']->id, 'manager_id' => null], true);
+        $report = (clone $t['report'])->setRawAttributes(['id' => (string) $t['report']->id, 'manager_id' => (string) $t['manager']->id], true);
+        $indirect = (clone $t['indirect'])->setRawAttributes(['id' => (string) $t['indirect']->id, 'manager_id' => (string) $t['report']->id], true);
+
+        expect($access->canView($own))->toBeTrue()
+            ->and($access->fieldGroups($own))->toBe(ALL_GROUPS)
+            ->and($access->canView($report))->toBeTrue()
+            ->and($access->fieldGroups($report))->toBe(['basic', 'employment'])
+            ->and($access->canView($indirect))->toBeFalse();
+    });
+});

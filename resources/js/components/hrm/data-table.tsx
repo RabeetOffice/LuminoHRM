@@ -75,6 +75,13 @@ type Props<T> = {
     bordered?: boolean;
     /** Shown when there are no rows. */
     emptyText: string;
+    /** Optional control under the empty text, e.g. "Clear filters" or an add button. */
+    emptyAction?: ReactNode;
+    /**
+     * Optional: shown instead of the table when there are rows (a card grid, for example). The toolbar,
+     * the empty state and the pagination footer stay the same, so switching views loses nothing.
+     */
+    view?: ReactNode;
     /** Accessible name for the table. */
     label?: string;
     className?: string;
@@ -100,6 +107,8 @@ export function DataTable<T>({
     toolbar,
     bordered = true,
     emptyText,
+    emptyAction,
+    view,
     label,
     className,
 }: Props<T>) {
@@ -158,6 +167,18 @@ export function DataTable<T>({
 
     const { current_page: current, last_page: last, total } = pagination;
     const hasToolbar = search !== undefined || toolbar !== undefined;
+    const emptyBlock = (
+        <>
+            <Inbox
+                aria-hidden="true"
+                className="mx-auto mb-2 size-8 text-muted-foreground/60"
+            />
+            <p className="text-sm text-muted-foreground">{emptyText}</p>
+            {emptyAction && (
+                <div className="mt-3 flex justify-center">{emptyAction}</div>
+            )}
+        </>
+    );
 
     return (
         <div
@@ -207,54 +228,54 @@ export function DataTable<T>({
                 aria-busy={busy}
                 className={cn('transition-opacity', busy && 'opacity-60')}
             >
-                <Table aria-label={label}>
-                    <TableHeader className="bg-muted/50">
-                        <TableRow className="hover:bg-transparent">
-                            {columns.map((column) => (
-                                <TableHead
-                                    key={column.key}
-                                    className={
-                                        column.headerClassName ??
-                                        column.className
-                                    }
-                                >
-                                    {column.header}
-                                </TableHead>
-                            ))}
-                        </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                        {rows.length === 0 ? (
+                {rows.length > 0 && view !== undefined ? (
+                    view
+                ) : view !== undefined ? (
+                    <div className="px-4 py-14 text-center">{emptyBlock}</div>
+                ) : (
+                    <Table aria-label={label}>
+                        <TableHeader className="bg-muted/50">
                             <TableRow className="hover:bg-transparent">
-                                <TableCell
-                                    colSpan={columns.length}
-                                    className="py-14 text-center"
-                                >
-                                    <Inbox
-                                        aria-hidden="true"
-                                        className="mx-auto mb-2 size-8 text-muted-foreground/60"
-                                    />
-                                    <p className="text-sm text-muted-foreground">
-                                        {emptyText}
-                                    </p>
-                                </TableCell>
+                                {columns.map((column) => (
+                                    <TableHead
+                                        key={column.key}
+                                        className={
+                                            column.headerClassName ??
+                                            column.className
+                                        }
+                                    >
+                                        {column.header}
+                                    </TableHead>
+                                ))}
                             </TableRow>
-                        ) : (
-                            rows.map((row) => (
-                                <TableRow key={rowKey(row)}>
-                                    {columns.map((column) => (
-                                        <TableCell
-                                            key={column.key}
-                                            className={column.className}
-                                        >
-                                            {column.cell(row)}
-                                        </TableCell>
-                                    ))}
+                        </TableHeader>
+                        <TableBody>
+                            {rows.length === 0 ? (
+                                <TableRow className="hover:bg-transparent">
+                                    <TableCell
+                                        colSpan={columns.length}
+                                        className="py-14 text-center"
+                                    >
+                                        {emptyBlock}
+                                    </TableCell>
                                 </TableRow>
-                            ))
-                        )}
-                    </TableBody>
-                </Table>
+                            ) : (
+                                rows.map((row) => (
+                                    <TableRow key={rowKey(row)}>
+                                        {columns.map((column) => (
+                                            <TableCell
+                                                key={column.key}
+                                                className={column.className}
+                                            >
+                                                {column.cell(row)}
+                                            </TableCell>
+                                        ))}
+                                    </TableRow>
+                                ))
+                            )}
+                        </TableBody>
+                    </Table>
+                )}
             </div>
 
             {total > 0 && (

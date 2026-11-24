@@ -126,7 +126,7 @@ class EmployeeAccess
     {
         $own = $this->ownId();
 
-        return $own !== null && $employee->getKey() === $own;
+        return $own !== null && (int) $employee->getKey() === $own;
     }
 
     private function isDirectReport(Employee $employee): bool
@@ -134,7 +134,8 @@ class EmployeeAccess
         $own = $this->ownId();
 
         return $own !== null
-            && $employee->manager_id === $own
+            && $employee->manager_id !== null
+            && (int) $employee->manager_id === $own
             && $this->user->can('employees.view-team');
     }
 

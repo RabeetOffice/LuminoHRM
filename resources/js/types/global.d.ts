@@ -12,6 +12,8 @@ declare module '@inertiajs/core' {
             name: string;
             app: {
                 timezone: string;
+                /** PHP date() pattern from Settings > Company, e.g. 'd M Y'. Use formatDate(). */
+                dateFormat: string;
                 name: string;
                 accent: string;
                 logoUrl: string | null;

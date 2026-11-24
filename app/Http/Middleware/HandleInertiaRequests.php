@@ -42,6 +42,7 @@ class HandleInertiaRequests extends Middleware
             // Company settings the shell needs. Display only: PHP's and the app's timezone are not changed by it.
             'app' => fn () => [
                 'timezone' => settings('company.timezone'),
+                'dateFormat' => settings('company.date_format'),
                 'name' => settings('company.name'),
                 'accent' => Branding::accent(),
                 'logoUrl' => Branding::url(settings('branding.logo')),

@@ -4,6 +4,7 @@ use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\BrandingMediaController;
 use App\Http\Controllers\DepartmentController;
 use App\Http\Controllers\DesignationController;
+use App\Http\Controllers\EmployeeController;
 use App\Http\Controllers\Settings\HrmSettingsController;
 use App\Http\Controllers\UserController;
 use App\Support\Branding;
@@ -27,6 +28,11 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::resource('departments', DepartmentController::class)->only(['store', 'update', 'destroy']);
         Route::resource('designations', DesignationController::class)->only(['store', 'update', 'destroy']);
     });
+
+    // Employees. Who may open the list is checked in the controller (view-all OR view-team) and every row goes
+    // through EmployeeAccess. Static routes (create, export, import ...) are added ABOVE the wildcard route,
+    // which must stay last and numeric so it never swallows them: employees/{employee} ->whereNumber('employee').
+    Route::get('employees', [EmployeeController::class, 'index'])->name('employees.index');
 
     // Users and roles. No delete route: accounts are disabled, never removed.
     Route::middleware('can:users.manage')->prefix('users')->name('users.')->group(function () {
