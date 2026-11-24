@@ -128,12 +128,9 @@ class EmployeeImportController extends Controller
             return redirect()->route('employees.import', ['token' => $token])->with('error', self::BUSY);
         }
 
-        // Not in the console (tests, tinker): a limit there would also bound everything that runs after this.
-        if (! app()->runningInConsole()) {
-            set_time_limit(self::RUN_SECONDS);
-        }
-
         try {
+            $this->extendTimeLimit();
+
             $path = EmployeeImportStore::path($token, $user);
 
             if ($path === null) {
@@ -199,5 +196,20 @@ class EmployeeImportController extends Controller
                 'errors' => $row['errors'],
             ], $rows),
         ];
+    }
+
+    /** Gives a long import room to finish. Never fatal: a host may disable set_time_limit(), and the lock must still be released. */
+    protected function extendTimeLimit(): void
+    {
+        // Not in the console (tests, tinker): a limit there would also bound everything that runs after this.
+        if (app()->runningInConsole() || ! function_exists('set_time_limit')) {
+            return;
+        }
+
+        try {
+            @set_time_limit(self::RUN_SECONDS);
+        } catch (\Throwable) {
+            // Ignored: the import runs under the host's own limit.
+        }
     }
 }

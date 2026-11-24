@@ -204,3 +204,8 @@ export function defaultExpanded(
 
     return open;
 }
+
+/** How the chart scrolls to a search match: never animated for someone who prefers reduced motion. */
+export function scrollBehavior(reducedMotion: boolean): 'auto' | 'smooth' {
+    return reducedMotion ? 'auto' : 'smooth';
+}

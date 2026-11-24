@@ -53,6 +53,7 @@ export const OrgChartNode = memo(function OrgChartNode({
         >
             <div
                 data-node-id={node.id}
+                data-root={level === 1 ? 'true' : undefined}
                 data-match={matched ? 'true' : undefined}
                 className={cn(
                     'flex w-52 flex-col items-center gap-1.5 rounded-xl border bg-card px-3 pt-4 pb-3 text-center shadow-xs transition-colors',

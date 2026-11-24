@@ -9,8 +9,10 @@ use App\Models\Employee;
 use App\Models\EmployeeDocument;
 use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
+use App\Support\PhotoNotProcessable;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -62,7 +64,12 @@ class EmployeeFileController extends Controller
     {
         $file = $request->file('photo');
 
-        $files->replacePhoto($employee, $file, (string) EmployeeFiles::photoExtension($file), $request->user());
+        try {
+            $files->replacePhoto($employee, $file, (string) EmployeeFiles::photoExtension($file), $request->user());
+        } catch (PhotoNotProcessable) {
+            // Raised before anything is stored or written, so the previous photo is untouched.
+            throw ValidationException::withMessages(['photo' => EmployeePhotoRequest::UNPROCESSABLE_MESSAGE]);
+        }
 
         return back()->with('success', 'Photo updated.');
     }

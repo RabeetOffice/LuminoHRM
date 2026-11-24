@@ -22,6 +22,8 @@ class EmployeePhotoRequest extends FormRequest
 
     public const DIMENSIONS_MESSAGE = 'The photo must be between 64×64 and 2000×2000 pixels.';
 
+    public const UNPROCESSABLE_MESSAGE = 'This image could not be processed. Try saving it again as JPG or PNG.';
+
     public const MISSING_MESSAGE = 'Choose a photo to upload.';
 
     public function authorize(): bool
@@ -59,7 +61,7 @@ class EmployeePhotoRequest extends FormRequest
                     $extension = $value instanceof UploadedFile ? EmployeeFiles::photoExtension($value) : null;
 
                     if ($extension === null || EmployeeFiles::cleanPhotoBytes($value, $extension) === null) {
-                        $fail(self::TYPE_MESSAGE);
+                        $fail($extension === null ? self::TYPE_MESSAGE : self::UNPROCESSABLE_MESSAGE);
                     }
                 },
             ],

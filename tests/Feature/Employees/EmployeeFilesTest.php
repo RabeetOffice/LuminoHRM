@@ -5,6 +5,8 @@ use App\Models\Designation;
 use App\Models\Employee;
 use App\Models\EmployeeDocument;
 use App\Models\User;
+use App\Actions\Employees\ManageEmployeeFiles;
+use App\Support\PhotoNotProcessable;
 use App\Support\EmployeeFiles;
 use App\Support\EmployeeRoles;
 use Database\Seeders\RolePermissionSeeder;
@@ -324,6 +326,45 @@ it('removes the new file when saving the photo fails, and keeps the old one', fu
     $this->withoutExceptionHandling();
     expect(fn () => $this->actingAs(efAdmin())->post("/employees/{$e->id}/photo", ['photo' => UploadedFile::fake()->image('n.png', 100, 100)]))
         ->toThrow(RuntimeException::class);
+
+    expect(efFiles("employees/{$e->id}"))->toBe([$old])->and($e->fresh()->photo_path)->toBe($old);
+});
+
+it('answers a photo that passes the type and size checks but cannot be decoded with a validation error, and changes nothing', function () {
+    $e = efEmployee();
+    $old = efGivePhoto($e);
+    $before = Activity::count();
+
+    // A real PNG signature and IHDR (so getimagesize and finfo accept it), then bytes that are not image data.
+    $corrupt = substr(efPngBytes(), 0, 33)."\0\0\0\x10IDAT".str_repeat("\xA7", 16)."\0\0\0\0\0\0\0\0IEND\xAE\x42\x60\x82";
+    $upload = UploadedFile::fake()->createWithContent('broken.png', $corrupt);
+    expect(EmployeeFiles::photoExtension($upload))->toBe('png')->and(@imagecreatefromstring($corrupt))->toBeFalse();
+
+    $this->actingAs(efAdmin())->from("/employees/{$e->id}/edit")->post("/employees/{$e->id}/photo", ['photo' => $upload])
+        ->assertRedirect("/employees/{$e->id}/edit")
+        ->assertSessionHasErrors(['photo' => 'This image could not be processed. Try saving it again as JPG or PNG.']);
+
+    expect(efFiles("employees/{$e->id}"))->toBe([$old])
+        ->and($e->fresh()->photo_path)->toBe($old)
+        ->and(Activity::count())->toBe($before);
+});
+
+it('turns a failure while storing the photo into the same validation error, with nothing stored', function () {
+    $e = efEmployee();
+    $old = efGivePhoto($e);
+
+    // The decode check in the request passed, but re-encoding fails when storing (a race or an encoder fault).
+    $this->app->instance(ManageEmployeeFiles::class, new class extends ManageEmployeeFiles
+    {
+        public function replacePhoto(Employee $employee, UploadedFile $file, string $extension, User $by): void
+        {
+            throw new PhotoNotProcessable('The photo could not be read.');
+        }
+    });
+
+    $this->actingAs(efAdmin())->from("/employees/{$e->id}/edit")->post("/employees/{$e->id}/photo", ['photo' => UploadedFile::fake()->image('n.png', 100, 100)])
+        ->assertRedirect("/employees/{$e->id}/edit")
+        ->assertSessionHasErrors(['photo' => 'This image could not be processed. Try saving it again as JPG or PNG.']);
 
     expect(efFiles("employees/{$e->id}"))->toBe([$old])->and($e->fresh()->photo_path)->toBe($old);
 });
@@ -1020,6 +1061,30 @@ describe('EmployeeFiles::jpegOrientation (the reader used when exif_read_data is
         expect(substr($jpeg, 2, 2))->toBe("\xFF\xE0")
             ->and(EmployeeFiles::jpegOrientation($bytes))->toBe(8);
     });
+
+    it('skips 0xFF fill bytes before a marker', function () {
+        $jpeg = efJpegWithApp1(efExifPayload(6), 16, 16);
+
+        // Fill bytes before the APP1 marker.
+        expect(EmployeeFiles::jpegOrientation(substr($jpeg, 0, 2)."\xFF\xFF\xFF".substr($jpeg, 2)))->toBe(6);
+
+        // Fill bytes only, then the end of the data: nothing found, no error.
+        expect(EmployeeFiles::jpegOrientation("\xFF\xD8\xFF\xFF\xFF\xFF"))->toBeNull();
+    });
+
+    it('uses the Exif segment when an XMP APP1 comes first', function () {
+        $xmp = "http://ns.adobe.com/xap/1.0/\0<x:xmpmeta/>";
+        $jpeg = efJpegWithApp1(efExifPayload(3), 16, 16);
+        $bytes = substr($jpeg, 0, 2)."\xFF\xE1".pack('n', strlen($xmp) + 2).$xmp.substr($jpeg, 2);
+
+        expect(EmployeeFiles::jpegOrientation($bytes))->toBe(3);
+    });
+
+    it('gives null for an Orientation entry that is not one SHORT value', function (int $type, int $count) {
+        $payload = "Exif\0\0II*\0".pack('V', 8).pack('v', 1).pack('v', 0x0112).pack('v', $type).pack('V', $count).pack('v', 6).pack('v', 0).pack('V', 0);
+
+        expect(EmployeeFiles::jpegOrientation(efJpegWithApp1($payload, 16, 16)))->toBeNull();
+    })->with(['LONG type' => [4, 1], 'BYTE type' => [1, 1], 'count 2' => [3, 2], 'count 0' => [3, 0]]);
 
     it('gives null for anything it cannot trust', function (string $bytes) {
         expect(EmployeeFiles::jpegOrientation($bytes))->toBeNull();

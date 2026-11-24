@@ -6,6 +6,7 @@ import {
     findPath,
     flattenTree,
     matchNodes,
+    scrollBehavior,
 } from '@/lib/org-tree';
 import type { OrgNode, OrgTreeNode } from '@/lib/org-tree';
 
@@ -261,5 +262,12 @@ describe('defaultExpanded', () => {
 
     it('is empty for no people', () => {
         expect(defaultExpanded([]).size).toBe(0);
+    });
+});
+
+describe('scrollBehavior', () => {
+    it('animates only when motion is not reduced', () => {
+        expect(scrollBehavior(false)).toBe('smooth');
+        expect(scrollBehavior(true)).toBe('auto');
     });
 });

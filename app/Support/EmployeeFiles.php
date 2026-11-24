@@ -278,6 +278,15 @@ final class EmployeeFiles
                 return null;
             }
 
+            // Any number of 0xFF fill bytes may come before a marker.
+            while ($pos + 1 < $length && $bytes[$pos + 1] === "\xFF") {
+                $pos++;
+            }
+
+            if ($pos + 4 > $length) {
+                return null;
+            }
+
             $marker = ord($bytes[$pos + 1]);
 
             // Start of scan or end of image: the metadata segments are behind us.
@@ -339,8 +348,8 @@ final class EmployeeFiles
                 continue;
             }
 
-            // Type SHORT (3), one value, held in the first two bytes of the value field.
-            if (unpack($u16, $tiff, $entry + 2)[1] !== 3) {
+            // Type SHORT (3) and count 1: the value sits in the first two bytes of the value field.
+            if (unpack($u16, $tiff, $entry + 2)[1] !== 3 || unpack($u32, $tiff, $entry + 4)[1] !== 1) {
                 return null;
             }
 
@@ -384,7 +393,7 @@ final class EmployeeFiles
         $bytes = self::cleanPhotoBytes($file, $extension);
 
         if ($bytes === null) {
-            throw new \RuntimeException('The photo could not be read.');
+            throw new PhotoNotProcessable('The photo could not be read.');
         }
 
         $folder = self::directory($employee->id).'/photo';

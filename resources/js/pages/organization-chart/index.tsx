@@ -24,6 +24,7 @@ import {
     findPath,
     flattenTree,
     matchNodes,
+    scrollBehavior,
 } from '@/lib/org-tree';
 import type { OrgNode } from '@/lib/org-tree';
 import { index } from '@/routes/organization-chart';
@@ -34,6 +35,9 @@ type Props = {
 };
 
 const EMPTY = new Set<number>();
+
+const prefersReducedMotion = () =>
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 export default function OrganizationChart({ nodes }: Props) {
     const roots = useMemo(() => buildTree(nodes), [nodes]);
@@ -84,13 +88,19 @@ export default function OrganizationChart({ nodes }: Props) {
         setOpen(next);
     };
 
-    // A chart wider than the card shows the top of the tree in the middle, not its left edge: on load and after
-    // Expand all, Collapse all or clearing the search.
+    // A chart wider than the card opens with the first top person in the middle, not the middle of the scroll range
+    // (a lopsided tree would leave them off to one side): on load and after Expand all, Collapse all or clearing the
+    // search. Only the card scrolls, never the page.
     const centre = useCallback(() => {
         const el = canvas.current;
+        const root = el?.querySelector<HTMLElement>('[data-root="true"]');
 
-        if (el && el.scrollWidth > el.clientWidth) {
-            el.scrollLeft = (el.scrollWidth - el.clientWidth) / 2;
+        if (el && root && el.scrollWidth > el.clientWidth) {
+            const card = root.getBoundingClientRect();
+            const box = el.getBoundingClientRect();
+
+            el.scrollLeft +=
+                card.left + card.width / 2 - (box.left + el.clientWidth / 2);
         }
     }, []);
     const centreAfterRender = () => requestAnimationFrame(centre);
@@ -109,8 +119,8 @@ export default function OrganizationChart({ nodes }: Props) {
             canvas.current
                 ?.querySelector(`[data-node-id="${first}"]`)
                 ?.scrollIntoView({
-                    behavior: 'smooth',
-                    block: 'center',
+                    behavior: scrollBehavior(prefersReducedMotion()),
+                    block: 'nearest',
                     inline: 'center',
                 });
         });

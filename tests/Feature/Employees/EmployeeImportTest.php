@@ -918,6 +918,37 @@ it('rolls everything back and keeps the file when a save fails half way', functi
     expect(Employee::count())->toBe(3);
 });
 
+it('releases the run lock when raising the time limit fails, and the token stays usable', function () {
+    $admin = userWithRole('admin');
+    [$token] = impPreview($admin, [impRow(1), impRow(2)]);
+
+    $this->app->bind(EmployeeImportController::class, fn () => new class extends EmployeeImportController
+    {
+        private bool $failed = false;
+
+        // Fails on the first run only (the router keeps this instance for the second request).
+        protected function extendTimeLimit(): void
+        {
+            if (! $this->failed) {
+                $this->failed = true;
+
+                throw new RuntimeException('set_time_limit is disabled');
+            }
+        }
+    });
+
+    $this->withoutExceptionHandling();
+    expect(fn () => impRun($admin, $token))->toThrow(RuntimeException::class, 'set_time_limit is disabled');
+
+    expect(Employee::count())->toBe(0)
+        ->and(Storage::disk('local')->exists("imports/{$token}.xlsx"))->toBeTrue();
+
+    // The finally block released the lock: the same upload imports at once.
+    $this->withExceptionHandling();
+    impRun($admin, $token)->assertRedirect('/employees');
+    expect(Employee::count())->toBe(2);
+});
+
 it('creates resigned, terminated and inactive rows with a disabled login and no last working day', function () {
     Notification::fake();
     $admin = userWithRole('admin');
