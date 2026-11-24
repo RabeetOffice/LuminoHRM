@@ -33,6 +33,8 @@ use Spatie\Activitylog\Support\LogOptions;
  * @property int $department_id
  * @property int $designation_id
  * @property int|null $manager_id
+ * @property int|null $shift_id null = the default shift (Shift::forEmployee())
+ * @property bool $attendance_exempt
  * @property Carbon $joining_date
  * @property Carbon|null $probation_end_date
  * @property string $employment_type
@@ -50,8 +52,10 @@ class Employee extends Model
     protected $fillable = [
         'employee_code', 'device_user_id', 'first_name', 'last_name', 'photo_path', 'email', 'phone', 'dob', 'gender',
         'cnic', 'department_id', 'designation_id', 'manager_id', 'joining_date', 'probation_end_date',
-        'employment_type', 'status', 'last_working_day',
+        'employment_type', 'status', 'last_working_day', 'shift_id', 'attendance_exempt',
     ];
+
+    protected $attributes = ['attendance_exempt' => false];
 
     /**
      * Allow-list. `cnic` and `dob` are listed so a change is noticed, but their values are never stored:
@@ -65,7 +69,7 @@ class Employee extends Model
             ->logOnly([
                 'employee_code', 'device_user_id', 'first_name', 'last_name', 'email', 'phone', 'dob', 'gender', 'cnic',
                 'department_id', 'designation_id', 'manager_id', 'joining_date', 'probation_end_date',
-                'employment_type', 'status', 'last_working_day',
+                'employment_type', 'status', 'last_working_day', 'shift_id', 'attendance_exempt',
             ])
             ->logOnlyDirty()
             ->dontLogEmptyChanges()
@@ -86,6 +90,7 @@ class Employee extends Model
             'joining_date' => 'date:Y-m-d',
             'probation_end_date' => 'date:Y-m-d',
             'last_working_day' => 'date:Y-m-d',
+            'attendance_exempt' => 'boolean',
         ];
     }
 
@@ -121,6 +126,22 @@ class Employee extends Model
     public function reports(): HasMany
     {
         return $this->hasMany(self::class, 'manager_id');
+    }
+
+    /**
+     * The employee's own shift; null means the default shift. Use Shift::forEmployee() for the shift that applies.
+     *
+     * @return BelongsTo<Shift, $this>
+     */
+    public function shift(): BelongsTo
+    {
+        return $this->belongsTo(Shift::class);
+    }
+
+    /** @return HasMany<Attendance, $this> */
+    public function attendances(): HasMany
+    {
+        return $this->hasMany(Attendance::class);
     }
 
     /** @return HasOne<EmployeeContact, $this> */

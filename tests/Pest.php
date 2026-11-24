@@ -1,6 +1,9 @@
 <?php
 
+use App\Models\Device;
+use App\Models\DevicePunch;
 use App\Models\Employee;
+use App\Models\Shift;
 use App\Models\User;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -89,4 +92,53 @@ function validEmail(array $overrides = []): array
         'from_address' => 'hr@example.com',
         'from_name' => 'Lumino HR',
     ], $overrides);
+}
+
+/**
+ * A new (non-default) shift with $attrs over the factory values (09:00-18:00, 15 min grace, 4 h half day, Sat/Sun off),
+ * assigned to $employee when one is given.
+ *
+ * @param  array<string, mixed>  $attrs
+ */
+function shiftFor(?Employee $employee = null, array $attrs = []): Shift
+{
+    $shift = Shift::factory()->create($attrs);
+
+    if ($employee !== null) {
+        $employee->forceFill(['shift_id' => $shift->id])->save();
+    }
+
+    return $shift;
+}
+
+/**
+ * Stores one punch as the machine would: $who is an employee (matched by their device_user_id, given one if they have
+ * none) or a bare machine user ID (linked to the employee holding it, if any). $at is the naive "Y-m-d H:i[:s]" time.
+ * $device defaults to the first device, created when there is none.
+ */
+function punch(Employee|string $who, string $at, ?Device $device = null): DevicePunch
+{
+    if ($who instanceof Employee) {
+        if ($who->device_user_id === null || $who->device_user_id === '') {
+            $who->forceFill(['device_user_id' => (string) (1000 + $who->id)])->save();
+        }
+
+        $employee = $who;
+        $userId = (string) $who->device_user_id;
+    } else {
+        $userId = $who;
+        $employee = Employee::query()->where('device_user_id', $who)->first();
+    }
+
+    $device ??= Device::query()->orderBy('id')->first() ?? Device::factory()->create();
+
+    return DevicePunch::query()->create([
+        'device_id' => $device->id,
+        'device_user_id' => $userId,
+        'employee_id' => $employee?->id,
+        'punch_time' => $at,
+        'verify_type' => '1',
+        'status_code' => '0',
+        'source' => 'device',
+    ]);
 }

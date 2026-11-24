@@ -94,6 +94,10 @@ class EmployeeAccess
             $blockers[] = 'This employee has signed in before. Set the status to Inactive, Resigned or Terminated instead.';
         }
 
+        if ($employee->attendances()->exists()) {
+            $blockers[] = 'This employee has attendance records. Set the status to Inactive, Resigned or Terminated instead.';
+        }
+
         return $blockers;
     }
 

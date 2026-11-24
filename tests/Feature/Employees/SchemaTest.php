@@ -17,6 +17,7 @@ it('creates the tables and columns', function () {
         'id', 'employee_code', 'device_user_id', 'first_name', 'last_name', 'photo_path', 'email', 'phone', 'dob',
         'gender', 'cnic', 'department_id', 'designation_id', 'manager_id', 'joining_date', 'probation_end_date',
         'employment_type', 'status', 'last_working_day', 'created_at', 'updated_at',
+        'shift_id', 'attendance_exempt', // Phase 3
     ])
         ->and(Schema::getColumnListing('employee_contacts'))->toEqualCanonicalizing([
             'id', 'employee_id', 'address', 'emergency_name', 'emergency_phone', 'created_at', 'updated_at',
@@ -30,7 +31,8 @@ it('creates the tables and columns', function () {
         ])
         ->and(Schema::hasColumn('users', 'employee_id'))->toBeTrue()
         ->and(Schema::hasColumn('departments', 'head_employee_id'))->toBeTrue()
-        ->and(Schema::hasColumn('employees', 'shift_id'))->toBeFalse();
+        // Added by Phase 3 (attendance); see tests/Feature/Attendance/SchemaTest.php.
+        ->and(Schema::hasColumn('employees', 'shift_id'))->toBeTrue();
 });
 
 it('has the factory produce valid, unique records', function () {

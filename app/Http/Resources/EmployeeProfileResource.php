@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Models\Employee;
+use App\Models\Shift;
 use App\Models\User;
 use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
@@ -21,7 +22,8 @@ use Illuminate\Http\Resources\Json\JsonResource;
  *   identity   cnic (formatted 12345-1234567-1), dob         -> shown inside the Basic Info tab
  *   employment department, designation, manager {id|null, name}|null, joining_date, probation_end_date,
  *              employment_type, status, last_working_day, reports [{id, name, code, designation}],
- *              and for view-all viewers device_user_id, for employees.manage viewers role and login
+ *              shift (the shift's name; the default shift's name when the employee has none) and shift_is_default,
+ *              and for view-all viewers device_user_id, for employees.manage viewers role, login and attendance_exempt
  *   contact    address, emergency_name, emergency_phone
  *   banking    bank_name, account_title, account_number
  *   documents  items [{id, type, title, original_name, size_bytes, uploaded_at, expiry_date, download_url}]
@@ -166,6 +168,12 @@ class EmployeeProfileResource extends JsonResource
             'reports' => $this->reports(),
         ];
 
+        // The shift's name only (no times or rules): every viewer of this group may see which shift someone works.
+        $shift = Shift::forEmployee($employee);
+        $data['shift'] = $shift->name;
+        // True when the employee has no shift of their own and works the default one.
+        $data['shift_is_default'] = $employee->shift_id === null || (int) $shift->getKey() !== (int) $employee->shift_id;
+
         // The attendance machine's ID is for people who see everyone (Admin, HR), not for a Manager, even on their own record.
         if ($this->viewAll) {
             $data['device_user_id'] = $employee->device_user_id;
@@ -181,6 +189,7 @@ class EmployeeProfileResource extends JsonResource
                 $account->is_active => EmployeeListResource::LOGIN_ACTIVE,
                 default => EmployeeListResource::LOGIN_DISABLED,
             };
+            $data['attendance_exempt'] = (bool) $employee->attendance_exempt;
         }
 
         return $data;

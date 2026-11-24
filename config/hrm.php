@@ -108,6 +108,16 @@ return [
         'document_types' => ['cnic', 'contract', 'offer_letter', 'certificate', 'other'],
     ],
 
+    // Allowed values for the Attendance module (stored as plain strings). Status precedence and rules: see the Phase 3 plan.
+    'attendance' => [
+        'statuses' => ['present', 'late', 'half_day', 'absent', 'on_leave', 'holiday', 'weekend'],
+        'correction_statuses' => ['pending', 'manager_approved', 'approved', 'rejected', 'cancelled'],
+        'punch_sources' => ['device', 'import', 'manual'],
+        'command_statuses' => ['queued', 'sent', 'done', 'failed'],
+        // Lowercase English day names, Monday first: the only values a shift's weekly_offs may hold.
+        'weekdays' => ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
+    ],
+
     // Date formats offered in Settings > Company (PHP date() syntax). The stored value must be one of these.
     'date_formats' => ['d M Y', 'd/m/Y', 'm/d/Y', 'Y-m-d', 'd-m-Y', 'M d, Y'],
 

@@ -26,6 +26,7 @@ class Audit
         'settings' => 'Settings',
         'auth' => 'Sign-in',
         'employees' => 'Employees',
+        'attendance' => 'Attendance',
     ];
 
     /** Text from outside (typed email, user agent) made safe to store: valid UTF-8, no control characters, at most $max characters. */

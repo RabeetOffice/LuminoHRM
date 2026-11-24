@@ -25,7 +25,8 @@ use Illuminate\Validation\ValidationException;
  *
  * The data shape every action accepts (flat keys, all optional unless the form requires them):
  *   employee: first_name, last_name, email, phone, dob, gender, cnic, department_id, designation_id, manager_id,
- *             joining_date, probation_end_date, employment_type, status, device_user_id, employee_code (Admin only)
+ *             joining_date, probation_end_date, employment_type, status, device_user_id, employee_code (Admin only),
+ *             shift_id (null = the default shift), attendance_exempt
  *   login:    role
  *   contact:  address, emergency_name, emergency_phone
  *   bank:     bank_name, account_title, account_number
@@ -36,6 +37,7 @@ class EmployeeWriter
     public const EMPLOYEE_FIELDS = [
         'employee_code', 'device_user_id', 'first_name', 'last_name', 'email', 'phone', 'dob', 'gender', 'cnic',
         'department_id', 'designation_id', 'manager_id', 'joining_date', 'probation_end_date', 'employment_type', 'status',
+        'shift_id', 'attendance_exempt',
     ];
 
     public const CONTACT_FIELDS = ['address', 'emergency_name', 'emergency_phone'];
@@ -122,6 +124,10 @@ class EmployeeWriter
 
     private function clean(string $field, mixed $value): mixed
     {
+        if ($field === 'attendance_exempt') {
+            return filter_var($value, FILTER_VALIDATE_BOOLEAN);
+        }
+
         if (! is_string($value)) {
             return $value;
         }
