@@ -63,7 +63,7 @@ class BackupDatabase extends Command
 
                 return self::SUCCESS;
             }
-            if ($this->isGoodBackup($disk->path('backups').DIRECTORY_SEPARATOR.$name)) {
+            if ($this->todaysBackupIsPresent($disk, $name)) {
                 $this->line("Backup for {$today} already exists.");
 
                 return self::SUCCESS;
@@ -72,15 +72,31 @@ class BackupDatabase extends Command
 
         try {
             $dir = $this->prepareDirectory($disk);
-            $lock = $this->acquireLock($disk);
-            if ($lock === null) {
+            [$lock, $lockState] = $this->acquireLock($disk);
+
+            if ($lockState === 'busy') {
+                // Not a failure of the backup itself: never overwrite a good status with it.
                 if ($this->option('if-missing')) {
                     $this->line('Another backup is running.');
 
                     return self::SUCCESS;
                 }
-                throw new RuntimeException('another backup is already running');
+                $this->error('Backup not started: another backup is running.');
+
+                return self::FAILURE;
             }
+            if ($lockState === 'unavailable') {
+                $this->line('backup lock unavailable, continuing without it');
+            }
+
+            // The nightly run may have finished between the first check and the lock.
+            if ($this->option('if-missing') && $this->todaysBackupIsPresent($disk, $name)) {
+                $this->line("Backup for {$today} already exists.");
+
+                return self::SUCCESS;
+            }
+
+            $this->removeStaleTempFiles($dir);
 
             $final = $dir.DIRECTORY_SEPARATOR.$name;
             $this->tmpPath = $dir.DIRECTORY_SEPARATOR.'.'.$name.'.tmp'.getmypid();
@@ -141,8 +157,13 @@ class BackupDatabase extends Command
         return $dir;
     }
 
-    /** @return resource|null null when another backup holds the lock */
-    private function acquireLock(Filesystem $disk)
+    /**
+     * 'held': we own the lock. 'busy': another backup really holds it. 'unavailable': locking does not work here
+     * (no flock support, or the lock file cannot be opened): carry on without it rather than block backups forever.
+     *
+     * @return array{0: resource|null, 1: 'held'|'busy'|'unavailable'}
+     */
+    private function acquireLock(Filesystem $disk): array
     {
         $path = $disk->path('backup-status/.lock');
         if (! is_dir(dirname($path))) {
@@ -151,17 +172,65 @@ class BackupDatabase extends Command
 
         $handle = @fopen($path, 'c');
         if ($handle === false) {
-            throw new RuntimeException('could not create the backup lock');
+            return [null, 'unavailable'];
         }
         @chmod($path, 0600);
 
-        if (! flock($handle, LOCK_EX | LOCK_NB)) {
+        $wouldBlock = 0;
+        if (! $this->tryFlock($handle, $wouldBlock)) {
             fclose($handle);
 
-            return null;
+            return $wouldBlock ? [null, 'busy'] : [null, 'unavailable'];
         }
 
-        return $handle;
+        return [$handle, 'held'];
+    }
+
+    /** @param resource $handle */
+    protected function tryFlock($handle, &$wouldBlock): bool
+    {
+        return flock($handle, LOCK_EX | LOCK_NB, $wouldBlock);
+    }
+
+    /**
+     * Is there a good backup for today? Cheap: the status file names today's file and its size matches (no
+     * decompression, because this runs hourly inside schedule:run). Only without a readable status file is the
+     * file itself read back.
+     */
+    private function todaysBackupIsPresent(Filesystem $disk, string $name): bool
+    {
+        $file = $disk->path('backups').DIRECTORY_SEPARATOR.$name;
+        $status = null;
+
+        try {
+            $statusPath = $disk->path(self::STATUS_FILE);
+            if (is_file($statusPath)) {
+                $status = json_decode((string) @file_get_contents($statusPath), true);
+            }
+        } catch (Throwable) {
+            $status = null;
+        }
+
+        if (is_array($status)) {
+            return ($status['last_success_file'] ?? null) === $name
+                && is_file($file)
+                && isset($status['last_success_bytes'])
+                && filesize($file) === (int) $status['last_success_bytes'];
+        }
+
+        return $this->isGoodBackup($file);
+    }
+
+    /** Deletes leftovers of killed runs: this command's own temp files (exact name pattern) older than 24 hours. */
+    private function removeStaleTempFiles(string $dir): void
+    {
+        foreach (scandir($dir) ?: [] as $entry) {
+            $path = $dir.DIRECTORY_SEPARATOR.$entry;
+            if (preg_match('/^\.lumino-hrm-\d{4}-\d{2}-\d{2}\.sql\.gz\.tmp\d+$/', $entry)
+                && is_file($path) && $path !== $this->tmpPath && filemtime($path) < time() - 86400) {
+                @unlink($path);
+            }
+        }
     }
 
     /** Writes the whole dump to $path and returns the number of tables dumped. */
@@ -599,8 +668,9 @@ class BackupDatabase extends Command
      */
     private function writeStatus(Filesystem $disk, array $status): void
     {
+        $path = $disk->path(self::STATUS_FILE);
+
         try {
-            $path = $disk->path(self::STATUS_FILE);
             $dir = dirname($path);
             if (! is_dir($dir)) {
                 @mkdir($dir, 0700, true);
@@ -616,12 +686,19 @@ class BackupDatabase extends Command
             $ordered = array_merge(array_flip(['ok', 'attempted_at', 'last_success_at', 'last_success_file', 'last_success_bytes', 'error']), $merged);
 
             $tmp = $path.'.tmp'.getmypid();
-            if (file_put_contents($tmp, json_encode($ordered, JSON_PRETTY_PRINT)."\n") !== false) {
-                @chmod($tmp, 0600);
-                rename($tmp, $path);
+            if (@file_put_contents($tmp, json_encode($ordered, JSON_PRETTY_PRINT)."\n") === false) {
+                throw new RuntimeException('could not write the status file');
+            }
+            @chmod($tmp, 0600);
+            if (! @rename($tmp, $path)) {
+                @unlink($tmp);
+                throw new RuntimeException('could not replace the status file');
             }
         } catch (Throwable $e) {
-            report($e);
+            // The backup's own outcome stands; only say that it could not be recorded.
+            @unlink($path.'.tmp'.getmypid());
+            report(new RuntimeException('Backup status not recorded: '.$e->getMessage()));
+            $this->error('Backup status not recorded: '.$this->safeMessage($e));
         }
     }
 

@@ -389,3 +389,132 @@ it('does not insert generated columns (sqlite)', function () {
     $this->artisan('hrm:backup-database')->assertSuccessful();
     expect(backupSql(backupFiles()[0]))->toContain('INSERT INTO "gen_check" ("a") VALUES');
 });
+
+// ---------------------------------------------------------------- round 2: lock, cheap catch-up check, temp files
+
+/** Reports the lock as held by someone else (a genuine block). */
+class BusyLockBackup extends BackupDatabase
+{
+    protected function tryFlock($handle, &$wouldBlock): bool
+    {
+        $wouldBlock = 1;
+
+        return false;
+    }
+}
+
+/** Reports that locking does not work here (flock fails without a block). */
+class NoFlockBackup extends BackupDatabase
+{
+    protected function tryFlock($handle, &$wouldBlock): bool
+    {
+        $wouldBlock = 0;
+
+        return false;
+    }
+}
+
+it('a plain run exits non-zero when another backup holds the lock, without touching a good status', function () {
+    Storage::fake('local');
+    $good = json_encode(['ok' => true, 'attempted_at' => 'a', 'last_success_at' => 'b', 'last_success_file' => 'f', 'last_success_bytes' => 1, 'error' => null]);
+    Storage::disk('local')->put('backup-status/last-backup.json', $good);
+    $this->app->bind(BackupDatabase::class, fn () => new BusyLockBackup);
+
+    $this->artisan('hrm:backup-database')->assertFailed();
+
+    expect(Storage::disk('local')->get('backup-status/last-backup.json'))->toBe($good);
+    expect(backupFiles())->toBe([]);
+});
+
+it('--if-missing exits 0 and writes nothing when another backup holds the lock', function () {
+    Storage::fake('local');
+    $this->travelTo(now('Asia/Karachi')->setTime(3, 20));
+    $this->app->bind(BackupDatabase::class, fn () => new BusyLockBackup);
+
+    $this->artisan('hrm:backup-database --if-missing')->assertSuccessful()->expectsOutputToContain('Another backup is running');
+
+    expect(backupFiles())->toBe([]);
+});
+
+it('carries on without a lock when locking is unsupported (flock fails without a block)', function () {
+    Storage::fake('local');
+    $this->travelTo(now('Asia/Karachi')->setTime(3, 20));
+    $this->app->bind(BackupDatabase::class, fn () => new NoFlockBackup);
+
+    $this->artisan('hrm:backup-database --if-missing')->assertSuccessful()->expectsOutputToContain('backup lock unavailable, continuing without it');
+
+    expect(backupFiles())->toHaveCount(1);
+});
+
+it('--if-missing trusts the status file when it names today\'s file with the matching size (no read-back)', function () {
+    Storage::fake('local');
+    $this->travelTo(now('Asia/Karachi')->setTime(3, 20));
+    $this->artisan('hrm:backup-database')->assertSuccessful();
+    $file = backupFiles()[0];
+    $size = Storage::disk('local')->size($file);
+    // Same size but not a valid gzip: only a full read-back would notice, so no read-back happened.
+    Storage::disk('local')->put($file, str_repeat('x', $size));
+
+    $this->artisan('hrm:backup-database --if-missing')->assertSuccessful()->expectsOutputToContain('already exists');
+
+    expect(Storage::disk('local')->get($file))->toBe(str_repeat('x', $size));
+});
+
+it('--if-missing runs when the size does not match the status file', function () {
+    Storage::fake('local');
+    $this->travelTo(now('Asia/Karachi')->setTime(3, 20));
+    $this->artisan('hrm:backup-database')->assertSuccessful();
+    $file = backupFiles()[0];
+    Storage::disk('local')->put($file, 'short');
+
+    $this->artisan('hrm:backup-database --if-missing')->assertSuccessful();
+
+    expect(backupSql($file))->toContain('CREATE TABLE');
+});
+
+it('--if-missing without a status file falls back to reading the file: good file means no run, no file means run', function () {
+    Storage::fake('local');
+    $this->travelTo(now('Asia/Karachi')->setTime(3, 20));
+    $this->artisan('hrm:backup-database')->assertSuccessful();
+    $file = backupFiles()[0];
+    Storage::disk('local')->delete('backup-status/last-backup.json');
+    Department::create(['name' => 'Made After The Backup']);
+
+    $this->artisan('hrm:backup-database --if-missing')->assertSuccessful();
+    expect(backupSql($file))->not->toContain('Made After The Backup');
+
+    Storage::disk('local')->delete([$file, 'backup-status/last-backup.json']);
+    $this->artisan('hrm:backup-database --if-missing')->assertSuccessful();
+    expect(backupSql($file))->toContain('Made After The Backup');
+});
+
+it('removes only its own stale temp files older than 24 hours', function () {
+    Storage::fake('local');
+    $d = Storage::disk('local');
+    $day = now()->toDateString();
+    $oldTmp = ".lumino-hrm-{$day}.sql.gz.tmp111";
+    $newTmp = ".lumino-hrm-{$day}.sql.gz.tmp222";
+    $lookalike = '.other-file.tmp333';
+    foreach ([$oldTmp, $newTmp, $lookalike] as $f) {
+        $d->put("backups/$f", 'x');
+    }
+    touch($d->path("backups/$oldTmp"), time() - 90000);
+    touch($d->path("backups/$lookalike"), time() - 90000);
+
+    $this->artisan('hrm:backup-database')->assertSuccessful();
+
+    expect($d->exists("backups/$oldTmp"))->toBeFalse()
+        ->and($d->exists("backups/$newTmp"))->toBeTrue()
+        ->and($d->exists("backups/$lookalike"))->toBeTrue();
+});
+
+it('a status file that cannot be replaced is reported but does not change the backup outcome', function () {
+    Storage::fake('local');
+    // A directory where the status file should be makes the final rename fail.
+    Storage::disk('local')->makeDirectory('backup-status/last-backup.json');
+
+    $this->artisan('hrm:backup-database')->assertSuccessful()->expectsOutputToContain('Backup status not recorded');
+
+    expect(backupFiles())->toHaveCount(1);
+    expect(collect(Storage::disk('local')->allFiles('backup-status'))->filter(fn ($f) => str_contains($f, '.tmp')))->toBeEmpty();
+});
