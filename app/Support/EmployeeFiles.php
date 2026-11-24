@@ -243,7 +243,8 @@ final class EmployeeFiles
     private static function orientationOf(string $path, string $bytes): ?int
     {
         if (function_exists('exif_read_data')) {
-            $value = @exif_read_data($path)['Orientation'] ?? null;
+            $exif = @exif_read_data($path);
+            $value = is_array($exif) ? ($exif['Orientation'] ?? null) : null;
 
             return is_int($value) && $value >= 1 && $value <= 8 ? $value : null;
         }
@@ -294,7 +295,7 @@ final class EmployeeFiles
                 return null;
             }
 
-            $size = unpack('n', $bytes, $pos + 2)[1];
+            $size = self::unpackInt('n', $bytes, $pos + 2);
 
             if ($size < 2 || $pos + 2 + $size > $length) {
                 return null;
@@ -308,6 +309,14 @@ final class EmployeeFiles
         }
 
         return null;
+    }
+
+    /** The first value unpack() reads at the offset. Callers bounds-check first, so the 0 for a failed read is never used. */
+    private static function unpackInt(string $format, string $data, int $offset): int
+    {
+        $values = unpack($format, $data, $offset);
+
+        return is_array($values) ? (int) $values[1] : 0;
     }
 
     /** The Orientation in IFD0 of a TIFF block (the part of an EXIF segment after "Exif\0\0"), or null. */
@@ -325,17 +334,17 @@ final class EmployeeFiles
             default => [null, null],
         };
 
-        if ($u16 === null || unpack($u16, $tiff, 2)[1] !== 42) {
+        if ($u16 === null || self::unpackInt($u16, $tiff, 2) !== 42) {
             return null;
         }
 
-        $ifd = unpack($u32, $tiff, 4)[1];
+        $ifd = self::unpackInt($u32, $tiff, 4);
 
         if ($ifd < 8 || $ifd + 2 > $length) {
             return null;
         }
 
-        $entries = min(unpack($u16, $tiff, $ifd)[1], self::MAX_IFD_ENTRIES);
+        $entries = min(self::unpackInt($u16, $tiff, $ifd), self::MAX_IFD_ENTRIES);
 
         for ($i = 0; $i < $entries; $i++) {
             $entry = $ifd + 2 + 12 * $i;
@@ -344,16 +353,16 @@ final class EmployeeFiles
                 return null;
             }
 
-            if (unpack($u16, $tiff, $entry)[1] !== 0x0112) {
+            if (self::unpackInt($u16, $tiff, $entry) !== 0x0112) {
                 continue;
             }
 
             // Type SHORT (3) and count 1: the value sits in the first two bytes of the value field.
-            if (unpack($u16, $tiff, $entry + 2)[1] !== 3 || unpack($u32, $tiff, $entry + 4)[1] !== 1) {
+            if (self::unpackInt($u16, $tiff, $entry + 2) !== 3 || self::unpackInt($u32, $tiff, $entry + 4) !== 1) {
                 return null;
             }
 
-            $value = unpack($u16, $tiff, $entry + 8)[1];
+            $value = self::unpackInt($u16, $tiff, $entry + 8);
 
             return $value >= 1 && $value <= 8 ? $value : null;
         }

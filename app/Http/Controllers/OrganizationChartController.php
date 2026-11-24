@@ -66,7 +66,7 @@ class OrganizationChartController extends Controller
      * The whole id => manager_id map, read only when some shown person's manager is not shown (one extra, flat
      * query of two integer columns; it never leaves the server). Otherwise an empty map, since nothing needs walking.
      *
-     * @param  list<Employee>  $people
+     * @param  array<int, Employee>  $people
      * @param  array<int, true>  $shown
      * @return array<int, int|null>
      */
