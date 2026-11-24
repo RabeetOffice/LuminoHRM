@@ -16,6 +16,7 @@ use App\Models\Designation;
 use App\Models\Employee;
 use App\Models\User;
 use App\Support\EmployeeAccess;
+use App\Support\EmployeeListQuery;
 use App\Support\EmployeeRoles;
 use App\Support\ListQuery;
 use App\Support\ManagerLoop;
@@ -46,25 +47,11 @@ class EmployeeController extends Controller
         abort_unless($user->canAny(['employees.view-all', 'employees.view-team']), 403);
 
         $access = new EmployeeAccess($user);
-        $search = ListQuery::stringParam($request, 'search');
-        $departmentId = $this->existingId($request, 'department_id', Department::query());
-        // With a department chosen, only that department's designations count.
-        $designationId = $this->existingId(
-            $request,
-            'designation_id',
-            Designation::query()->when($departmentId !== null, fn (Builder $q) => $q->where('department_id', $departmentId)),
-        );
-        $status = $this->statusFilter($request);
+        // The same filters and query the Excel export uses (EmployeeListQuery).
+        $list = EmployeeListQuery::fromRequest($request, $user);
         $perPage = ListQuery::perPage($request);
 
-        // Everything the viewer may see, narrowed by every filter except the status tab.
-        $base = fn (): Builder => $access->scope(Employee::query())
-            ->search($search)
-            ->when($departmentId !== null, fn (Builder $q) => $q->where('department_id', $departmentId))
-            ->when($designationId !== null, fn (Builder $q) => $q->where('designation_id', $designationId));
-
-        $paginator = $base()
-            ->when($status !== '', fn (Builder $q) => $q->status($status))
+        $paginator = $list->rows()
             // Explicit columns: only what the list shows leaves the database.
             ->select(['id', 'employee_code', 'first_name', 'last_name', 'email', 'department_id', 'designation_id', 'status', 'joining_date'])
             ->with([
@@ -72,9 +59,6 @@ class EmployeeController extends Controller
                 'designation:id,name',
                 'user:id,employee_id,is_active',
             ])
-            ->orderBy('last_name')
-            ->orderBy('first_name')
-            ->orderBy('id')
             ->paginate($perPage, ['*'], 'page', ListQuery::page($request, 'page'));
 
         if ($redirect = ListQuery::clampRedirect($request, ['page' => $paginator])) {
@@ -94,18 +78,15 @@ class EmployeeController extends Controller
                 'from' => $paginator->firstItem(),
                 'to' => $paginator->lastItem(),
             ],
-            'counts' => $this->counts($base()),
+            'counts' => $this->counts($list->base()),
             'filters' => [
-                'search' => $search,
-                'department_id' => $departmentId,
-                'designation_id' => $designationId,
-                'status' => $status,
+                ...$list->filters(),
                 'view' => $this->view($request),
                 'per_page' => $perPage,
             ],
             'departments' => Department::query()->orderBy('name')->orderBy('id')->get(['id', 'name'])->all(),
             'designations' => Designation::query()
-                ->when($departmentId !== null, fn (Builder $q) => $q->where('department_id', $departmentId))
+                ->when($list->departmentId !== null, fn (Builder $q) => $q->where('department_id', $list->departmentId))
                 ->orderBy('name')
                 ->orderBy('id')
                 ->get(['id', 'name'])
@@ -115,7 +96,8 @@ class EmployeeController extends Controller
                 // Per record the answer also depends on history (see EmployeeAccess::canDelete); the server decides then.
                 'delete' => $user->can('employees.delete'),
                 'import' => $access->canManage(),
-                'export' => $access->canManage(),
+                // The export carries every column (CNIC, bank ...), so it needs the see-everyone permission.
+                'export' => $user->can('employees.view-all'),
             ],
         ]);
     }
@@ -406,31 +388,6 @@ class EmployeeController extends Controller
         }
 
         return ['all' => array_sum($counts), ...$counts];
-    }
-
-    /**
-     * The id in the query parameter if it names a row of $rows; null for anything else (never an error).
-     *
-     * @param  Builder<Department>|Builder<Designation>  $rows
-     */
-    private function existingId(Request $request, string $key, Builder $rows): ?int
-    {
-        $value = $request->query($key);
-
-        if (! is_scalar($value) || ! ctype_digit((string) $value) || strlen((string) $value) > 9) {
-            return null;
-        }
-
-        $id = (int) $value;
-
-        return $rows->whereKey($id)->exists() ? $id : null;
-    }
-
-    private function statusFilter(Request $request): string
-    {
-        $value = $request->query('status');
-
-        return is_string($value) && in_array($value, config('hrm.employees.statuses'), true) ? $value : '';
     }
 
     private function view(Request $request): string

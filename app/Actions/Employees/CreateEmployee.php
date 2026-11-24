@@ -43,13 +43,21 @@ class CreateEmployee
 
     /**
      * @param  array<string, mixed>  $data
+     * @param  string|null  $code  a code the caller has already chosen (the Excel import numbers blank codes in file
+     *                             order); it wins over $data['employee_code'] and, like a typed code, is never retried
      *
      * @throws UniqueConstraintViolationException a duplicate email, CNIC, machine ID or typed code the validation did not see
      */
-    public function handle(array $data, User $by, bool $sendLink = true): Employee
+    public function handle(array $data, User $by, bool $sendLink = true, ?string $code = null): Employee
     {
         $this->linkSent = false;
         $mayEditCode = $by->hasRole('admin');
+
+        if ($code !== null) {
+            $data['employee_code'] = $code;
+            $mayEditCode = true;
+        }
+
         $explicitCode = $mayEditCode && filled($data['employee_code'] ?? null);
         $retried = false;
 

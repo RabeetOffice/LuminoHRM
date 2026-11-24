@@ -3,16 +3,17 @@ import {
     CalendarDays,
     Download,
     Eye,
+    KeyRound,
     Pencil,
     Plus,
     Trash2,
     Upload,
 } from 'lucide-react';
 import { useState } from 'react';
-import type { ComponentProps, ReactNode } from 'react';
 import { DeleteEmployeeDialog } from '@/components/employees/delete-employee-dialog';
 import { STATUS_TONE } from '@/components/employees/status-dialog';
 import { Avatar } from '@/components/hrm/avatar';
+import { ConfirmDialog } from '@/components/hrm/confirm-dialog';
 import { DataTable } from '@/components/hrm/data-table';
 import type {
     DataTableColumn,
@@ -25,6 +26,7 @@ import { StatusTabs } from '@/components/hrm/status-tabs';
 import { ViewToggle } from '@/components/hrm/view-toggle';
 import type { ViewMode } from '@/components/hrm/view-toggle';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
     Select,
     SelectContent,
@@ -36,7 +38,15 @@ import { formatDate } from '@/lib/format-date';
 import { nextTableUrl } from '@/lib/table-query';
 import { statusPanelId, statusTabId } from '@/lib/tabs';
 import { cn } from '@/lib/utils';
-import { create, edit, index, show } from '@/routes/employees';
+import {
+    create,
+    edit,
+    exportMethod,
+    importMethod,
+    index,
+    sendLinks,
+    show,
+} from '@/routes/employees';
 
 type Login = 'active' | 'disabled' | 'none';
 
@@ -92,26 +102,8 @@ const LOGIN_PILL: Record<Login, { tone: StatusTone; label: string }> = {
 const statusLabel = (status: string) =>
     STATUS_TABS.find((tab) => tab.key === status)?.label ?? status;
 
-/**
- * A control whose page does not exist yet (Import and Export wait for a later task). It stays visible so the
- * layout is final, is announced as disabled, and says "Coming soon" on hover.
- */
-function SoonButton({
-    className,
-    ...props
-}: ComponentProps<typeof Button>): ReactNode {
-    return (
-        <span title="Coming soon" className="inline-flex cursor-not-allowed">
-            <Button
-                disabled
-                aria-disabled="true"
-                title="Coming soon"
-                className={className}
-                {...props}
-            />
-        </span>
-    );
-}
+/** "Send set-password links" takes at most this many people per click (the server refuses more). */
+const MAX_LINKS = 50;
 
 function CodeBadge({ code }: { code: string }) {
     return (
@@ -182,6 +174,50 @@ export default function Employees({
     const { url, props } = usePage();
     const dateFormat = props.app.dateFormat;
     const [deleting, setDeleting] = useState<EmployeeRow | null>(null);
+    // Selection for "Send set-password links": ids on the current page only, cleared when the rows change.
+    const [selected, setSelected] = useState<number[]>([]);
+    const [selectionFor, setSelectionFor] = useState(employees.data);
+    const [confirmingLinks, setConfirmingLinks] = useState(false);
+    const [sendingLinks, setSendingLinks] = useState(false);
+
+    if (selectionFor !== employees.data) {
+        setSelectionFor(employees.data);
+        setSelected([]);
+    }
+
+    const pageIds = employees.data.map((row) => row.id);
+    const allSelected =
+        pageIds.length > 0 && pageIds.every((id) => selected.includes(id));
+    const toggleRow = (id: number, on: boolean) =>
+        setSelected((current) =>
+            on ? [...current, id] : current.filter((value) => value !== id),
+        );
+    const toggleAll = (on: boolean) => setSelected(on ? pageIds : []);
+
+    const sendSelectedLinks = () =>
+        router.post(
+            sendLinks.url(),
+            { ids: selected },
+            {
+                preserveScroll: true,
+                onStart: () => setSendingLinks(true),
+                onFinish: () => {
+                    setSendingLinks(false);
+                    setConfirmingLinks(false);
+                    setSelected([]);
+                },
+            },
+        );
+
+    // The export carries the list's filters (not the page or the view): every matching row.
+    const exportQuery = Object.fromEntries(
+        Object.entries({
+            search: filters.search,
+            department_id: filters.department_id,
+            designation_id: filters.designation_id,
+            status: filters.status,
+        }).filter(([, value]) => value !== '' && value !== null),
+    );
     const status = filters.status === '' ? ALL : filters.status;
     const filtering =
         filters.search !== '' ||
@@ -234,7 +270,27 @@ export default function Employees({
 
     const firstNumber = employees.from ?? 1;
 
+    const selectColumn: DataTableColumn<EmployeeRow> = {
+        key: 'select',
+        header: (
+            <Checkbox
+                checked={allSelected}
+                onCheckedChange={(value) => toggleAll(value === true)}
+                aria-label="Select all employees on this page"
+            />
+        ),
+        className: 'w-8 pr-0',
+        cell: (row) => (
+            <Checkbox
+                checked={selected.includes(row.id)}
+                onCheckedChange={(value) => toggleRow(row.id, value === true)}
+                aria-label={`Select ${row.name}`}
+            />
+        ),
+    };
+
     const columns: DataTableColumn<EmployeeRow>[] = [
+        ...(can.manage ? [selectColumn] : []),
         {
             key: 'number',
             header: '#',
@@ -329,8 +385,18 @@ export default function Employees({
             {employees.data.map((row) => (
                 <li
                     key={row.id}
-                    className="flex flex-col items-center rounded-xl border bg-card p-5 text-center shadow-xs"
+                    className="relative flex flex-col items-center rounded-xl border bg-card p-5 text-center shadow-xs"
                 >
+                    {can.manage && (
+                        <Checkbox
+                            className="absolute top-3 left-3"
+                            checked={selected.includes(row.id)}
+                            onCheckedChange={(value) =>
+                                toggleRow(row.id, value === true)
+                            }
+                            aria-label={`Select ${row.name}`}
+                        />
+                    )}
                     <Avatar src={row.photo_url} name={row.name} size="lg" />
                     <h2 className="mt-3 w-full truncate font-semibold">
                         <Link
@@ -380,16 +446,25 @@ export default function Employees({
                     actions={
                         <>
                             {can.export && (
-                                <SoonButton variant="outline">
-                                    <Download />
-                                    Export
-                                </SoonButton>
+                                <Button asChild variant="outline">
+                                    {/* A file download, not a page visit. */}
+                                    <a
+                                        href={exportMethod.url({
+                                            query: exportQuery,
+                                        })}
+                                    >
+                                        <Download />
+                                        Export
+                                    </a>
+                                </Button>
                             )}
                             {can.import && (
-                                <SoonButton variant="outline">
-                                    <Upload />
-                                    Import
-                                </SoonButton>
+                                <Button asChild variant="outline">
+                                    <Link href={importMethod()}>
+                                        <Upload />
+                                        Import
+                                    </Link>
+                                </Button>
                             )}
                             {can.manage && addButton}
                         </>
@@ -412,6 +487,32 @@ export default function Employees({
                         role="tabpanel"
                         aria-labelledby={statusTabId(ID_PREFIX, status)}
                     >
+                        {can.manage && selected.length > 0 && (
+                            <div className="flex flex-col gap-2 border-b bg-muted/40 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:px-4">
+                                <p className="text-sm" aria-live="polite">
+                                    {selected.length} selected
+                                    {selected.length > MAX_LINKS &&
+                                        ` (at most ${MAX_LINKS} at a time)`}
+                                </p>
+                                <div className="flex flex-wrap gap-2">
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => setSelected([])}
+                                    >
+                                        Clear selection
+                                    </Button>
+                                    <Button
+                                        size="sm"
+                                        disabled={selected.length > MAX_LINKS}
+                                        onClick={() => setConfirmingLinks(true)}
+                                    >
+                                        <KeyRound />
+                                        Send set-password links
+                                    </Button>
+                                </div>
+                            </div>
+                        )}
                         <DataTable
                             label="Employees"
                             bordered={false}
@@ -517,6 +618,17 @@ export default function Employees({
             <DeleteEmployeeDialog
                 employee={deleting}
                 onClose={() => setDeleting(null)}
+            />
+
+            <ConfirmDialog
+                open={confirmingLinks}
+                onOpenChange={setConfirmingLinks}
+                title="Send set-password links?"
+                description={`Each of the ${selected.length} selected ${selected.length === 1 ? 'employee' : 'employees'} whose login is enabled and has never been used gets an email with a link to choose a password. Anyone else is skipped.`}
+                confirmLabel="Send links"
+                destructive={false}
+                onConfirm={sendSelectedLinks}
+                processing={sendingLinks}
             />
         </>
     );
