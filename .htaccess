@@ -2,7 +2,8 @@
 # This file sits in the document root (the application root) and serves the app
 # from public/ without a /public prefix in URLs.
 #
-# Order matters: 1. HTTPS redirect  2. deny list  3. rewrite to public/
+# Order matters: 1. HTTPS redirect  2. block /public/ and deny list  3. rewrite to public/
+# Security headers (mod_headers) are set at the end of the file, independent of the rewrite rules.
 
 Options -Indexes
 
@@ -24,6 +25,12 @@ Options -Indexes
     RewriteCond %{HTTP_HOST} !\.test(:[0-9]+)?$ [NC]
     RewriteCond %{HTTP_HOST} ^([^:]+)
     RewriteRule ^ https://%1%{REQUEST_URI} [QSA,L,R=301]
+
+    # 2a. The internal public/ prefix is not a URL: a direct request for /public/... would serve a
+    #     second copy of the app, so it is a plain 404. Decided on THE_REQUEST (the original request
+    #     line), which no internal rewrite changes, so the rewrite to public/ in step 3 still works.
+    RewriteCond %{THE_REQUEST} ^[A-Z]+\s+(?:https?://[^/\s]+)?/public(?:[/?\s]|$) [NC]
+    RewriteRule ^ - [R=404,L]
 
     # 2. Deny everything that is not meant to be served (403), even though the
     #    rewrite below would also hide it: dotfiles (.env, .git, .htaccess ...,
@@ -52,3 +59,16 @@ Options -Indexes
         Deny from all
     </IfModule>
 </FilesMatch>
+
+# Security headers for everything the app serves. Guarded so a host without mod_headers cannot 500.
+# No script/style Content-Security-Policy on purpose (the app uses inline styles for the accent
+# colour); only frame-ancestors, which is the framing half of X-Frame-Options.
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "DENY"
+    Header always set Content-Security-Policy "frame-ancestors 'none'"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    # HSTS only on HTTPS responses (env=HTTPS is unset on plain HTTP, so /iclock, which the
+    # attendance machine calls over plain HTTP, never gets it).
+    Header always set Strict-Transport-Security "max-age=31536000" env=HTTPS
+</IfModule>

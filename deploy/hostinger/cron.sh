@@ -5,7 +5,8 @@
 #   * * * * * sh /home/u882878513/domains/hrm.luminocrm.online/public_html/deploy/hostinger/cron.sh
 #
 # Each run (idempotent, never overlaps itself):
-#   1. makes sure ../shared/storage/... exists (outside the document root);
+#   1. makes sure ../shared/storage/... exists (outside the document root) and that
+#      ../shared/.lumino-hrm (empty marker file) exists: the app uses ../shared only with it;
 #   2. waits (exit 0) until ../shared/.env exists;
 #   3. generates APP_KEY if it is empty;
 #   4. after a deploy (release.txt differs from shared/release.done, or .env is
@@ -16,6 +17,8 @@
 #      sees a newly seeded env), config:cache, route:cache, view:cache. The .env-newer-
 #      than-release.done path runs this same full sequence;
 #   5. artisan schedule:run.
+#   (Step 5 runs once migrate and hrm:sync-access succeeded for the release, even if a cache
+#   command failed; that failure is still reported as post_deploy_failed and retried each minute.)
 # Everything is appended to shared/storage/logs/cron.log. Nothing is printed
 # (cron would mail it) and env values are never echoed.
 #
@@ -279,6 +282,9 @@ main() {
     # 1. Shared layout (idempotent). shared/ itself is private (it holds .env); the
     #    storage tree below keeps default modes.
     (umask 077; mkdir -p "$SHARED") || exit 1
+    # Marker: tells bootstrap/app.php that this really is the Lumino HRM shared directory (any other
+    # project could own a sibling folder called "shared"). Empty file, recreated on every run.
+    : > "$SHARED/.lumino-hrm" || exit 1
     for d in app/private app/public framework/cache/data framework/sessions framework/views logs; do
         mkdir -p "$STORAGE/$d" || exit 1
     done
@@ -343,6 +349,7 @@ main() {
 
     # 4. Post-deploy step.
     post_deploy_ok=1
+    sched_ok=1      # may the scheduler run this minute? (see step 5)
     release=''
     done_id=''
     [ -f "$RELEASE_FILE" ] && release=$(tr -d ' \r\n' < "$RELEASE_FILE")
@@ -367,11 +374,13 @@ main() {
             DETAIL="$not_ready_reason"
             log "upload still in progress: $not_ready_reason (release $release; will retry)"
             post_deploy_ok=0
+            sched_ok=0
         fi
     fi
 
     if [ "$need" = 1 ]; then
         log "post-deploy for release $release"
+        core_ok=0   # set once migrate and hrm:sync-access have both succeeded
         for cmd in "config:clear" "migrate --force" "hrm:sync-access" "config:cache" "route:cache" "view:cache"; do
             # shellcheck disable=SC2086
             if artisan $cmd; then
@@ -382,12 +391,16 @@ main() {
                     printf '%s\n' "$access_line" > "$SHARED/last_access"
                     log "access sync: ${access_line:-no result line}"
                 fi
+                [ "$cmd" = "hrm:sync-access" ] && core_ok=1
             else
                 STATE=post_deploy_failed
                 DETAIL="artisan $cmd failed (release $release)"
                 log "FAILED: artisan $cmd (release $release stays pending, will retry)"
                 log_output
                 post_deploy_ok=0
+                # A failing cache command must not stop the queue drain and backups: the schema and
+                # access data are current once migrate and hrm:sync-access have succeeded.
+                [ "$core_ok" = 1 ] || sched_ok=0
                 break
             fi
         done
@@ -400,8 +413,10 @@ main() {
         fi
     fi
 
-    # 5. Scheduler (skipped while a release is pending or failing: tree/schema may be stale).
-    if [ "$post_deploy_ok" = 1 ]; then
+    # 5. Scheduler. Skipped while the upload is incomplete or migrate / hrm:sync-access failed (tree or
+    #    schema may be stale). A failing config:cache, route:cache or view:cache does not stop it; those are
+    #    retried every minute and reported as post_deploy_failed.
+    if [ "$sched_ok" = 1 ]; then
         if artisan schedule:run; then
             # Only log when something actually ran.
             grep -qi 'no scheduled commands' "$OUT_FILE" || { log "schedule:run"; log_output; }
@@ -411,7 +426,7 @@ main() {
             log_output
         fi
     else
-        log "schedule:run skipped (release pending or failing)"
+        log "schedule:run skipped (upload incomplete, or migrate or access sync failing)"
     fi
 
     exit 0

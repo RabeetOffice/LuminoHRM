@@ -100,3 +100,69 @@ it('also denies the seed, status and release files in the FilesMatch fallback (m
         expect(preg_match($pattern, $name))->toBe(0, "should be served: $name");
     }
 });
+
+it('answers a direct /public/ request with 404 and decides on the original request line (pattern executed)', function () {
+    $htaccess = rootHtaccess();
+
+    expect($htaccess)->toContain('RewriteRule ^ - [R=404,L]');
+
+    preg_match('/RewriteCond %\{THE_REQUEST\} (\^\S+) \[NC\]\n\s*RewriteRule \^ - \[R=404,L\]/', $htaccess, $m);
+    $pattern = '#'.$m[1].'#i';
+
+    foreach ([
+        'GET /public/index.php HTTP/1.1',
+        'GET /public/build/assets/app.js HTTP/1.1',
+        'GET /public HTTP/1.1',
+        'GET /public/ HTTP/1.1',
+        'GET /public?x=1 HTTP/1.1',
+        'POST https://hrm.example.com/public/login HTTP/1.1',
+    ] as $line) {
+        expect(preg_match($pattern, $line))->toBe(1, "should be 404: $line");
+    }
+
+    // The internal rewrite changes REQUEST_URI but never the request line, so normal pages are untouched.
+    foreach ([
+        'GET / HTTP/1.1',
+        'GET /dashboard HTTP/1.1',
+        'GET /build/assets/app.js HTTP/1.1',
+        'GET /publications HTTP/1.1',
+        'GET /iclock/cdata?SN=1 HTTP/1.1',
+        'GET /login?next=/public/ HTTP/1.1',
+    ] as $line) {
+        expect(preg_match($pattern, $line))->toBe(0, "should be served: $line");
+    }
+
+    // After the HTTPS redirect, before the deny list and the rewrite to public/.
+    expect(strpos($htaccess, 'R=301'))->toBeLessThan(strpos($htaccess, 'R=404'))
+        ->and(strpos($htaccess, 'R=404'))->toBeLessThan(strpos($htaccess, '[F'))
+        ->and($htaccess)->toContain('RewriteRule ^(?!public/)(.*)$ public/$1 [L]');
+});
+
+it('sets the security headers behind mod_headers so a missing module cannot 500 the site', function () {
+    $htaccess = rootHtaccess();
+
+    expect(preg_match('#<IfModule mod_headers\.c>(.*?)</IfModule>#s', $htaccess, $m))->toBe(1);
+    $block = $m[1];
+
+    expect($block)->toContain('Header always set X-Content-Type-Options "nosniff"')
+        ->toContain('Header always set X-Frame-Options "DENY"')
+        ->toContain("Header always set Content-Security-Policy \"frame-ancestors 'none'\"")
+        ->toContain('Header always set Referrer-Policy "strict-origin-when-cross-origin"');
+
+    // No restrictive script/style policy in this pass.
+    expect($block)->not->toContain('script-src')->not->toContain('style-src')->not->toContain('default-src');
+
+    // No Header directive outside an IfModule guard.
+    $outside = preg_replace('#<IfModule mod_headers\.c>.*?</IfModule>#s', '', $htaccess);
+    expect($outside)->not->toMatch('/^\s*Header\s/m');
+});
+
+it('sends HSTS only on HTTPS responses, never on plain-HTTP /iclock', function () {
+    $htaccess = rootHtaccess();
+
+    expect($htaccess)->toContain('Header always set Strict-Transport-Security "max-age=31536000" env=HTTPS')
+        ->and(substr_count($htaccess, 'Strict-Transport-Security'))->toBe(1);
+
+    // The iclock exemption from the HTTPS redirect is unchanged.
+    expect($htaccess)->toContain('RewriteCond %{THE_REQUEST} !^[A-Z]+\s+(?:https?://[^/\s]+)?/iclock(?:[/?\s]|$)');
+});

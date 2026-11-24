@@ -145,6 +145,10 @@ afterEach(function () {
 it('creates the shared layout and waits for shared/.env', function () {
     expect(runCron($this->appDir, $this->stub, $this->sharedDir))->toBe(0);
 
+    // the marker bootstrap/app.php requires before it trusts ../shared
+    expect(is_file($this->sharedDir.'/.lumino-hrm'))->toBeTrue()
+        ->and(filesize($this->sharedDir.'/.lumino-hrm'))->toBe(0);
+
     foreach (['app/private', 'app/public', 'framework/cache/data', 'framework/sessions', 'framework/views', 'logs'] as $d) {
         expect(is_dir($this->sharedDir.'/storage/'.$d))->toBeTrue("missing $d");
     }
@@ -211,7 +215,7 @@ it('leaves release.done unwritten when a step fails, logs the output and retries
     runCron($this->appDir, $this->stub, $this->sharedDir, ['FAIL_ON' => 'route:cache']);
 
     expect(is_file($this->sharedDir.'/release.done'))->toBeFalse()
-        ->and(cronCalls($this->sharedDir))->toBe(['config:clear', 'migrate --force', 'hrm:sync-access', 'config:cache', 'route:cache'])
+        ->and(cronCalls($this->sharedDir))->toBe(['config:clear', 'migrate --force', 'hrm:sync-access', 'config:cache', 'route:cache', 'schedule:run'])
         ->and(file_get_contents($this->sharedDir.'/storage/logs/cron.log'))->toContain('boom from route:cache');
 
     // next minute, the fault is gone: the whole sequence runs again and succeeds
@@ -702,3 +706,44 @@ it('never fails or injects anything when last-backup.json is malformed', functio
         expect($s)->not->toHaveKey('INJECT');
     }
 });
+
+it('recreates the shared marker on every run, even for an already-deployed layout', function () {
+    readyEnv($this);
+    writeRelease($this->appDir, 'r1');
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    unlink($this->sharedDir.'/.lumino-hrm');
+
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+
+    expect(is_file($this->sharedDir.'/.lumino-hrm'))->toBeTrue();
+});
+
+it('keeps the scheduler running when only a cache command fails, and still reports and retries it', function (string $failing) {
+    readyEnv($this);
+    writeRelease($this->appDir, 'r1');
+
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['FAIL_ON' => $failing]);
+
+    $s = readStatus($this->appDir);
+    expect(in_array('schedule:run', cronCalls($this->sharedDir), true))->toBeTrue()
+        ->and(is_file($this->sharedDir.'/release.done'))->toBeFalse()
+        ->and($s['state'])->toBe('post_deploy_failed')
+        ->and($s['detail'])->toBe("artisan {$failing} failed (release r1)");
+
+    // next minute the fault is gone: the full sequence retries and the release completes
+    unlink($this->sharedDir.'/calls.txt');
+    runCron($this->appDir, $this->stub, $this->sharedDir);
+    expect(cronCalls($this->sharedDir))->toBe(FULL_RUN)
+        ->and(trim(file_get_contents($this->sharedDir.'/release.done')))->toBe('r1');
+})->with(['config:cache', 'route:cache', 'view:cache']);
+
+it('keeps the scheduler stopped while migrate or hrm:sync-access fails', function (string $failing, string $name) {
+    readyEnv($this);
+    writeRelease($this->appDir, 'r1');
+
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['FAIL_ON' => $failing]);
+
+    expect(cronCalls($this->sharedDir))->not->toContain('schedule:run')
+        ->and(readStatus($this->appDir)['state'])->toBe('post_deploy_failed')
+        ->and(file_get_contents($this->sharedDir.'/storage/logs/cron.log'))->toContain('schedule:run skipped');
+})->with([['migrate', 'migrate'], ['hrm:sync-access', 'access']]);

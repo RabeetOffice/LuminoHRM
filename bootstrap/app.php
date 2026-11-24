@@ -43,7 +43,7 @@ $app = Application::configure(basePath: dirname(__DIR__))
     })->create();
 
 // On the shared host, keep .env and storage outside the (replaceable) document root.
-// No effect when <base>/../shared does not exist. See docs/deploy.md.
+// No effect unless <base>/../shared exists and holds the .lumino-hrm marker (or release.done). See docs/deploy.md.
 $shared = SharedDirectory::forBasePath($app->basePath());
 
 if ($shared->exists()) {

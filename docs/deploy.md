@@ -23,6 +23,7 @@ Nothing secret is ever in the repository or in the uploaded directory.
 /home/u882878513/domains/hrm.luminocrm.online/
     public_html/     <- document root. Replaced on every deploy. Contents of build/deploy.
     shared/          <- survives deploys. Created by cron.sh. NOT uploaded.
+        .lumino-hrm      empty marker file; cron.sh creates it on every run (see below)
         .env             production environment (secrets live only here)
         storage/         logs, cache, sessions, compiled views, app files
         release.done     id of the last release that finished its post-deploy step
@@ -35,8 +36,10 @@ Because of the deny list, no application URL may begin with `/app`, `/config`,
 `/database`, `/deploy`, `/docs`, `/resources`, `/routes`, `/scripts`, `/storage`,
 `/tests`, `/vendor` or `/bootstrap`.
 
-When `<app root>/../shared` exists, `bootstrap/app.php` loads `.env` from
-`shared/.env` and uses `shared/storage` as the storage path. Without that directory
+When `<app root>/../shared` exists AND contains the marker file `.lumino-hrm` (or, for the server that
+was deployed before the marker existed, `release.done`), `bootstrap/app.php` and `public/index.php` load `.env`
+from `shared/.env` and use `shared/storage` as the storage path. A bare `shared` folder without either file is
+ignored, so another project's sibling folder of that name cannot hijack a developer PC. Without the marker
 (local development, tests) nothing changes. `artisan key:generate`, `down`/`up`
 and everything else follow the same paths.
 
@@ -49,6 +52,16 @@ and `*.test`, so local development is unaffected. Laravel does not force the
 scheme (no `URL::forceScheme`), so `/iclock` keeps working over HTTP. Session
 cookies are marked secure (`SESSION_SECURE_COOKIE=true` in the template); `/iclock`
 uses no cookies.
+
+The root `.htaccess` also sets (through `mod_headers`, guarded by `<IfModule>`) `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'` and
+`Referrer-Policy: strict-origin-when-cross-origin`, plus `Strict-Transport-Security: max-age=31536000` on HTTPS
+responses only (never on plain-HTTP `/iclock`). There is deliberately no script/style CSP yet (inline styles carry the
+accent colour). A direct request for `/public/...` returns 404; the app is served from `/`.
+
+`/iclock` also protects itself against junk: a request without a registered serial number is logged with at most
+the first 1 KB of its body, at most 60 such rows per address per hour (then one marker row, then nothing until the
+hour is over). The reply to the caller never changes. Registered machines are never limited.
 
 ## Routine deploy
 
@@ -92,11 +105,14 @@ One entry, every minute (set once, in hPanel > Advanced > Cron Jobs):
 
 `cron.sh` is idempotent and takes a lock, so runs never overlap. It uses
 `/opt/alt/php84/usr/bin/php` (override with `PHP_BIN`). Each run: creates the
-`shared/` layout if missing; does nothing but log "waiting for shared/.env" until
+`shared/` layout (and the empty `shared/.lumino-hrm` marker) if missing; does nothing but log "waiting for shared/.env" until
 `shared/.env` exists; generates `APP_KEY` if it is empty; runs the post-deploy
 step when `release.txt` differs from `shared/release.done` (or when
 `shared/.env` is newer than `release.done`, because config is cached); then runs
-`artisan schedule:run` (skipped while a post-deploy step is failing). Output goes
+`artisan schedule:run`. The scheduler is skipped while the upload is incomplete or while `migrate` or
+`hrm:sync-access` is failing; if only a cache command (`config:cache`, `route:cache`, `view:cache`) fails, it still
+runs (so the queue drain and backups continue), the release stays pending, the cache command is retried every
+minute and `status.txt` reports `post_deploy_failed` with that command. Output goes
 to `shared/storage/logs/cron.log`, which is rotated at about 1 MB (one `.1` backup).
 
 ### What the scheduler runs (`routes/console.php`)
