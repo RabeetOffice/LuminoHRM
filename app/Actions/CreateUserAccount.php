@@ -41,11 +41,24 @@ class CreateUserAccount
 
     public function handle(string $name, string $email, string $role): User
     {
+        $user = $this->create($name, $email, $role);
+        $this->sendLink($user);
+
+        return $user;
+    }
+
+    /**
+     * Only the database part: the account, its role and its audit entry, in one transaction (it joins the caller's
+     * when there is one). No email is sent, so a caller that writes more in the same transaction (the employee
+     * form) can send the link once everything has been committed.
+     */
+    public function create(string $name, string $email, string $role): User
+    {
         if (! in_array($role, config('hrm.roles'), true)) {
             throw new InvalidArgumentException("Unknown role [{$role}].");
         }
 
-        $user = DB::transaction(function () use ($name, $email, $role) {
+        return DB::transaction(function () use ($name, $email, $role) {
             $user = new User;
             $user->name = Names::normalise($name);
             $user->email = Str::lower(trim($email));
@@ -65,7 +78,14 @@ class CreateUserAccount
 
             return $user;
         });
+    }
 
+    /**
+     * Emails the set-password link and records the outcome. Never throws: the account already exists and the caller
+     * decides what to tell the user (see linkSent()).
+     */
+    public function sendLink(User $user): bool
+    {
         $this->linkSent = false;
 
         try {
@@ -82,6 +102,6 @@ class CreateUserAccount
         // After the account is committed and the mail queued: nothing to roll back, so a logging failure is reported, not thrown.
         Audit::tryRecord('users', $this->linkSent ? 'Set-password link sent' : 'Set-password link failed', $user);
 
-        return $user;
+        return $this->linkSent;
     }
 }

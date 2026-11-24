@@ -34,6 +34,19 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // which must stay last and numeric so it never swallows them: employees/{employee} ->whereNumber('employee').
     Route::get('employees', [EmployeeController::class, 'index'])->name('employees.index');
 
+    // Writing employees. Static routes first, then the numeric wildcard (so "create" is never read as an id).
+    Route::middleware('can:employees.manage')->prefix('employees')->name('employees.')->group(function () {
+        Route::get('create', [EmployeeController::class, 'create'])->name('create');
+        Route::get('manager-options', [EmployeeController::class, 'managerOptions'])->name('manager-options');
+        Route::post('/', [EmployeeController::class, 'store'])->name('store');
+        Route::get('{employee}/edit', [EmployeeController::class, 'edit'])->whereNumber('employee')->name('edit');
+        Route::put('{employee}', [EmployeeController::class, 'update'])->whereNumber('employee')->name('update');
+        Route::patch('{employee}/status', [EmployeeController::class, 'status'])->whereNumber('employee')->name('status');
+    });
+    // Delete is Admin only (and the controller refuses a record with history).
+    Route::delete('employees/{employee}', [EmployeeController::class, 'destroy'])
+        ->whereNumber('employee')->middleware('can:employees.delete')->name('employees.destroy');
+
     // Users and roles. No delete route: accounts are disabled, never removed.
     Route::middleware('can:users.manage')->prefix('users')->name('users.')->group(function () {
         Route::get('/', [UserController::class, 'index'])->name('index');

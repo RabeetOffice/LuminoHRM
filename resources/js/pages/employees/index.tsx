@@ -1,4 +1,4 @@
-import { Head, router, usePage } from '@inertiajs/react';
+import { Head, Link, router, usePage } from '@inertiajs/react';
 import {
     CalendarDays,
     Download,
@@ -8,8 +8,10 @@ import {
     Trash2,
     Upload,
 } from 'lucide-react';
+import { useState } from 'react';
 import type { ComponentProps, ReactNode } from 'react';
 import { Avatar } from '@/components/hrm/avatar';
+import { ConfirmDialog } from '@/components/hrm/confirm-dialog';
 import { DataTable } from '@/components/hrm/data-table';
 import type {
     DataTableColumn,
@@ -33,7 +35,7 @@ import { formatDate } from '@/lib/format-date';
 import { nextTableUrl } from '@/lib/table-query';
 import { statusPanelId, statusTabId } from '@/lib/tabs';
 import { cn } from '@/lib/utils';
-import { index } from '@/routes/employees';
+import { create, destroy, edit, index } from '@/routes/employees';
 
 type Login = 'active' | 'disabled' | 'none';
 
@@ -129,10 +131,12 @@ function CodeBadge({ code }: { code: string }) {
 function RowActions({
     row,
     can,
+    onDelete,
     className,
 }: {
     row: EmployeeRow;
     can: Props['can'];
+    onDelete: (row: EmployeeRow) => void;
     className?: string;
 }) {
     return (
@@ -146,24 +150,28 @@ function RowActions({
                 <Eye />
             </SoonButton>
             {can.manage && (
-                <SoonButton
-                    variant="ghost"
-                    size="icon"
-                    className="size-7"
-                    aria-label={`Edit ${row.name}`}
-                >
-                    <Pencil />
-                </SoonButton>
+                <Button asChild variant="ghost" size="icon" className="size-7">
+                    <Link
+                        href={edit(row.id)}
+                        aria-label={`Edit ${row.name}`}
+                        title="Edit"
+                    >
+                        <Pencil />
+                    </Link>
+                </Button>
             )}
             {can.delete && (
-                <SoonButton
+                <Button
+                    type="button"
                     variant="ghost"
                     size="icon"
                     className="size-7 text-destructive"
                     aria-label={`Delete ${row.name}`}
+                    title="Delete"
+                    onClick={() => onDelete(row)}
                 >
                     <Trash2 />
-                </SoonButton>
+                </Button>
             )}
         </div>
     );
@@ -179,6 +187,8 @@ export default function Employees({
 }: Props) {
     const { url, props } = usePage();
     const dateFormat = props.app.dateFormat;
+    const [deleting, setDeleting] = useState<EmployeeRow | null>(null);
+    const [deleteProcessing, setDeleteProcessing] = useState(false);
     const status = filters.status === '' ? ALL : filters.status;
     const filtering =
         filters.search !== '' ||
@@ -307,12 +317,17 @@ export default function Employees({
             key: 'actions',
             header: <span className="sr-only">Actions</span>,
             className: 'w-px pl-3',
-            cell: (row) => <RowActions row={row} can={can} />,
+            cell: (row) => (
+                <RowActions row={row} can={can} onDelete={setDeleting} />
+            ),
         },
     ];
 
     const grid = (
-        <ul className="grid grid-cols-1 gap-4 p-3 sm:grid-cols-2 sm:p-4 lg:grid-cols-3 2xl:grid-cols-4">
+        <ul
+            role="list"
+            className="grid grid-cols-1 gap-4 p-3 sm:grid-cols-2 sm:p-4 lg:grid-cols-3 2xl:grid-cols-4"
+        >
             {employees.data.map((row) => (
                 <li
                     key={row.id}
@@ -335,6 +350,7 @@ export default function Employees({
                     <RowActions
                         row={row}
                         can={can}
+                        onDelete={setDeleting}
                         className="mt-3 w-full justify-center border-t pt-3"
                     />
                 </li>
@@ -343,11 +359,28 @@ export default function Employees({
     );
 
     const addButton = (
-        <SoonButton>
-            <Plus />
-            Add Employee
-        </SoonButton>
+        <Button asChild>
+            <Link href={create()}>
+                <Plus />
+                Add Employee
+            </Link>
+        </Button>
     );
+
+    const confirmDelete = () => {
+        if (deleting === null) {
+            return;
+        }
+
+        router.delete(destroy(deleting.id), {
+            preserveScroll: true,
+            onStart: () => setDeleteProcessing(true),
+            onFinish: () => {
+                setDeleteProcessing(false);
+                setDeleting(null);
+            },
+        });
+    };
 
     return (
         <>
@@ -492,6 +525,16 @@ export default function Employees({
                     </div>
                 </div>
             </div>
+
+            <ConfirmDialog
+                open={deleting !== null}
+                onOpenChange={(open) => !open && setDeleting(null)}
+                title={`Delete ${deleting?.name ?? 'this employee'}?`}
+                description="This removes the record, its contact and bank details and its login account. It only works for a record that was added by mistake and was never used; otherwise set the status to Inactive, Resigned or Terminated. This cannot be undone."
+                confirmLabel="Delete employee"
+                onConfirm={confirmDelete}
+                processing={deleteProcessing}
+            />
         </>
     );
 }

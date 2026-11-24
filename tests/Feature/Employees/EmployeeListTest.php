@@ -381,3 +381,24 @@ it('runs the same number of queries for 10 rows and for 50', function () {
     expect(employeeListProps($admin, 'per_page=50')['employees']['data'])->toHaveCount(50)
         ->and($large)->toBe($small);
 });
+
+it('keeps a manager inside their team scope whatever they search or filter for', function () {
+    $s = sampleStaff();
+    $manager = userWithRole('manager');
+    $mine = employeeFor($manager, ['first_name' => 'Mia', 'last_name' => 'Boss', 'department_id' => $s['eng']->id, 'designation_id' => $s['lead']->id]);
+    $s['ada']->update(['manager_id' => $mine->id]); // Ada is a direct report; Bob and Cy are not
+
+    $queries = [
+        'search=bob', 'search=cy', 'search=bob@corp.test', 'search=LD-0102', 'search=%25', 'search=_',
+        "department_id={$s['sales']->id}", "designation_id={$s['rep']->id}", 'status=probation', 'status=resigned',
+        "department_id={$s['sales']->id}&status=probation&search=bob", 'view=grid&search=stone', 'per_page=50&search=young',
+    ];
+
+    foreach ($queries as $query) {
+        $props = employeeListProps($manager->refresh(), $query);
+        expect(rowNames($props))->not->toContain('Bob Stone')->not->toContain('Cy Young', "query {$query}")
+            ->and(array_sum(array_diff_key($props['counts'], ['all' => 0])))->toBeLessThanOrEqual(2);
+    }
+
+    expect(rowNames(employeeListProps($manager->refresh(), 'search=ada')))->toBe(['Ada Lovelace']);
+});
