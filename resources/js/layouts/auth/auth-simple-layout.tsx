@@ -1,6 +1,6 @@
 import { Link } from '@inertiajs/react';
-import AppLogoIcon from '@/components/app-logo-icon';
 import { BrandLogo } from '@/components/hrm/brand-logo';
+import { BrandMark } from '@/components/hrm/brand-mark';
 import { home } from '@/routes';
 import type { AuthLayoutProps } from '@/types';
 
@@ -18,11 +18,11 @@ export default function AuthSimpleLayout({
                             href={home()}
                             className="flex flex-col items-center gap-2 font-medium"
                         >
-                            <div className="mb-1 flex h-9 items-center justify-center rounded-md">
+                            <div className="mb-1 flex items-center justify-center">
                                 <BrandLogo
-                                    className="h-9 max-w-48 object-contain"
+                                    className="h-11 max-w-56 object-contain"
                                     fallback={
-                                        <AppLogoIcon className="size-9 fill-current text-[var(--foreground)] dark:text-white" />
+                                        <BrandMark size="lg" wordmark stacked />
                                     }
                                 />
                             </div>
