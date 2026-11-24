@@ -5,10 +5,11 @@ use App\Http\Controllers\BrandingMediaController;
 use App\Http\Controllers\DepartmentController;
 use App\Http\Controllers\DesignationController;
 use App\Http\Controllers\EmployeeController;
-use App\Http\Controllers\EmployeeFileController;
 use App\Http\Controllers\EmployeeExportController;
+use App\Http\Controllers\EmployeeFileController;
 use App\Http\Controllers\EmployeeImportController;
 use App\Http\Controllers\EmployeeLinkController;
+use App\Http\Controllers\OrganizationChartController;
 use App\Http\Controllers\Settings\HrmSettingsController;
 use App\Http\Controllers\UserController;
 use App\Support\Branding;
@@ -86,6 +87,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // The profile page. Any signed-in user may ask; EmployeeAccess::canView decides (403), and a person who only has
     // their own record is sent to My Profile. Registered after every static /employees/... route above.
     Route::get('employees/{employee}', [EmployeeController::class, 'show'])->whereNumber('employee')->name('employees.show');
+
+    // Organization chart. The controller checks view-all OR view-team (a plain Employee gets 403); the people come
+    // only from EmployeeAccess::scope.
+    Route::get('organization-chart', [OrganizationChartController::class, 'index'])->name('organization-chart.index');
 
     // Users and roles. No delete route: accounts are disabled, never removed.
     Route::middleware('can:users.manage')->prefix('users')->name('users.')->group(function () {

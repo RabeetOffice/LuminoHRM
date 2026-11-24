@@ -94,7 +94,6 @@ export const navigation: NavGroup[] = [
                 href: '/organization-chart',
                 icon: Network,
                 permission: ['employees.view-all', 'employees.view-team'],
-                ...unready,
             },
             {
                 title: 'Departments & Designations',

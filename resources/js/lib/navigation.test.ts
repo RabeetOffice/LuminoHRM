@@ -84,6 +84,7 @@ describe('ready flag', () => {
         expect(r[0].items.map((i) => i.title)).toEqual(['Dashboard']);
         expect(r[1].items.map((i) => i.title)).toEqual([
             'Employees',
+            'Organization Chart',
             'Departments & Designations',
         ]);
         expect(r[2].items.map((i) => i.title)).toEqual([
@@ -226,10 +227,20 @@ describe('soon entries (default)', () => {
 
     test('an unready entry the user may see comes back flagged soon', () => {
         const r = filterNavigation(navigation, ['employees.view-all']);
-        const chart = r
+        const calendar = r
             .flatMap((g) => g.items)
-            .find((i) => i.title === 'Organization Chart');
-        expect(chart?.soon).toBe(true);
+            .find((i) => i.title === 'Calendar');
+        expect(calendar?.soon).toBe(true);
+    });
+
+    test('the Organization Chart is ready for anyone who may see employees', () => {
+        for (const perm of ['employees.view-all', 'employees.view-team']) {
+            const chart = filterNavigation(navigation, [perm])
+                .flatMap((g) => g.items)
+                .find((i) => i.title === 'Organization Chart');
+            expect(chart?.soon).toBe(false);
+            expect(chart?.href).toBe('/organization-chart');
+        }
     });
 
     test('a ready entry is not soon', () => {
@@ -357,7 +368,7 @@ describe('soon entries (default)', () => {
         expect(r.map((g) => g.label)).toEqual(navigation.map((g) => g.label));
     });
 
-    test('the ready entries today are exactly the six built pages', () => {
+    test('the ready entries today are exactly the seven built pages', () => {
         const ready = navigation
             .flatMap((g) => g.items)
             .filter((i) => i.children === undefined && i.ready !== false)
@@ -365,6 +376,7 @@ describe('soon entries (default)', () => {
         expect(ready).toEqual([
             'Dashboard',
             'Employees',
+            'Organization Chart',
             'Departments & Designations',
             'Settings',
             'Users & Roles',
