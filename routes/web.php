@@ -6,6 +6,9 @@ use App\Http\Controllers\DepartmentController;
 use App\Http\Controllers\DesignationController;
 use App\Http\Controllers\EmployeeController;
 use App\Http\Controllers\EmployeeFileController;
+use App\Http\Controllers\EmployeeExportController;
+use App\Http\Controllers\EmployeeImportController;
+use App\Http\Controllers\EmployeeLinkController;
 use App\Http\Controllers\Settings\HrmSettingsController;
 use App\Http\Controllers\UserController;
 use App\Support\Branding;
@@ -34,6 +37,19 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // through EmployeeAccess. Static routes (create, export, import ...) are added ABOVE the wildcard route,
     // which must stay last and numeric so it never swallows them: employees/{employee} ->whereNumber('employee').
     Route::get('employees', [EmployeeController::class, 'index'])->name('employees.index');
+
+    // Employee import and export (static URLs, registered before the numeric {employee} routes below).
+    Route::prefix('employees')->name('employees.')->group(function () {
+        Route::middleware('can:employees.manage')->group(function () {
+            Route::get('import', [EmployeeImportController::class, 'show'])->name('import');
+            Route::get('import/template', [EmployeeImportController::class, 'template'])->name('import.template');
+            Route::post('import/preview', [EmployeeImportController::class, 'upload'])->name('import.preview');
+            Route::post('import/run', [EmployeeImportController::class, 'run'])->name('import.run');
+            Route::post('send-links', [EmployeeLinkController::class, 'store'])->name('send-links');
+        });
+        // Every column (CNIC, bank ...) leaves in the file, so only the see-everyone permission may export.
+        Route::get('export', EmployeeExportController::class)->middleware('can:employees.view-all')->name('export');
+    });
 
     // Writing employees. Static routes first, then the numeric wildcard (so "create" is never read as an id).
     Route::middleware('can:employees.manage')->prefix('employees')->name('employees.')->group(function () {

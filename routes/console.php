@@ -42,3 +42,8 @@ Schedule::command('hrm:backup-database', ['--if-missing'])
     ->hourlyAt(20)
     ->timezone(config('app.timezone'))
     ->withoutOverlapping(60);
+
+// Employee import uploads (storage/app/private/imports): a preview is valid for 60 minutes, then its file is deleted.
+Schedule::command('hrm:prune-imports')
+    ->hourly()
+    ->withoutOverlapping(10);
