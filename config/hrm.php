@@ -3,12 +3,15 @@
 return [
 
     'devices' => [
-        // Serial numbers of attendance machines allowed to call /iclock.
-        // Comma-separated in HRM_DEVICE_SERIALS. Replaced by the devices table in Phase 3.
+        // Bootstrap only: a serial listed here (comma-separated in HRM_DEVICE_SERIALS) that has no devices row gets one
+        // on its first /iclock request. From then on the devices table decides (an inactive row is rejected).
         'allowed_serials' => array_values(array_filter(
             array_map('trim', explode(',', (string) env('HRM_DEVICE_SERIALS', ''))),
             fn (string $serial) => $serial !== '',
         )),
+
+        // Largest /iclock request body accepted (bytes). A bigger one gets a plain-text 413 before it is parsed.
+        'max_body_bytes' => (int) env('HRM_DEVICE_MAX_BODY_BYTES', 4194304),
     ],
 
     // First Admin, created by AccessSync only when no admin exists. Read via config so it works with config:cache.

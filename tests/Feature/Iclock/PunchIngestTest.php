@@ -10,7 +10,9 @@ use App\Models\DevicePunch;
 use App\Models\Employee;
 use App\Support\Attendance\PunchIngestor;
 use App\Support\Settings;
+use App\Support\SettingsStore;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
@@ -388,4 +390,245 @@ it('relinks punches when a new employee is created with a machine user ID', func
 
     expect(DevicePunch::sole()->employee_id)->toBe($employee->id)
         ->and(Attendance::where('employee_id', $employee->id)->value('needs_rebuild'))->toBeTrue();
+});
+
+// --- Fix round: body size limit (I-1) ------------------------------------------------------
+
+it('rejects a body over the size limit with a plain-text 413, storing nothing and logging no body', function () {
+    config(['hrm.devices.max_body_bytes' => 1000]);
+    Log::spy();
+    $line = "101\t2026-11-23 09:00:00\t0\t1\n"; // 25 bytes
+    $body = str_repeat($line, 41); // 1025 bytes
+
+    $r = attlog($body);
+
+    expect($r->status())->toBe(413)
+        ->and($r->getContent())->toBe("ERROR: body too large\n")
+        ->and($r->headers->get('Content-Type'))->toBe('text/plain; charset=UTF-8')
+        ->and(DevicePunch::count())->toBe(0);
+    Log::shouldHaveReceived('warning')->once()->withArgs(fn ($message, $context) => str_starts_with($message, 'iclock:')
+        && ! str_contains(json_encode($context), '09:00:00'));
+    $log = DeviceLog::latest('id')->first();
+    expect($log->body)->toBeNull()->and($log->accepted)->toBeFalse()->and($log->summary)->toStartWith('rejected: body too large');
+});
+
+it('accepts a body of exactly the size limit', function () {
+    $line = "101\t2026-11-23 09:00:00\t0\t1\n";
+    config(['hrm.devices.max_body_bytes' => strlen($line) * 40]);
+
+    expect(attlog(str_repeat($line, 40))->getContent())->toBe("OK: 40\n")
+        ->and(DevicePunch::count())->toBe(1);
+});
+
+it('rejects a request whose Content-Length is over the limit before reading the body', function () {
+    config(['hrm.devices.max_body_bytes' => 1000]);
+
+    $r = test()->call('POST', '/iclock/cdata?SN=MB20SN01&table=ATTLOG', [], [], [],
+        ['CONTENT_TYPE' => 'text/plain', 'CONTENT_LENGTH' => '5000'], "101\t2026-11-23 09:00:00\t0\t1\n");
+
+    expect($r->status())->toBe(413)
+        ->and($r->getContent())->toBe("ERROR: body too large\n")
+        ->and(DevicePunch::count())->toBe(0);
+});
+
+it('applies the size limit to command results too', function () {
+    config(['hrm.devices.max_body_bytes' => 100]);
+
+    $r = $this->call('POST', '/iclock/devicecmd?SN=MB20SN01', [], [], [], [], str_repeat('ID=1&Return=0&CMD=INFO', 10));
+
+    expect($r->status())->toBe(413);
+});
+
+it('defaults the body size limit to 4 MB', function () {
+    expect(config('hrm.devices.max_body_bytes'))->toBe(4194304);
+});
+
+// --- Fix round: relink keeps closed history (I-2) ------------------------------------------
+
+it('moves a reused PIN to the new employee without rewriting the closed days of the one who left', function () {
+    $a = Employee::factory()->create(['device_user_id' => '101', 'joining_date' => '2025-01-01']);
+    attlog("101\t2026-11-20 09:00:00\t0\t1\n101\t2026-11-23 09:00:00\t0\t1\n");
+    Attendance::where('employee_id', $a->id)->onDate('2026-11-20')->update(['closed' => true, 'status' => 'present', 'needs_rebuild' => false]);
+    Attendance::where('employee_id', $a->id)->onDate('2026-11-23')->update(['status' => 'present', 'needs_rebuild' => false]);
+
+    // A leaves: the PIN is cleared.
+    $a->forceFill(['device_user_id' => null])->save();
+    app(PunchIngestor::class)->relink($a, '101');
+
+    expect(DevicePunch::where('punch_date', '2026-11-20')->value('employee_id'))->toBe($a->id)
+        ->and(DevicePunch::where('punch_date', '2026-11-23')->value('employee_id'))->toBeNull()
+        ->and(Attendance::where('employee_id', $a->id)->onDate('2026-11-20')->value('needs_rebuild'))->toBeFalse()
+        ->and(Attendance::where('employee_id', $a->id)->onDate('2026-11-23')->value('needs_rebuild'))->toBeTrue();
+
+    // A punch under the free PIN before B joins, then B joins on 2026-11-22 with the same PIN.
+    attlog("101\t2026-11-21 09:00:00\t0\t1\n");
+    $b = Employee::factory()->create(['device_user_id' => '101', 'joining_date' => '2026-11-22']);
+    app(PunchIngestor::class)->relink($b, null);
+
+    expect(DevicePunch::where('punch_date', '2026-11-20')->value('employee_id'))->toBe($a->id)
+        ->and(DevicePunch::where('punch_date', '2026-11-21')->value('employee_id'))->toBeNull()
+        ->and(DevicePunch::where('punch_date', '2026-11-23')->value('employee_id'))->toBe($b->id)
+        ->and(Attendance::where('employee_id', $b->id)->get()->map(fn ($d) => $d->date->format('Y-m-d'))->all())->toBe(['2026-11-23']);
+});
+
+it('keeps punches on closed days with the employee when the machine user ID is cleared', function () {
+    $a = Employee::factory()->create(['device_user_id' => '101']);
+    attlog("101\t2026-11-20 09:00:00\t0\t1\n101\t2026-11-21 09:00:00\t0\t1\n");
+    Attendance::query()->update(['closed' => true, 'status' => 'present', 'needs_rebuild' => false]);
+    $before = Attendance::orderBy('id')->get()->map->getAttributes()->all();
+
+    $a->forceFill(['device_user_id' => null])->save();
+    app(PunchIngestor::class)->relink($a, '101');
+
+    expect(DevicePunch::pluck('employee_id')->unique()->all())->toBe([$a->id])
+        ->and(Attendance::orderBy('id')->get()->map->getAttributes()->all())->toBe($before);
+});
+
+it('corrects a mistyped machine user ID on the same open day, flagging only that day', function () {
+    $e = Employee::factory()->create(['device_user_id' => '11']);
+    attlog("11\t2026-11-24 09:00:00\t0\t1\n101\t2026-11-24 09:01:00\t0\t1\n");
+    Attendance::query()->update(['status' => 'present', 'needs_rebuild' => false]);
+    Attendance::factory()->create(['employee_id' => $e->id, 'date' => '2026-11-19', 'closed' => true]);
+
+    $e->forceFill(['device_user_id' => '101'])->save();
+    app(PunchIngestor::class)->relink($e, '11');
+
+    expect(DevicePunch::where('device_user_id', '11')->value('employee_id'))->toBeNull()
+        ->and(DevicePunch::where('device_user_id', '101')->value('employee_id'))->toBe($e->id)
+        ->and(Attendance::where('needs_rebuild', true)->get()->map(fn ($d) => $d->date->format('Y-m-d'))->all())->toBe(['2026-11-24']);
+});
+
+it('never flags a manual day when relinking', function () {
+    $e = Employee::factory()->create(['device_user_id' => '11']);
+    attlog("11\t2026-11-24 09:00:00\t0\t1\n");
+    Attendance::query()->update(['status' => 'present', 'needs_rebuild' => false, 'is_manual' => true]);
+
+    $e->forceFill(['device_user_id' => '12'])->save();
+    app(PunchIngestor::class)->relink($e, '11');
+
+    expect(Attendance::sole()->needs_rebuild)->toBeFalse();
+});
+
+// --- Fix round: pending status (I-3) --------------------------------------------------------
+
+it('creates a new day row with no status, meaning pending calculation', function () {
+    Employee::factory()->create(['device_user_id' => '101']);
+
+    attlog("101\t2026-11-23 09:00:00\t0\t1\n");
+
+    expect(Attendance::sole()->status)->toBeNull();
+});
+
+// --- Fix round: stamp validation (I-4) ------------------------------------------------------
+
+it('ignores a stamp that is not 1 to 20 digits', function (string $stamp) {
+    attlog("101\t2026-11-23 09:00:00\t0\t1\n", stamp: '500');
+    attlog("101\t2026-11-23 09:01:00\t0\t1\n", stamp: $stamp);
+
+    expect(Device::find($this->device->id)->last_stamp)->toBe('500');
+})->with([
+    'letters' => 'abc',
+    'mixed' => '12a',
+    'negative' => '-5',
+    'decimal' => '600.5',
+    '21 digits' => str_repeat('9', 21),
+    'inner space' => '600%201',
+]);
+
+it('accepts a 20-digit stamp', function () {
+    attlog("101\t2026-11-23 09:00:00\t0\t1\n", stamp: str_repeat('9', 20));
+
+    expect(Device::find($this->device->id)->last_stamp)->toBe(str_repeat('9', 20));
+});
+
+it('never moves the stamp backwards, comparing numerically', function () {
+    attlog("101\t2026-11-23 09:00:00\t0\t1\n", stamp: '999');
+    attlog("101\t2026-11-23 09:01:00\t0\t1\n", stamp: '1000');
+    expect(Device::find($this->device->id)->last_stamp)->toBe('1000');
+
+    attlog("101\t2026-11-23 09:02:00\t0\t1\n", stamp: '998');
+    expect(Device::find($this->device->id)->last_stamp)->toBe('1000');
+
+    attlog("101\t2026-11-23 09:03:00\t0\t1\n", stamp: '0001001');
+    expect(Device::find($this->device->id)->last_stamp)->toBe('0001001');
+});
+
+// --- Fix round: lost rows are never acknowledged (M-2) --------------------------------------
+
+it('replies retry instead of acknowledging when stored rows are missing after the insert', function () {
+    DB::statement("CREATE TRIGGER lose_punch BEFORE INSERT ON device_punches WHEN NEW.device_user_id = '666' BEGIN SELECT RAISE(IGNORE); END");
+
+    $r = attlog("101\t2026-11-23 09:00:00\t0\t1\n666\t2026-11-23 09:00:00\t0\t1\n");
+
+    expect($r->status())->toBe(500)
+        ->and($r->getContent())->toBe("ERROR: retry\n")
+        ->and(DevicePunch::count())->toBe(0);
+});
+
+// --- Fix round: every failure answers retry (M-4) -------------------------------------------
+
+it('answers a failing command poll with a plain-text retry and logs it', function () {
+    Schema::rename('device_commands', 'device_commands_away');
+
+    $r = $this->get('/iclock/getrequest?SN=MB20SN01');
+
+    expect($r->status())->toBe(500)
+        ->and($r->getContent())->toBe("ERROR: retry\n")
+        ->and($r->headers->get('Content-Type'))->toBe('text/plain; charset=UTF-8')
+        ->and(DeviceLog::latest('id')->first()->summary)->toStartWith('request failed');
+    Schema::rename('device_commands_away', 'device_commands');
+});
+
+it('answers a failing command result with a plain-text retry and logs it', function () {
+    Schema::rename('device_commands', 'device_commands_away');
+
+    $r = $this->call('POST', '/iclock/devicecmd?SN=MB20SN01', [], [], [], [], "ID=1&Return=0&CMD=INFO\n");
+
+    expect($r->status())->toBe(500)
+        ->and($r->getContent())->toBe("ERROR: retry\n")
+        ->and(DeviceLog::latest('id')->first()->summary)->toStartWith('request failed');
+    Schema::rename('device_commands_away', 'device_commands');
+});
+
+it('answers the handshake with the app zone when the settings table cannot be read', function () {
+    config(['app.timezone' => 'Asia/Kolkata']);
+    // The table is there but cannot be read (database error): SettingsStore rethrows.
+    app()->instance(SettingsStore::class, new class extends SettingsStore
+    {
+        public function all(): array
+        {
+            throw new RuntimeException('settings unreadable');
+        }
+    });
+
+    $r = $this->get('/iclock/cdata?SN=MB20SN01');
+
+    expect($r->status())->toBe(200)->and($r->getContent())->toContain("TimeZone=5.5\n");
+});
+
+// --- Fix round: HTTP edge cases (M-5) -------------------------------------------------------
+
+it('stores a CRLF body', function () {
+    expect(attlog("101\t2026-11-23 09:00:00\t0\t1\r\n102\t2026-11-23 09:01:00\t0\t1\r\n")->getContent())->toBe("OK: 2\n")
+        ->and(DevicePunch::orderBy('device_user_id')->pluck('device_user_id')->all())->toBe(['101', '102']);
+});
+
+it('ignores trailing blank lines', function () {
+    expect(attlog("101\t2026-11-23 09:00:00\t0\t1\n\n\r\n\n")->getContent())->toBe("OK: 1\n")
+        ->and(DeviceLog::latest('id')->first()->summary)->toBe('ATTLOG upload: 1 stored, 0 duplicate(s), 0 skipped');
+});
+
+it('skips a non-UTF-8 PIN and blanks a non-UTF-8 status', function () {
+    $r = attlog("\xFF\xFE\t2026-11-23 09:00:00\t0\t1\n101\t2026-11-23 09:01:00\t\xFF\t1\n");
+
+    expect($r->getContent())->toBe("OK: 1\n")
+        ->and(DevicePunch::sole()->device_user_id)->toBe('101')
+        ->and(DevicePunch::sole()->status_code)->toBeNull();
+});
+
+it('skips a PIN of 21 or more characters', function () {
+    $r = attlog(str_repeat('9', 21)."\t2026-11-23 09:00:00\t0\t1\n".str_repeat('8', 20)."\t2026-11-23 09:00:00\t0\t1\n");
+
+    expect($r->getContent())->toBe("OK: 1\n")
+        ->and(DevicePunch::sole()->device_user_id)->toBe(str_repeat('8', 20));
 });

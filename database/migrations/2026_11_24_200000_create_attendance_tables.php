@@ -94,7 +94,8 @@ return new class extends Migration
             $table->unsignedSmallInteger('late_minutes')->default(0);
             $table->unsignedSmallInteger('early_minutes')->default(0);
             $table->unsignedSmallInteger('overtime_minutes')->default(0);
-            $table->string('status', 20); // config('hrm.attendance.statuses')
+            // config('hrm.attendance.statuses'); null = pending calculation (a bare row made by punch ingestion).
+            $table->string('status', 20)->nullable();
             $table->boolean('is_manual')->default(false);
             $table->boolean('needs_attention')->default(false);
             $table->boolean('needs_rebuild')->default(false);

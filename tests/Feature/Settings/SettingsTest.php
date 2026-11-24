@@ -3,6 +3,7 @@
 use App\Http\Requests\Settings\BrandingRequest;
 use App\Mail\TestMail;
 use App\Support\Settings;
+use App\Support\SettingsStore;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
@@ -336,14 +337,32 @@ it('shares the app prop with branding and the company timezone', function () {
         ->where('app.timezone', 'Europe/London')->where('app.name', 'Acme'));
 });
 
-it('does not read settings on the iclock endpoints', function () {
+it('does not read settings on the iclock endpoints, apart from the company time zone where punches need it', function () {
     config(['hrm.devices.allowed_serials' => ['TESTSN001']]);
-    DB::enableQueryLog();
+    $settingsReads = function (callable $request): array {
+        app(SettingsStore::class)->forget();
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $request();
+        DB::disableQueryLog();
 
-    $this->get('/iclock/cdata?SN=TESTSN001&options=all')->assertOk();
+        return collect(DB::getQueryLog())
+            ->filter(fn ($q) => str_contains($q['query'], '"settings"') || str_contains($q['query'], '`settings`'))
+            ->pluck('query')->values()->all();
+    };
+    $this->get('/iclock/cdata?SN=TESTSN001')->assertOk(); // creates the device row
+    $zoneRead = fn () => Settings::get('company.timezone');
 
-    $touched = collect(DB::getQueryLog())->filter(fn ($q) => str_contains($q['query'], '"settings"') || str_contains($q['query'], '`settings`'));
-    expect($touched)->toBeEmpty();
+    // None at all: command poll, command results, tables other than ATTLOG.
+    expect($settingsReads(fn () => $this->get('/iclock/getrequest?SN=TESTSN001')->assertOk()))->toBe([])
+        ->and($settingsReads(fn () => $this->call('POST', '/iclock/devicecmd?SN=TESTSN001', [], [], [], [], 'ID=1&Return=0')->assertOk()))->toBe([])
+        ->and($settingsReads(fn () => $this->call('POST', '/iclock/cdata?SN=TESTSN001&table=OPERLOG', [], [], [], [], "OPLOG 4\n")->assertOk()))->toBe([]);
+
+    // Exactly the one read behind settings('company.timezone'): the handshake's TimeZone= and the ATTLOG clock check.
+    $expected = $settingsReads($zoneRead);
+    expect($expected)->toHaveCount(1)
+        ->and($settingsReads(fn () => $this->get('/iclock/cdata?SN=TESTSN001&options=all')->assertOk()))->toBe($expected)
+        ->and($settingsReads(fn () => $this->call('POST', '/iclock/cdata?SN=TESTSN001&table=ATTLOG', [], [], [], [], "1\t2026-01-01 09:00:00\n")->assertOk()))->toBe($expected);
 });
 
 it('has no route under a reserved prefix', function () {

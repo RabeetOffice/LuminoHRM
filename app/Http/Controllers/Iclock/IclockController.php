@@ -8,6 +8,8 @@ use App\Models\DeviceCommand;
 use App\Models\DeviceLog;
 use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\PunchIngestor;
+use DateTimeImmutable;
+use DateTimeZone;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -47,7 +49,7 @@ class IclockController extends Controller
                 'TransTimes=00:00;14:05',
                 'TransInterval=1',
                 'TransFlag=TransData AttLog OpLog',
-                'TimeZone='.app(AttendanceClock::class)->utcOffsetHours(),
+                'TimeZone='.$this->utcOffsetHours(),
                 'Realtime=1',
                 'Encrypt=None',
             ];
@@ -174,6 +176,17 @@ class IclockController extends Controller
     {
         $sn = trim($this->queryString($request, 'SN'));
 
+        // First of all, before any parsing: an oversized body never reaches the punch parser, and is neither logged
+        // nor stored.
+        $size = $this->oversizedBody($request);
+
+        if ($size !== null) {
+            Log::warning('iclock: request body over the size limit', ['bytes' => $size, 'path' => $request->path()]);
+            $this->record($request, $sn !== '' ? $sn : null, false, "rejected: body too large ({$size} bytes)", false);
+
+            return $this->plain("ERROR: body too large\n", 413);
+        }
+
         if ($sn === '') {
             $this->record($request, null, false, 'rejected: no serial number');
 
@@ -195,10 +208,57 @@ class IclockController extends Controller
             return $this->plain("ERROR: unknown device\n", 403);
         }
 
-        $answer = $respond($device);
+        try {
+            $answer = $respond($device);
+        } catch (Throwable $e) {
+            // Any failure (command poll, command results, ...) is a plain-text retry, never Laravel's HTML error page.
+            // Class only: a QueryException message embeds bound values.
+            Log::error('iclock: request failed', ['exception' => $e::class]);
+            $answer = ['request failed: '.$e::class, "ERROR: retry\n", 500];
+        }
+
         $this->record($request, $sn, true, $answer[0]);
 
         return $this->plain($answer[1], $answer[2] ?? 200);
+    }
+
+    /**
+     * The body size when it is over config('hrm.devices.max_body_bytes'), else null. Content-Length is checked first,
+     * so an announced oversized body is refused without being read.
+     */
+    private function oversizedBody(Request $request): ?int
+    {
+        $limit = config('hrm.devices.max_body_bytes');
+        $limit = is_numeric($limit) && (int) $limit > 0 ? (int) $limit : 4194304;
+        $declared = $request->server->get('CONTENT_LENGTH', $request->server->get('HTTP_CONTENT_LENGTH'));
+
+        if (is_numeric($declared) && (int) $declared > $limit) {
+            return (int) $declared;
+        }
+
+        $size = strlen($request->getContent());
+
+        return $size > $limit ? $size : null;
+    }
+
+    /** The handshake's TimeZone= value; when the settings cannot be read, the app zone's offset (as AttendanceClock). */
+    private function utcOffsetHours(): int|float
+    {
+        try {
+            return app(AttendanceClock::class)->utcOffsetHours();
+        } catch (Throwable $e) {
+            Log::warning('iclock: could not read the company time zone, using the app zone', ['exception' => $e::class]);
+        }
+
+        $zone = config('app.timezone');
+
+        try {
+            $seconds = (new DateTimeImmutable('now', new DateTimeZone(is_string($zone) && $zone !== '' ? $zone : 'UTC')))->getOffset();
+        } catch (Throwable) {
+            $seconds = 0;
+        }
+
+        return $seconds % 3600 === 0 ? intdiv($seconds, 3600) : $seconds / 3600;
     }
 
     /** The devices row for $sn, created for a serial listed in the environment; null when unknown. */
@@ -259,10 +319,10 @@ class IclockController extends Controller
      * cheap on purpose: only the first REJECTED_BODY_BYTES of the body are kept, and each address may
      * add REJECTED_PER_IP_PER_HOUR rows per hour, then one marker row, then nothing until the hour is up.
      */
-    private function record(Request $request, ?string $sn, bool $accepted, string $summary): void
+    private function record(Request $request, ?string $sn, bool $accepted, string $summary, bool $withBody = true): void
     {
         try {
-            $bodyLimit = self::MAX_BODY_BYTES;
+            $bodyLimit = $withBody ? self::MAX_BODY_BYTES : 0;
 
             if (! $accepted) {
                 $verdict = $this->rejectedVerdict($request->ip());
@@ -274,7 +334,7 @@ class IclockController extends Controller
                 if ($verdict === 'marker') {
                     $summary = self::CAP_MARKER;
                     $bodyLimit = 0;
-                } else {
+                } elseif ($withBody) {
                     $bodyLimit = self::REJECTED_BODY_BYTES;
                 }
             }

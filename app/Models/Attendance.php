@@ -29,7 +29,7 @@ use Illuminate\Support\Carbon;
  * @property int $late_minutes
  * @property int $early_minutes
  * @property int $overtime_minutes
- * @property string $status config('hrm.attendance.statuses')
+ * @property string|null $status config('hrm.attendance.statuses'); null = pending calculation (not yet rebuilt)
  * @property bool $is_manual
  * @property bool $needs_attention
  * @property bool $needs_rebuild
@@ -82,7 +82,8 @@ class Attendance extends Model
     protected static function booted(): void
     {
         static::saving(function (Attendance $attendance): void {
-            if (! in_array($attendance->status, (array) config('hrm.attendance.statuses'), true)) {
+            // Null is allowed: the day is pending calculation (AttendanceRebuilder sets the status).
+            if ($attendance->status !== null && ! in_array($attendance->status, (array) config('hrm.attendance.statuses'), true)) {
                 throw new \InvalidArgumentException("Unknown attendance status [{$attendance->status}].");
             }
         });

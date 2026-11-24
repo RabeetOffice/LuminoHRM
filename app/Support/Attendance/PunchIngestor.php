@@ -9,8 +9,11 @@ use App\Models\Employee;
 use Carbon\CarbonImmutable;
 use DateTimeImmutable;
 use DateTimeZone;
+use Generator;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
+use RuntimeException;
 
 /**
  * Stores the punch lines of one ATTLOG upload and marks the affected employee-days for a rebuild. It never computes
@@ -21,6 +24,8 @@ use Illuminate\Support\Facades\DB;
  * A punch already stored (same device, machine user ID and time) is a duplicate: not an error, and acknowledged.
  *
  * The device row is locked first, so two uploads from the same machine run one after the other.
+ *
+ * A day row created here has status null ("pending calculation") and needs_rebuild = true; the rebuild decides it.
  */
 class PunchIngestor
 {
@@ -37,64 +42,90 @@ class PunchIngestor
 
     public function ingest(Device $device, string $body, ?string $stamp): IngestResult
     {
-        $parsed = self::parse($body);
         $now = $this->clock->now();
+        $limit = $now->addDay()->format('Y-m-d H:i:s');
 
+        // One compact entry per distinct punch: "pin\ttime" => "status\tverify". The insert rows are built from it a
+        // chunk at a time, so a large upload never holds a full array of row arrays (I-1: memory per line).
+        $punches = [];
+        $pins = [];
         $faults = [];
-        $punches = []; // "pin\ttime" => row, so a line repeated within the body is stored once
+        $valid = 0;
+        $malformed = 0;
+        $newest = null;
 
-        foreach ($parsed['rows'] as $row) {
-            if (self::isClockFault($row['punched_at'], $now)) {
-                $faults[] = "{$row['pin']} {$row['punched_at']}";
+        foreach (self::lines($body) as $row) {
+            if ($row === null) {
+                $malformed++;
 
                 continue;
             }
 
-            $punches[$row['pin']."\t".$row['punched_at']] ??= $row;
+            [$pin, $time, $status, $verify] = $row;
+
+            if (self::isClockFault($time, $now, $limit)) {
+                $faults[] = "{$pin} {$time}";
+
+                continue;
+            }
+
+            $valid++;
+            $punches[$pin."\t".$time] ??= $status."\t".$verify;
+            $pins[$pin] = true;
+
+            if ($newest === null || $time > $newest) {
+                $newest = $time;
+            }
         }
 
-        $valid = count($parsed['rows']) - count($faults);
-
-        $stored = DB::transaction(function () use ($device, $punches, $stamp): int {
+        $stored = DB::transaction(function () use ($device, $punches, $pins, $stamp, $newest): int {
             $locked = Device::query()->whereKey($device->getKey())->lockForUpdate()->firstOrFail();
 
-            $employees = $this->employeeIds(array_unique(array_column($punches, 'pin')));
+            $employees = $this->employeeIds(array_keys($pins));
             $createdAt = Date::now()->format('Y-m-d H:i:s');
-            $records = [];
             $days = [];
-
-            foreach ($punches as $row) {
-                $employeeId = $employees[$row['pin']] ?? null;
-                $date = substr($row['punched_at'], 0, 10);
-
-                $records[] = [
-                    'device_id' => $locked->id,
-                    'device_user_id' => $row['pin'],
-                    'employee_id' => $employeeId,
-                    'punch_time' => $row['punched_at'],
-                    'punch_date' => $date,
-                    'verify_type' => $row['verify'] !== '' ? $row['verify'] : null,
-                    'status_code' => $row['status'] !== '' ? $row['status'] : null,
-                    'source' => 'device',
-                    'created_at' => $createdAt,
-                ];
-
-                if ($employeeId !== null) {
-                    $days[$employeeId][$date] = true;
-                }
-            }
-
             $stored = 0;
 
-            foreach (array_chunk($records, self::INSERT_CHUNK) as $chunk) {
-                $stored += DevicePunch::query()->insertOrIgnore($chunk);
+            foreach (array_chunk($punches, self::INSERT_CHUNK, true) as $chunk) {
+                $records = [];
+
+                foreach ($chunk as $key => $codes) {
+                    [$pin, $time] = explode("\t", (string) $key, 2);
+                    [$status, $verify] = explode("\t", $codes, 2);
+                    $employeeId = $employees[$pin] ?? null;
+                    $date = substr($time, 0, 10);
+
+                    $records[] = [
+                        'device_id' => $locked->id,
+                        'device_user_id' => $pin,
+                        'employee_id' => $employeeId,
+                        'punch_time' => $time,
+                        'punch_date' => $date,
+                        'verify_type' => $verify !== '' ? $verify : null,
+                        'status_code' => $status !== '' ? $status : null,
+                        'source' => 'device',
+                        'created_at' => $createdAt,
+                    ];
+
+                    if ($employeeId !== null) {
+                        $days[$employeeId][$date] = true;
+                    }
+                }
+
+                $stored += DevicePunch::query()->insertOrIgnore($records);
+                $this->assertStored((int) $locked->id, $records);
             }
+
+            // Same order as AttendanceRebuilder's locks (employee, then date), so the two cannot deadlock (M-3).
+            ksort($days);
 
             foreach ($days as $employeeId => $dates) {
-                $this->markDays($employeeId, array_keys($dates));
+                $dates = array_keys($dates);
+                sort($dates);
+                $this->markDays($employeeId, $dates, true);
             }
 
-            $this->touchDevice($locked, $punches, $stamp);
+            $this->touchDevice($locked, $newest, $stamp);
 
             return $stored;
         });
@@ -102,15 +133,20 @@ class PunchIngestor
         return new IngestResult(
             stored: $stored,
             duplicates: $valid - $stored,
-            skipped: $parsed['malformed'] + count($faults),
+            skipped: $malformed + count($faults),
             clockFaults: $faults,
         );
     }
 
     /**
-     * After an employee's machine user ID was set or changed: punches stored under the old ID that were linked to this
-     * employee are detached, unmatched punches under the new ID are attached, and every day either touched is marked
-     * for a rebuild. Punches linked to some other employee are never taken. Call inside the saving transaction.
+     * After an employee's machine user ID was set, changed or cleared. History that is already closed is never
+     * rewritten:
+     *   - detach (the old ID): this employee's punches under the old ID, only on days whose attendance row is not closed
+     *     (no row counts as not closed). Punches on closed days stay with the employee and those days are not flagged.
+     *   - attach (the new ID): punches under the new ID that are unlinked (employee_id null) and dated on or after the
+     *     joining date. Punches linked to another employee are never taken.
+     * Only the days actually changed are flagged for a rebuild, and never a manual day. Call inside the saving
+     * transaction.
      */
     public function relink(Employee $employee, ?string $oldId): void
     {
@@ -122,25 +158,41 @@ class PunchIngestor
             return;
         }
 
-        DB::transaction(function () use ($employee, $oldId, $newId): void {
-            $dates = [];
+        $employeeId = (int) $employee->id;
+        // employees.joining_date is NOT NULL, so there is always a lower bound.
+        $joined = $employee->joining_date->format('Y-m-d');
+
+        DB::transaction(function () use ($employeeId, $oldId, $newId, $joined): void {
+            $detached = [];
+            $attached = [];
 
             if ($oldId !== null) {
-                $detach = DevicePunch::query()->where('employee_id', $employee->id)->where('device_user_id', $oldId);
-                $dates = $detach->clone()->distinct()->pluck('punch_date')->all();
+                $detach = DevicePunch::query()
+                    ->where('employee_id', $employeeId)
+                    ->where('device_user_id', $oldId)
+                    ->whereNotExists(fn ($q) => $q->select(DB::raw(1))->from('attendances')
+                        ->where('attendances.employee_id', $employeeId)
+                        ->whereColumn('attendances.date', 'device_punches.punch_date')
+                        ->where('attendances.closed', true));
+                $detached = $this->dates($detach->clone());
                 $detach->update(['employee_id' => null]);
             }
 
             if ($newId !== null) {
-                $attach = DevicePunch::query()->whereNull('employee_id')->where('device_user_id', $newId);
-                $dates = [...$dates, ...$attach->clone()->distinct()->pluck('punch_date')->all()];
-                $attach->update(['employee_id' => $employee->id]);
+                $attach = DevicePunch::query()
+                    ->whereNull('employee_id')
+                    ->where('device_user_id', $newId)
+                    ->where('punch_date', '>=', $joined);
+                $attached = $this->dates($attach->clone());
+                $attach->update(['employee_id' => $employeeId]);
             }
 
-            $this->markDays($employee->id, array_values(array_unique(array_map(
-                fn (mixed $date) => substr((string) $date, 0, 10),
-                $dates,
-            ))));
+            // Attached days get a row if they have none; a detached day only has its existing row flagged (the
+            // employee may have no punch left there, so a pending row is not created for it).
+            $all = array_values(array_unique([...$detached, ...$attached]));
+            sort($all);
+            $this->markDays($employeeId, array_values(array_intersect($all, $attached)), true);
+            $this->markDays($employeeId, array_values(array_diff($all, $attached)), false);
         });
     }
 
@@ -156,47 +208,107 @@ class PunchIngestor
         $rows = [];
         $malformed = 0;
 
-        foreach (preg_split('/\r\n|\n|\r/', $body) ?: [] as $line) {
-            if (trim($line) === '') {
-                continue;
-            }
-
-            $fields = explode("\t", $line);
-            $pin = trim($fields[0]);
-            $time = trim($fields[1] ?? '');
-
-            if ($pin === '' || $time === '' || strlen($pin) > self::PIN_MAX || ! mb_check_encoding($pin, 'UTF-8')
-                || ! self::isDateTime($time)) {
+        foreach (self::lines($body) as $row) {
+            if ($row === null) {
                 $malformed++;
 
                 continue;
             }
 
-            $rows[] = [
-                'pin' => $pin,
-                'punched_at' => $time,
-                'status' => self::code($fields[2] ?? ''),
-                'verify' => self::code($fields[3] ?? ''),
-            ];
+            $rows[] = ['pin' => $row[0], 'punched_at' => $row[1], 'status' => $row[2], 'verify' => $row[3]];
         }
 
         return ['rows' => $rows, 'malformed' => $malformed];
     }
 
-    /** A machine clock fault: more than 24 hours ahead of $now (company wall clock) or before 2000-01-01. */
-    public static function isClockFault(string $punchedAt, CarbonImmutable $now): bool
+    /**
+     * A machine clock fault: more than 24 hours ahead of $now (company wall clock) or before 2000-01-01.
+     *
+     * @param  string|null  $limit  $now + 24 h as "Y-m-d H:i:s", when the caller has it already
+     */
+    public static function isClockFault(string $punchedAt, CarbonImmutable $now, ?string $limit = null): bool
     {
         // Both sides are "Y-m-d H:i:s" wall-clock strings, which compare correctly as text.
-        return $punchedAt < self::EARLIEST || $punchedAt > $now->addDay()->format('Y-m-d H:i:s');
+        return $punchedAt < self::EARLIEST || $punchedAt > ($limit ?? $now->addDay()->format('Y-m-d H:i:s'));
     }
 
     /**
-     * Marks each (employee, date) for a rebuild: a bare row is created when the day has none; an existing row only gets
-     * needs_rebuild = true, and a manual day is not touched at all (a rebuild never overwrites it anyway).
+     * The body's non-blank lines, one at a time, without splitting the body into an array first: [pin, time, status,
+     * verify] for a storable line, null for a malformed one. Lines end in "\n", "\r\n" or "\r".
      *
-     * @param  list<string>  $dates  "Y-m-d"
+     * @return Generator<int, array{0: string, 1: string, 2: string, 3: string}|null>
      */
-    private function markDays(int $employeeId, array $dates): void
+    private static function lines(string $body): Generator
+    {
+        $length = strlen($body);
+        $offset = 0;
+
+        while ($offset < $length) {
+            $size = strcspn($body, "\r\n", $offset);
+            $line = substr($body, $offset, $size);
+            $offset += $size + 1;
+
+            if (trim($line) === '') {
+                continue;
+            }
+
+            $fields = explode("\t", $line, 5);
+            $pin = trim($fields[0]);
+            $time = trim($fields[1] ?? '');
+
+            if ($pin === '' || $time === '' || strlen($pin) > self::PIN_MAX || ! mb_check_encoding($pin, 'UTF-8')
+                || ! self::isDateTime($time)) {
+                yield null;
+
+                continue;
+            }
+
+            yield [$pin, $time, self::code($fields[2] ?? ''), self::code($fields[3] ?? '')];
+        }
+    }
+
+    /**
+     * Every row of $records is now in device_punches (inserted now or before). A row the insert-or-ignore skipped for
+     * any reason other than the unique key would otherwise be acknowledged and lost: throw instead, so the machine
+     * is told to retry (M-2).
+     *
+     * @param  list<array<string, mixed>>  $records  at most INSERT_CHUNK rows of one device
+     */
+    private function assertStored(int $deviceId, array $records): void
+    {
+        // Two IN lists on the unique key's columns (portable, index-served); the few extra rows they can match (another
+        // PIN of this chunk at one of its times) are filtered out in PHP.
+        $present = [];
+
+        DevicePunch::query()->toBase()
+            ->where('device_id', $deviceId)
+            ->whereIn('device_user_id', array_values(array_unique(array_column($records, 'device_user_id'))))
+            ->whereIn('punch_time', array_values(array_unique(array_column($records, 'punch_time'))))
+            ->get(['device_user_id', 'punch_time'])
+            ->each(function (object $row) use (&$present): void {
+                $present[$row->device_user_id."\t".substr((string) $row->punch_time, 0, 19)] = true;
+            });
+
+        $missing = 0;
+
+        foreach ($records as $record) {
+            if (! isset($present[$record['device_user_id']."\t".$record['punch_time']])) {
+                $missing++;
+            }
+        }
+
+        if ($missing > 0) {
+            throw new RuntimeException("Punches missing after the insert: {$missing} of ".count($records).'.');
+        }
+    }
+
+    /**
+     * Marks each (employee, date) for a rebuild: an existing row gets needs_rebuild = true, a manual day is not touched
+     * at all (a rebuild never overwrites it anyway). With $create, a day with no row gets a pending one (status null).
+     *
+     * @param  list<string>  $dates  "Y-m-d", sorted
+     */
+    private function markDays(int $employeeId, array $dates, bool $create): void
     {
         if ($dates === []) {
             return;
@@ -204,16 +316,17 @@ class PunchIngestor
 
         $now = Date::now()->format('Y-m-d H:i:s');
 
-        // Insert-or-ignore: a row created meanwhile by another request (or the rebuild) is left as it is.
-        Attendance::query()->insertOrIgnore(array_map(fn (string $date) => [
-            'employee_id' => $employeeId,
-            'date' => $date,
-            // The column needs a value; the rebuild replaces it within a minute.
-            'status' => 'present',
-            'needs_rebuild' => true,
-            'created_at' => $now,
-            'updated_at' => $now,
-        ], $dates));
+        if ($create) {
+            // Insert-or-ignore: a row created meanwhile by another request (or the rebuild) is left as it is.
+            Attendance::query()->insertOrIgnore(array_map(fn (string $date) => [
+                'employee_id' => $employeeId,
+                'date' => $date,
+                'status' => null, // pending calculation
+                'needs_rebuild' => true,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ], $dates));
+        }
 
         Attendance::query()
             ->where('employee_id', $employeeId)
@@ -224,13 +337,25 @@ class PunchIngestor
     }
 
     /**
-     * last_seen_at (app time), last_punch_at (the newest punch time ever received, naive) and last_stamp.
+     * The distinct "Y-m-d" punch dates of a punch query, sorted.
      *
-     * @param  array<string, array{pin: string, punched_at: string, status: string, verify: string}>  $punches
+     * @param  Builder<DevicePunch>  $query
+     * @return list<string>
      */
-    private function touchDevice(Device $device, array $punches, ?string $stamp): void
+    private function dates(Builder $query): array
     {
-        $newest = $punches === [] ? null : max(array_column($punches, 'punched_at'));
+        $dates = array_map(fn (mixed $date) => substr((string) $date, 0, 10), $query->distinct()->pluck('punch_date')->all());
+        sort($dates);
+
+        return array_values(array_unique($dates));
+    }
+
+    /**
+     * last_seen_at (app time), last_punch_at (the newest punch time ever received, naive) and last_stamp. Runs under
+     * the device row lock, so the forward-only comparisons below cannot race another upload of the same machine.
+     */
+    private function touchDevice(Device $device, ?string $newest, ?string $stamp): void
+    {
         $current = $device->getRawOriginal('last_punch_at');
         $current = is_string($current) && $current !== '' ? substr($current, 0, 19) : null;
 
@@ -240,27 +365,54 @@ class PunchIngestor
             $values['last_punch_at'] = $newest;
         }
 
-        $stamp = $stamp !== null ? trim($stamp) : '';
+        if ($stamp !== null && self::isStamp($stamp)) {
+            $previous = $device->last_stamp;
 
-        if ($stamp !== '' && mb_check_encoding($stamp, 'UTF-8')) {
-            $values['last_stamp'] = mb_substr($stamp, 0, 50);
+            // Forward only. A stored value that is not a valid stamp (older data) is replaced.
+            if (! is_string($previous) || ! self::isStamp($previous) || self::compareStamps($stamp, $previous) > 0) {
+                $values['last_stamp'] = $stamp;
+            }
         }
 
         $device->forceFill($values)->save();
     }
 
+    /** The machine's ATTLOGStamp: 1 to 20 digits. Anything else is ignored. */
+    private static function isStamp(string $value): bool
+    {
+        return preg_match('/^\d{1,20}$/', $value) === 1;
+    }
+
+    /** Numeric comparison of two digit strings of any length (20 digits do not fit in an int). */
+    private static function compareStamps(string $a, string $b): int
+    {
+        $a = ltrim($a, '0');
+        $b = ltrim($b, '0');
+
+        return strlen($a) <=> strlen($b) ?: strcmp($a, $b) <=> 0;
+    }
+
     /**
      * Employee id by machine user ID for the given PINs.
      *
-     * @param  array<int|string, string>  $pins
+     * Read with a shared lock (M-1). On MariaDB (InnoDB, REPEATABLE READ) a plain read is a snapshot: it could miss a
+     * relink committed meanwhile, and the punch would be stored unlinked after relink() had already attached the
+     * unlinked ones. LOCK IN SHARE MODE reads the latest committed rows and holds next-key locks on the matched
+     * device_user_id index entries and gaps, so an employee update giving or taking one of these PINs waits for this
+     * upload to commit (and then its relink sees these punches), or this read waits for that update to commit (and
+     * then links to the new holder). SQLite runs one writer at a time, so a test cannot show the race.
+     *
+     * @param  list<string>  $pins
      * @return array<string, int>
      */
     private function employeeIds(array $pins): array
     {
         $map = [];
 
-        foreach (array_chunk(array_values($pins), self::INSERT_CHUNK) as $chunk) {
-            foreach (Employee::query()->whereIn('device_user_id', $chunk)->get(['id', 'device_user_id']) as $employee) {
+        foreach (array_chunk($pins, self::INSERT_CHUNK) as $chunk) {
+            $employees = Employee::query()->whereIn('device_user_id', $chunk)->sharedLock()->get(['id', 'device_user_id']);
+
+            foreach ($employees as $employee) {
                 $map[(string) $employee->device_user_id] = $employee->id;
             }
         }
