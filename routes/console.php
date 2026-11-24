@@ -47,3 +47,15 @@ Schedule::command('hrm:backup-database', ['--if-missing'])
 Schedule::command('hrm:prune-imports')
     ->hourly()
     ->withoutOverlapping(10);
+
+// Attendance (Phase 3). Punch ingestion only marks days; this decides them, within about a minute of the punch.
+Schedule::command('hrm:attendance-rebuild')
+    ->everyMinute()
+    ->withoutOverlapping(10);
+
+// Nightly close. The company zone is a runtime setting, so it is not baked into the cron expression: the command runs
+// hourly at :30 and closes the previous 7 company-zone days. The first run after 00:30 closes yesterday; every later
+// run finds nothing to do (idempotent) unless an earlier night was missed.
+Schedule::command('hrm:attendance-close')
+    ->hourlyAt(30)
+    ->withoutOverlapping(30);
