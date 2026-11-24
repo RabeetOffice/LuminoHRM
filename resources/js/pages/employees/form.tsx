@@ -16,7 +16,9 @@ import { PageHeader } from '@/components/hrm/page-header';
 import { StatusPill } from '@/components/hrm/status-pill';
 import { Field, fieldAria } from '@/components/settings/settings-form';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
     Select,
     SelectContent,
@@ -27,6 +29,7 @@ import {
 import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
 import { useUnsavedChangesGuard } from '@/hooks/use-unsaved-changes';
+import { formatClockRange } from '@/lib/clock-time';
 import {
     designationsFor,
     firstTabWithError,
@@ -57,6 +60,8 @@ type EmployeeRecord = {
     status: string;
     last_working_day: string | null;
     device_user_id: string | null;
+    shift_id: number | null;
+    attendance_exempt: boolean;
     role: string;
     has_login: boolean;
     login_active: boolean | null;
@@ -82,9 +87,21 @@ type Props = {
     documents: EmployeeDocumentItem[];
     documentTypes: string[];
     can: { editCode: boolean; edit: boolean };
+    /** Every shift, the default first. */
+    shifts: ShiftOption[];
+};
+
+type ShiftOption = {
+    id: number;
+    name: string;
+    start_time: string;
+    end_time: string;
+    is_default: boolean;
 };
 
 const NONE = 'none';
+/** The shift select's value for "no shift of their own": the person works the default shift. */
+const DEFAULT_SHIFT = 'default';
 
 const LABELS: Record<string, string> = {
     male: 'Male',
@@ -116,6 +133,7 @@ function EmployeeFormPage({
     documents: documentItems,
     documentTypes,
     can,
+    shifts,
 }: Props) {
     const editing = employee !== null;
 
@@ -136,6 +154,8 @@ function EmployeeFormPage({
         employment_type: employee?.employment_type ?? 'full_time',
         status: employee?.status ?? 'active',
         device_user_id: employee?.device_user_id ?? '',
+        shift_id: employee?.shift_id ? String(employee.shift_id) : '',
+        attendance_exempt: employee?.attendance_exempt ?? false,
         role: employee?.role ?? 'employee',
         address: employee?.address ?? '',
         emergency_name: employee?.emergency_name ?? '',
@@ -156,10 +176,13 @@ function EmployeeFormPage({
 
     useUnsavedChangesGuard(form.isDirty);
 
-    const set = (key: keyof typeof data, value: string) =>
+    // Every field but the exempt checkbox holds text.
+    type TextKey = Exclude<keyof typeof data, 'attendance_exempt'>;
+
+    const set = (key: TextKey, value: string) =>
         form.setData((current) => ({ ...current, [key]: value }));
 
-    const text = (key: keyof typeof data, hint?: boolean) => ({
+    const text = (key: TextKey, hint?: boolean) => ({
         ...fieldAria(`employee-${key}`, errors[key], hint),
         value: data[key],
         onChange: (e: { target: { value: string } }) =>
@@ -170,7 +193,7 @@ function EmployeeFormPage({
         event.preventDefault();
 
         form.transform((values) => {
-            const body: Record<string, string> = { ...values };
+            const body: Record<string, string | boolean> = { ...values };
 
             // These are read-only here: the status has its own control, the code is Admin only, and a locked role is
             // never sent (the server would answer 403 to a change; sending nothing means "keep it").
@@ -210,6 +233,8 @@ function EmployeeFormPage({
         designations,
         data.department_id,
     );
+
+    const defaultShift = shifts.find((shift) => shift.is_default);
 
     const withErrors = tabsWithErrors(errors);
 
@@ -583,6 +608,86 @@ function EmployeeFormPage({
                     autoComplete="off"
                 />
             </Field>
+            <Field
+                id="employee-shift_id"
+                label="Shift"
+                error={errors.shift_id}
+                hint="The company default follows whichever shift is the default."
+            >
+                <Select
+                    value={data.shift_id === '' ? DEFAULT_SHIFT : data.shift_id}
+                    onValueChange={(value) =>
+                        set('shift_id', value === DEFAULT_SHIFT ? '' : value)
+                    }
+                >
+                    <SelectTrigger
+                        {...fieldAria(
+                            'employee-shift_id',
+                            errors.shift_id,
+                            true,
+                        )}
+                        className="w-full"
+                    >
+                        <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value={DEFAULT_SHIFT}>
+                            {defaultShift
+                                ? `Company default (${defaultShift.name})`
+                                : 'Company default'}
+                        </SelectItem>
+                        {shifts.map((shift) => (
+                            <SelectItem key={shift.id} value={String(shift.id)}>
+                                {shift.name}
+                                <span className="ml-1.5 text-muted-foreground">
+                                    {formatClockRange(
+                                        shift.start_time,
+                                        shift.end_time,
+                                    )}
+                                </span>
+                            </SelectItem>
+                        ))}
+                    </SelectContent>
+                </Select>
+            </Field>
+            <div className="grid content-start gap-2">
+                <span className="text-sm leading-none font-medium">
+                    Attendance
+                </span>
+                <div className="flex items-start gap-2 pt-1">
+                    <Checkbox
+                        id="employee-attendance_exempt"
+                        checked={data.attendance_exempt}
+                        onCheckedChange={(value) =>
+                            form.setData('attendance_exempt', value === true)
+                        }
+                        aria-describedby="employee-attendance_exempt-hint"
+                        aria-invalid={
+                            errors.attendance_exempt ? true : undefined
+                        }
+                    />
+                    <div className="grid gap-1">
+                        <Label
+                            htmlFor="employee-attendance_exempt"
+                            className="font-normal"
+                        >
+                            Attendance exempt
+                        </Label>
+                        <p
+                            id="employee-attendance_exempt-hint"
+                            className="text-xs text-muted-foreground"
+                        >
+                            Marked present on every working day, never late or
+                            absent. Punches are still recorded.
+                        </p>
+                    </div>
+                </div>
+                {errors.attendance_exempt && (
+                    <p role="alert" className="text-sm text-destructive">
+                        {errors.attendance_exempt}
+                    </p>
+                )}
+            </div>
             <Field
                 id="employee-role"
                 label="Role"

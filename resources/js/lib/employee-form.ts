@@ -32,6 +32,8 @@ const FIELD_TAB: Record<string, FormTabKey> = {
     employment_type: 'employment',
     status: 'employment',
     device_user_id: 'employment',
+    shift_id: 'employment',
+    attendance_exempt: 'employment',
     role: 'employment',
     address: 'contact',
     emergency_name: 'contact',

@@ -14,6 +14,7 @@ use App\Http\Resources\EmployeeProfileResource;
 use App\Models\Department;
 use App\Models\Designation;
 use App\Models\Employee;
+use App\Models\Shift;
 use App\Models\User;
 use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
@@ -301,6 +302,11 @@ class EmployeeController extends Controller
             'manager' => $employee?->manager === null ? null : $this->managerOption($employee->manager),
             'departments' => Department::query()->orderBy('name')->orderBy('id')->get(['id', 'name'])->all(),
             'designations' => Designation::query()->orderBy('name')->orderBy('id')->get(['id', 'name', 'department_id'])->all(),
+            // Shift choices: the default first ("no shift of their own" means the default), then by name.
+            'shifts' => Shift::query()->orderByDesc('is_default')->orderBy('name')->orderBy('id')
+                ->get(['id', 'name', 'start_time', 'end_time', 'is_default'])
+                ->map(fn (Shift $s) => ['id' => $s->id, 'name' => $s->name, 'start_time' => $s->start_time, 'end_time' => $s->end_time, 'is_default' => $s->is_default])
+                ->all(),
             'genders' => config('hrm.employees.genders'),
             'employmentTypes' => config('hrm.employees.employment_types'),
             // On create only Active or Probation; on edit the "Change status" dialog offers all five.
@@ -344,6 +350,8 @@ class EmployeeController extends Controller
             'status' => $employee->status,
             'last_working_day' => $employee->last_working_day?->format('Y-m-d'),
             'device_user_id' => $employee->device_user_id,
+            'shift_id' => $employee->shift_id,
+            'attendance_exempt' => (bool) $employee->attendance_exempt,
             'role' => $role ?? EmployeeRoles::DEFAULT,
             'has_login' => $account !== null,
             'login_active' => $account?->is_active,

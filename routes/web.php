@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Attendance\ShiftController;
 use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\BrandingMediaController;
 use App\Http\Controllers\DashboardController;
@@ -10,6 +11,7 @@ use App\Http\Controllers\EmployeeExportController;
 use App\Http\Controllers\EmployeeFileController;
 use App\Http\Controllers\EmployeeImportController;
 use App\Http\Controllers\EmployeeLinkController;
+use App\Http\Controllers\HolidayController;
 use App\Http\Controllers\MyProfileController;
 use App\Http\Controllers\OrganizationChartController;
 use App\Http\Controllers\Settings\HrmSettingsController;
@@ -97,6 +99,23 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // Organization chart. The controller checks view-all OR view-team (a plain Employee gets 403); the people come
     // only from EmployeeAccess::scope.
     Route::get('organization-chart', [OrganizationChartController::class, 'index'])->name('organization-chart.index');
+
+    // Attendance > Shifts (Admin, HR). The default shift is changed only through make-default.
+    Route::middleware('can:attendance.edit')->prefix('attendance/shifts')->name('attendance.shifts.')->group(function () {
+        Route::get('/', [ShiftController::class, 'index'])->name('index');
+        Route::post('/', [ShiftController::class, 'store'])->name('store');
+        Route::put('{shift}', [ShiftController::class, 'update'])->whereNumber('shift')->name('update');
+        Route::delete('{shift}', [ShiftController::class, 'destroy'])->whereNumber('shift')->name('destroy');
+        Route::post('{shift}/make-default', [ShiftController::class, 'makeDefault'])->whereNumber('shift')->name('make-default');
+    });
+
+    // Leave > Holidays: the company holiday calendar (Admin, HR: the attendance and leave rules permission).
+    Route::middleware('can:settings.attendance-leave')->prefix('leave/holidays')->name('holidays.')->group(function () {
+        Route::get('/', [HolidayController::class, 'index'])->name('index');
+        Route::post('/', [HolidayController::class, 'store'])->name('store');
+        Route::put('{holiday}', [HolidayController::class, 'update'])->whereNumber('holiday')->name('update');
+        Route::delete('{holiday}', [HolidayController::class, 'destroy'])->whereNumber('holiday')->name('destroy');
+    });
 
     // Users and roles. No delete route: accounts are disabled, never removed.
     Route::middleware('can:users.manage')->prefix('users')->name('users.')->group(function () {

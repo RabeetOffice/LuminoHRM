@@ -24,7 +24,9 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { toUrl } from '@/lib/utils';
 import { dashboard } from '@/routes';
+import { index as shiftsIndex } from '@/routes/attendance/shifts';
 import { index as auditLogIndex } from '@/routes/audit-log';
+import { index as holidaysIndex } from '@/routes/holidays';
 import { index as hrmSettingsIndex } from '@/routes/hrm-settings';
 import { index as organizationIndex } from '@/routes/organization';
 import { index as usersIndex } from '@/routes/users';
@@ -119,8 +121,9 @@ export const navigation: NavGroup[] = [
                     },
                     {
                         title: 'Shifts',
-                        href: '/attendance/shifts',
-                        ...unready,
+                        href: shiftsIndex(),
+                        // Changing shifts is Admin / HR; a Manager never sees it.
+                        permission: 'attendance.edit',
                     },
                     {
                         title: 'Raw Punches',
@@ -137,7 +140,12 @@ export const navigation: NavGroup[] = [
                     { title: 'Requests', href: '/leave/requests', ...unready },
                     { title: 'Balances', href: '/leave/balances', ...unready },
                     { title: 'Leave Types', href: '/leave/types', ...unready },
-                    { title: 'Holidays', href: '/leave/holidays', ...unready },
+                    {
+                        title: 'Holidays',
+                        href: holidaysIndex(),
+                        // The holiday calendar is part of the attendance and leave rules (Admin, HR).
+                        permission: 'settings.attendance-leave',
+                    },
                 ],
             },
         ],

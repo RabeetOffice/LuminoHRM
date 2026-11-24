@@ -18,6 +18,8 @@ describe('tabForField', () => {
         expect(tabForField('manager_id')).toBe('employment');
         expect(tabForField('role')).toBe('employment');
         expect(tabForField('device_user_id')).toBe('employment');
+        expect(tabForField('shift_id')).toBe('employment');
+        expect(tabForField('attendance_exempt')).toBe('employment');
         expect(tabForField('address')).toBe('contact');
         expect(tabForField('emergency_phone')).toBe('contact');
         expect(tabForField('account_number')).toBe('banking');

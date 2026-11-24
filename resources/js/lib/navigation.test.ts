@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { activeHref, filterNavigation, navigation } from '@/config/navigation';
 import type { NavGroup } from '@/config/navigation';
+import { toUrl } from '@/lib/utils';
 
 // Pages ship over several phases; the structure is exercised in full here.
 const full = { includeUnready: true };
@@ -13,6 +14,7 @@ const allPermissions = [
     'employees.view-team',
     'attendance.view-all',
     'attendance.view-team',
+    'attendance.edit',
     'leave.approve-all',
     'leave.approve-team',
     'payroll.view',
@@ -87,6 +89,12 @@ describe('ready flag', () => {
             'Employees',
             'Organization Chart',
             'Departments & Designations',
+            'Attendance',
+            'Leave',
+        ]);
+        expect(r[1].items[3].children?.map((c) => c.title)).toEqual(['Shifts']);
+        expect(r[1].items[4].children?.map((c) => c.title)).toEqual([
+            'Holidays',
         ]);
         expect(r[2].items.map((i) => i.title)).toEqual([
             'Settings',
@@ -403,5 +411,41 @@ describe('soon entries (default)', () => {
             'Audit Log',
             'My Profile',
         ]);
+    });
+});
+
+describe('shifts and holidays', () => {
+    const child = (r: NavGroup[], parent: string, title: string) =>
+        r
+            .flatMap((g) => g.items)
+            .find((i) => i.title === parent)
+            ?.children?.find((c) => c.title === title);
+
+    test('are ready for Admin and HR', () => {
+        const r = filterNavigation(navigation, [
+            'attendance.view-all',
+            'attendance.edit',
+            'leave.approve-all',
+            'settings.attendance-leave',
+        ]);
+        expect(child(r, 'Attendance', 'Shifts')?.soon).toBe(false);
+        expect(toUrl(child(r, 'Attendance', 'Shifts')?.href ?? '')).toBe(
+            '/attendance/shifts',
+        );
+        expect(child(r, 'Leave', 'Holidays')?.soon).toBe(false);
+        expect(toUrl(child(r, 'Leave', 'Holidays')?.href ?? '')).toBe(
+            '/leave/holidays',
+        );
+    });
+
+    test('are hidden from a manager', () => {
+        const r = filterNavigation(
+            navigation,
+            ['attendance.view-team', 'leave.approve-team'],
+            '',
+            full,
+        );
+        expect(child(r, 'Attendance', 'Shifts')).toBeUndefined();
+        expect(child(r, 'Leave', 'Holidays')).toBeUndefined();
     });
 });
