@@ -18,8 +18,9 @@ An area is the entry's `log_name`. The list lives in one place, `App\Support\Aud
 | `users`        | Account created, name or email changed, role changed, disabled, enabled, reset link sent or failed, set-password link sent or failed, first admin created by system                                                                                                       |
 | `settings`     | Each save that changes a setting: only the changed keys, old and new                                                                                                                                                                                                      |
 | `auth`         | Signed in, Failed sign-in (at most 20 per IP address per hour, then one marker entry), Signed out, Sign-in refused: account disabled, Password changed, Password reset, Two-factor authentication enabled / disabled, Recovery codes regenerated, Passkey added / removed |
+| `employees`    | Employee created, updated, deleted (each changed field with old and new), and the same for contact details, bank account and documents (title and type only, never a path or contents). `cnic`, `dob` and `account_number` are recorded as `[changed]` only. |
 
-Planned (add when the phase ships): `employees`, `salary`, `payroll`, `attendance`, `leave`.
+Planned (add when the phase ships): `salary`, `payroll`, `attendance`, `leave`.
 
 ## A model opts in
 
@@ -86,6 +87,10 @@ Put the values the viewer should compare side by side under `old` and `attribute
 ## Settings
 
 `Settings::set()` logs the changed keys itself, inside its transaction. A secret setting must be listed in `config('hrm.audit.secret_settings')` (today `email.password`): only `[changed]` is recorded, never the value, not even encrypted. File settings (`config('hrm.audit.file_settings')`, today the two logos) record `[added]`, `[replaced]` or `[removed]`, never a path or contents.
+
+## Masked attributes
+
+A model attribute whose value must never be stored is listed in `config('hrm.audit.masked_attributes')` (today `cnic`, `dob`, `account_number`). It still goes in the model's `logOnly` allow-list, so a change is noticed, but `AuditLogAction` replaces any non-null value under that name, old and new, with `[changed]` before saving. Settings secrets keep their own list (`secret_settings`) because they are not model attributes. Add a new sensitive column to `masked_attributes` AND to the model's `logOnly`.
 
 ## Never log
 

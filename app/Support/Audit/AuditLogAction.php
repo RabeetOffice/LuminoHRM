@@ -71,6 +71,12 @@ class AuditLogAction extends LogActivityAction
     private function scrub(array $values): array
     {
         foreach ($values as $key => $value) {
+            if (is_string($key) && $value !== null && in_array($key, (array) config('hrm.audit.masked_attributes', []), true)) {
+                $values[$key] = self::CHANGED;
+
+                continue;
+            }
+
             if (is_string($key) && $this->looksSecret($key)) {
                 $values[$key] = $value === self::CHANGED ? $value : self::HIDDEN;
 

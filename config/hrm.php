@@ -96,6 +96,16 @@ return [
     'audit' => [
         'secret_settings' => ['email.password'],
         'file_settings' => ['branding.logo', 'branding.logo_dark'],
+        // Model attributes (any area) whose value is never recorded: when set, only "[changed]" is stored, old and new.
+        'masked_attributes' => ['cnic', 'dob', 'account_number'],
+    ],
+
+    // Allowed values for the Employees module (validated on save and import; stored as plain strings).
+    'employees' => [
+        'statuses' => ['active', 'probation', 'inactive', 'resigned', 'terminated'],
+        'employment_types' => ['full_time', 'part_time', 'contract', 'intern'],
+        'genders' => ['male', 'female', 'other'],
+        'document_types' => ['cnic', 'contract', 'offer_letter', 'certificate', 'other'],
     ],
 
     // Date formats offered in Settings > Company (PHP date() syntax). The stored value must be one of these.

@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\Employee;
 use App\Models\User;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -29,6 +30,26 @@ function userWithRole(string $role): User
     $user->assignRole($role);
 
     return $user;
+}
+
+/**
+ * Creates an employee record for $user (same email and name) and links the account to it.
+ *
+ * @param  array<string, mixed>  $attrs  Overrides for the employee row
+ */
+function employeeFor(User $user, array $attrs = []): Employee
+{
+    $name = explode(' ', trim($user->name).' ', 2);
+
+    $employee = Employee::factory()->create(array_merge([
+        'first_name' => $name[0] !== '' ? $name[0] : 'Test',
+        'last_name' => trim($name[1]) !== '' ? trim($name[1]) : 'User',
+        'email' => $user->email,
+    ], $attrs));
+
+    $user->forceFill(['employee_id' => $employee->id])->save();
+
+    return $employee;
 }
 
 /**

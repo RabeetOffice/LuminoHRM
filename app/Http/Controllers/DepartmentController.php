@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Requests\DepartmentRequest;
 use App\Models\Department;
 use App\Models\Designation;
+use App\Support\ListQuery;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -22,16 +23,11 @@ use Inertia\Response;
  */
 class DepartmentController extends Controller
 {
-    public const PER_PAGE_OPTIONS = [10, 25, 50];
-
-    /** @var array<string, int> page parameter => real last page, for pages requested past the end */
-    private array $clamped = [];
-
     public function index(Request $request): Response|RedirectResponse
     {
         $tab = $request->query('tab') === 'designations' ? 'designations' : 'departments';
-        $perPage = $this->perPage($request);
-        $search = $this->searchTerm($request);
+        $perPage = ListQuery::perPage($request);
+        $search = ListQuery::stringParam($request, 'search');
         $departmentId = $request->query('department_id');
         $departmentId = is_scalar($departmentId) && ctype_digit((string) $departmentId) ? (int) $departmentId : null;
 
@@ -50,33 +46,28 @@ class DepartmentController extends Controller
             ->orderBy('name')
             ->orderBy('id');
 
-        $departmentsPage = $this->page(
-            $departments, $perPage, 'dept_page', $request,
-            fn (Department $d) => [
-                'id' => $d->id,
-                'name' => $d->name,
-                'designations_count' => $d->designations_count,
-                'created_at' => $d->created_at?->toIso8601String(),
-            ],
-        );
-        $designationsPage = $this->page(
-            $designations, $perPage, 'desig_page', $request,
-            fn (Designation $g) => [
-                'id' => $g->id,
-                'name' => $g->name,
-                'department_id' => $g->department_id,
-                'department_name' => $g->department->name,
-                'created_at' => $g->created_at?->toIso8601String(),
-            ],
-        );
+        $departmentsPaginator = $departments->paginate($perPage, ['*'], 'dept_page', ListQuery::page($request, 'dept_page'));
+        $designationsPaginator = $designations->paginate($perPage, ['*'], 'desig_page', ListQuery::page($request, 'desig_page'));
 
         // A page past the end (for example after deleting the last row of the
         // last page): send the browser to the real page so the address is right.
-        if ($this->clamped !== []) {
-            return redirect()->to($request->fullUrlWithQuery(
-                array_map(fn (int $page) => $page === 1 ? null : $page, $this->clamped),
-            ));
+        if ($redirect = ListQuery::clampRedirect($request, ['dept_page' => $departmentsPaginator, 'desig_page' => $designationsPaginator])) {
+            return $redirect;
         }
+
+        $departmentsPage = $this->pageData($departmentsPaginator, fn (Department $d) => [
+            'id' => $d->id,
+            'name' => $d->name,
+            'designations_count' => $d->designations_count,
+            'created_at' => $d->created_at?->toIso8601String(),
+        ]);
+        $designationsPage = $this->pageData($designationsPaginator, fn (Designation $g) => [
+            'id' => $g->id,
+            'name' => $g->name,
+            'department_id' => $g->department_id,
+            'department_name' => $g->department->name,
+            'created_at' => $g->created_at?->toIso8601String(),
+        ]);
 
         return Inertia::render('organization/index', [
             'departments' => $departmentsPage,
@@ -127,65 +118,37 @@ class DepartmentController extends Controller
 
         try {
             DB::transaction(fn () => $department->delete());
-        } catch (QueryException) {
-            // A designation was added after the check above; the restrict foreign key refused.
-            return back()->with('error', "Move or delete this department's designations first.");
+        } catch (QueryException $e) {
+            // Only a foreign key refusal (SQLSTATE 23000) is the friendly case; anything else is a real fault.
+            if ($e->getCode() !== '23000') {
+                throw $e;
+            }
+
+            // A designation or employee was added after the check above and the restrict foreign key refused.
+            // Ask again (the late row may or may not have survived the rollback); the designations message is the fallback.
+            return back()->with('error', $department->deleteBlocker() ?? "Move or delete this department's designations first.");
         }
 
         return back()->with('success', 'Department deleted.');
     }
 
-    /** Rows per page: 10, 25 or 50; anything else falls back to 10. */
-    private function perPage(Request $request): int
-    {
-        $value = $request->query('per_page');
-
-        if (is_scalar($value) && ctype_digit((string) $value) && in_array((int) $value, self::PER_PAGE_OPTIONS, true)) {
-            return (int) $value;
-        }
-
-        return self::PER_PAGE_OPTIONS[0];
-    }
-
-    private function searchTerm(Request $request): string
-    {
-        $value = $request->query('search');
-
-        return is_string($value) ? mb_substr(trim($value), 0, 100) : '';
-    }
-
     /** Case-insensitive "contains" on both SQLite and MariaDB; wildcards in the term are literal. */
     private function whereNameLike(Builder $query, string $column, string $term): Builder
     {
-        $escaped = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], mb_strtolower($term));
-
-        return $query->whereRaw("LOWER({$column}) LIKE ? ESCAPE '!'", ['%'.$escaped.'%']);
+        return $query->whereRaw("LOWER({$column}) LIKE ? ESCAPE '!'", ['%'.ListQuery::escapeLike($term).'%']);
     }
 
     /**
-     * Paginates a query under its own page parameter and maps rows to arrays.
-     * A page past the end (for example after deleting the last row of the last
-     * page) is recorded in $clamped so index() can redirect to the real page.
+     * The page payload the tables read: the rows mapped to arrays plus the paging numbers.
      *
      * @template TModel of \Illuminate\Database\Eloquent\Model
      *
-     * @param  Builder<TModel>  $query
+     * @param  LengthAwarePaginator<int, TModel>  $paginator
      * @param  callable(TModel): array<string, mixed>  $map
      * @return array<string, mixed>
      */
-    private function page(Builder $query, int $perPage, string $pageName, Request $request, callable $map): array
+    private function pageData(LengthAwarePaginator $paginator, callable $map): array
     {
-        $requested = $request->query($pageName);
-        $page = is_scalar($requested) && ctype_digit((string) $requested) ? max(1, (int) $requested) : 1;
-
-        /** @var LengthAwarePaginator<int, TModel> $paginator */
-        $paginator = $query->paginate($perPage, ['*'], $pageName, $page);
-
-        if ($page > $paginator->lastPage()) {
-            $this->clamped[$pageName] = $paginator->lastPage();
-            $paginator = $query->paginate($perPage, ['*'], $pageName, $paginator->lastPage());
-        }
-
         return [
             'data' => $paginator->getCollection()->map($map)->values()->all(),
             'current_page' => $paginator->currentPage(),

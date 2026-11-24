@@ -6,6 +6,7 @@ use Database\Factories\DesignationFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Carbon;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
 use Spatie\Activitylog\Support\LogOptions;
@@ -63,14 +64,22 @@ class Designation extends Model
         return $this->belongsTo(Department::class);
     }
 
+    /** @return HasMany<Employee, $this> */
+    public function employees(): HasMany
+    {
+        return $this->hasMany(Employee::class);
+    }
+
     /**
-     * Why this designation cannot be deleted right now, or null when it can.
-     * Nothing references designations yet. When employees arrive (Phase 2,
-     * with a restrict foreign key), return a message here when any employee
-     * holds this designation and the controller will refuse the delete.
+     * Why this designation cannot be deleted right now, or null when it can. The restrict foreign key
+     * (employees) is the backstop for a row that appears after this check.
      */
     public function deleteBlocker(): ?string
     {
+        if ($this->employees()->exists()) {
+            return "Move this designation's employees first.";
+        }
+
         return null;
     }
 }

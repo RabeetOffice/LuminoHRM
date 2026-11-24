@@ -9,6 +9,7 @@ use App\Exceptions\AccountRuleViolation;
 use App\Http\Requests\UserRequest;
 use App\Models\User;
 use App\Support\Audit\Audit;
+use App\Support\ListQuery;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
@@ -25,8 +26,6 @@ use Throwable;
  */
 class UserController extends Controller
 {
-    public const PER_PAGE_OPTIONS = [10, 25, 50];
-
     public const STATUSES = ['all', 'active', 'disabled'];
 
     private const ROLE_LABELS = ['admin' => 'Admin', 'hr' => 'HR', 'manager' => 'Manager', 'employee' => 'Employee'];
@@ -35,8 +34,8 @@ class UserController extends Controller
     {
         $status = $this->status($request);
         $role = $this->role($request);
-        $search = $this->searchTerm($request);
-        $perPage = $this->perPage($request);
+        $search = ListQuery::stringParam($request, 'search');
+        $perPage = ListQuery::perPage($request);
 
         $query = User::query()
             // Explicit columns: password hashes, remember tokens and two-factor secrets never leave the database.
@@ -46,26 +45,19 @@ class UserController extends Controller
             ->when($status === 'disabled', fn (Builder $q) => $q->where('is_active', false))
             ->when($role !== '', fn (Builder $q) => $q->whereHas('roles', fn (Builder $r) => $r->where('name', $role)))
             ->when($search !== '', fn (Builder $q) => $q->where(function (Builder $w) use ($search) {
-                $pattern = $this->likePattern($search);
+                $pattern = '%'.ListQuery::escapeLike($search).'%';
                 $w->whereRaw("LOWER(name) LIKE ? ESCAPE '!'", [$pattern])
                     ->orWhereRaw("LOWER(email) LIKE ? ESCAPE '!'", [$pattern]);
             }))
             ->orderBy('name')
             ->orderBy('id');
 
-        $requested = $request->query('page');
-        // Very long digit strings would overflow the int / the SQL offset: treat them as "far past the end".
-        $page = is_scalar($requested) && ctype_digit((string) $requested)
-            ? max(1, strlen((string) $requested) > 9 ? 1_000_000_000 : (int) $requested)
-            : 1;
-        $paginator = $query->paginate($perPage, ['*'], 'page', $page);
+        $paginator = $query->paginate($perPage, ['*'], 'page', ListQuery::page($request, 'page'));
 
         // A page past the end (for example after the last row of the last page was filtered out):
         // send the browser to the real page so the address is right.
-        if ($page > $paginator->lastPage()) {
-            return redirect()->to(rtrim($request->fullUrlWithQuery([
-                'page' => $paginator->lastPage() === 1 ? null : $paginator->lastPage(),
-            ]), '?'));
+        if ($redirect = ListQuery::clampRedirect($request, ['page' => $paginator])) {
+            return $redirect;
         }
 
         $me = $request->user()->getKey();
@@ -204,30 +196,5 @@ class UserController extends Controller
         $value = $request->query('role');
 
         return is_string($value) && in_array($value, config('hrm.roles'), true) ? $value : '';
-    }
-
-    /** Rows per page: 10, 25 or 50; anything else falls back to 10. */
-    private function perPage(Request $request): int
-    {
-        $value = $request->query('per_page');
-
-        if (is_scalar($value) && ctype_digit((string) $value) && in_array((int) $value, self::PER_PAGE_OPTIONS, true)) {
-            return (int) $value;
-        }
-
-        return self::PER_PAGE_OPTIONS[0];
-    }
-
-    private function searchTerm(Request $request): string
-    {
-        $value = $request->query('search');
-
-        return is_string($value) ? mb_substr(trim($value), 0, 100) : '';
-    }
-
-    /** A LIKE "contains" pattern (escape character !) in which % and _ in the term are literal. */
-    private function likePattern(string $term): string
-    {
-        return '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], mb_strtolower($term)).'%';
     }
 }

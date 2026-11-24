@@ -44,9 +44,14 @@ class DesignationController extends Controller
 
         try {
             DB::transaction(fn () => $designation->delete());
-        } catch (QueryException) {
-            // A foreign key (employees, from Phase 2) still references this designation.
-            return back()->with('error', 'This designation is still in use.');
+        } catch (QueryException $e) {
+            // Only a foreign key refusal (SQLSTATE 23000) is the friendly case; anything else is a real fault.
+            if ($e->getCode() !== '23000') {
+                throw $e;
+            }
+
+            // An employee was given this designation after the check above and the restrict foreign key refused.
+            return back()->with('error', $designation->deleteBlocker() ?? 'This designation is still in use.');
         }
 
         return back()->with('success', 'Designation deleted.');

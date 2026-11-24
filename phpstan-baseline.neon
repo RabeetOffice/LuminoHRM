@@ -91,7 +91,7 @@ parameters:
 			path: app/Http/Controllers/DepartmentController.php
 
 		-
-			message: '#^Parameter \#5 \$map of method App\\Http\\Controllers\\DepartmentController\:\:page\(\) expects callable\(Illuminate\\Database\\Eloquent\\Model\)\: array\<string, mixed\>, Closure\(App\\Models\\Department\)\: array\{id\: int, name\: string, designations_count\: int\<0, max\>, created_at\: string\|null\} given\.$#'
+			message: '#^Parameter \#2 \$map of method App\\Http\\Controllers\\DepartmentController\:\:pageData\(\) expects callable\(Illuminate\\Database\\Eloquent\\Model\)\: array\<string, mixed\>, Closure\(App\\Models\\Department\)\: array\{id\: int, name\: string, designations_count\: int\<0, max\>, created_at\: string\|null\} given\.$#'
 			identifier: argument.type
 			count: 1
 			path: app/Http/Controllers/DepartmentController.php

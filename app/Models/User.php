@@ -9,6 +9,7 @@ use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Carbon;
@@ -23,6 +24,7 @@ use Spatie\Permission\Traits\HasRoles;
  * @property int $id
  * @property string $name
  * @property string $email
+ * @property int|null $employee_id
  * @property CarbonInterface|null $email_verified_at
  * @property string $password
  * @property string|null $two_factor_secret
@@ -67,6 +69,16 @@ class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
     public function auditLabel(): string
     {
         return $this->name;
+    }
+
+    /**
+     * The person this account belongs to; null for an account with no employee record (for example the first admin).
+     *
+     * @return BelongsTo<Employee, $this>
+     */
+    public function employee(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class);
     }
 
     /**
