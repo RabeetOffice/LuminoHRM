@@ -58,6 +58,9 @@ final class EmployeeFiles
 
     private const NAME = '[A-Za-z0-9]{40}';
 
+    /** What finfo may call an old Word file (detectedMime() lowercases, so application/CDFV2, which some libmagic versions return for Word files, is listed in lowercase). */
+    private const DOC_MIMES = ['application/msword', 'application/vnd.ms-office', 'application/x-ole-storage', 'application/cdfv2'];
+
     private const OLE_SIGNATURE = "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1";
 
     public static function disk(): Filesystem
@@ -129,7 +132,8 @@ final class EmployeeFiles
         $matches = match ($claimed) {
             'pdf' => $mime === 'application/pdf' && str_starts_with($head, '%PDF-'),
             'png', 'jpg', 'webp' => (self::PHOTO_TYPES[$mime ?? ''] ?? null) === $claimed && self::imageSize($file) !== null,
-            'doc' => str_starts_with($head, self::OLE_SIGNATURE),
+            // The OLE signature alone also matches MSI, XLS and MSG files, so finfo must call it a Word/Office container too.
+            'doc' => str_starts_with($head, self::OLE_SIGNATURE) && in_array($mime, self::DOC_MIMES, true),
             'docx' => str_starts_with($head, "PK\x03\x04") && self::isWordPackage($file, $mime),
             default => false,
         };
@@ -169,7 +173,8 @@ final class EmployeeFiles
     public static function cleanName(string $name): string
     {
         $name = mb_convert_encoding($name, 'UTF-8', 'UTF-8');
-        $name = (string) preg_replace('#[/\\\\"\'\x00-\x1F\x7F]+#u', '', $name);
+        // Also strips zero-width and bidi control characters (a right-to-left override can disguise an extension).
+        $name = (string) preg_replace('#[/\\\\"\'\x00-\x1F\x7F\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{FEFF}]+#u', '', $name);
         $name = trim(ltrim(trim($name), '.'));
 
         if (mb_strlen($name) <= 200) {
@@ -189,10 +194,77 @@ final class EmployeeFiles
         return "employees/{$employeeId}";
     }
 
-    /** Stores the photo under a generated name and returns its path. The caller checked photoExtension(). */
+    /**
+     * The photo re-encoded with GD so EXIF and other metadata (GPS position, device) are dropped, or null when it
+     * cannot be decoded. JPEG orientation is applied first (when the exif extension exists) so the picture does not
+     * turn. PNG and WebP keep their transparency. Where this PHP build cannot write WebP, the original bytes are kept.
+     */
+    public static function cleanPhotoBytes(UploadedFile $file, string $extension): ?string
+    {
+        $path = $file->getRealPath();
+        $original = $path === false ? false : @file_get_contents($path);
+
+        if (! is_string($original) || $original === '') {
+            return null;
+        }
+
+        if ($extension === 'webp' && ! function_exists('imagewebp')) {
+            return $original;
+        }
+
+        $image = @imagecreatefromstring($original);
+
+        if ($image === false) {
+            return null;
+        }
+
+        if ($extension === 'jpg' && function_exists('exif_read_data')) {
+            $orientation = (int) (@exif_read_data($path)['Orientation'] ?? 1);
+            $rotated = match ($orientation) {
+                3 => imagerotate($image, 180, 0),
+                6 => imagerotate($image, -90, 0),
+                8 => imagerotate($image, 90, 0),
+                default => false,
+            };
+
+            if ($rotated !== false) {
+                $image = $rotated;
+            }
+        }
+
+        if ($extension !== 'jpg') {
+            imagealphablending($image, false);
+            imagesavealpha($image, true);
+        }
+
+        ob_start();
+        $ok = match ($extension) {
+            'jpg' => imagejpeg($image, null, 85),
+            'png' => imagepng($image),
+            default => imagewebp($image, null, 85),
+        };
+        $bytes = (string) ob_get_clean();
+
+        return $ok && $bytes !== '' ? $bytes : null;
+    }
+
+    /** Stores the photo (re-encoded, metadata dropped) under a generated name and returns its path. The caller checked photoExtension(). */
     public static function storePhoto(Employee $employee, UploadedFile $file, string $extension): string
     {
-        return self::store(self::directory($employee->id).'/photo', $file, $extension);
+        $bytes = self::cleanPhotoBytes($file, $extension);
+
+        if ($bytes === null) {
+            throw new \RuntimeException('The photo could not be read.');
+        }
+
+        $folder = self::directory($employee->id).'/photo';
+        $name = Str::random(40).'.'.$extension;
+
+        if (! self::disk()->put($folder.'/'.$name, $bytes)) {
+            throw new \RuntimeException('The file could not be stored.');
+        }
+
+        return $folder.'/'.$name;
     }
 
     /** Stores a document under a generated name and returns its path. The caller checked documentExtension(). */

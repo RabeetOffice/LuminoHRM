@@ -5,9 +5,12 @@ use App\Models\Designation;
 use App\Models\Employee;
 use App\Models\EmployeeDocument;
 use App\Models\User;
+use App\Support\EmployeeFiles;
 use App\Support\EmployeeRoles;
 use Database\Seeders\RolePermissionSeeder;
+use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -335,10 +338,76 @@ it('serves the photo with its type, private caching and nosniff, and 404 when th
     $response = $this->actingAs($admin)->get("/employees/{$e->id}/photo")->assertOk();
 
     expect($response->headers->get('Content-Type'))->toBe('image/webp')
-        ->and(efDirectives($response->headers->get('Cache-Control')))->toEqualCanonicalizing(['private', 'max-age=86400'])
+        ->and(efDirectives($response->headers->get('Cache-Control')))->toEqualCanonicalizing(['private', 'no-cache'])
+        ->and($response->headers->get('ETag'))->toMatch('/^"[0-9a-f]{40}"$/')
         ->and($response->headers->get('X-Content-Type-Options'))->toBe('nosniff')
         ->and($response->isRedirect())->toBeFalse()
         ->and((string) $response->headers->get('Content-Disposition'))->not->toContain('attachment');
+});
+
+it('answers 304 to a matching If-None-Match and 200 with the file once the photo changes', function () {
+    $e = efEmployee();
+    $admin = efAdmin();
+    $this->actingAs($admin)->post("/employees/{$e->id}/photo", ['photo' => UploadedFile::fake()->image('a.png', 100, 100)]);
+
+    $etag = $this->actingAs($admin)->get("/employees/{$e->id}/photo")->assertOk()->headers->get('ETag');
+
+    $same = $this->actingAs($admin)->get("/employees/{$e->id}/photo", ['If-None-Match' => $etag])->assertStatus(304);
+    expect($same->getContent())->toBe('')
+        ->and($same->headers->get('ETag'))->toBe($etag)
+        ->and($same->headers->get('X-Content-Type-Options'))->toBe('nosniff')
+        ->and(efDirectives($same->headers->get('Cache-Control')))->toEqualCanonicalizing(['private', 'no-cache']);
+
+    $this->actingAs($admin)->get("/employees/{$e->id}/photo", ['If-None-Match' => '"stale"'])->assertOk();
+
+    $this->actingAs($admin)->post("/employees/{$e->id}/photo", ['photo' => UploadedFile::fake()->image('b.png', 100, 100)]);
+    $this->actingAs($admin)->get("/employees/{$e->id}/photo", ['If-None-Match' => $etag])->assertOk();
+});
+
+it('checks the permission before honouring If-None-Match', function () {
+    [$stranger, $target] = efCase('employee -> other');
+    $etag = $this->actingAs(efAdmin())->get("/employees/{$target->id}/photo")->assertOk()->headers->get('ETag');
+
+    $this->actingAs($stranger)->get("/employees/{$target->id}/photo", ['If-None-Match' => $etag])->assertForbidden();
+});
+
+it('strips EXIF data when re-encoding a JPEG photo and keeps the dimensions', function () {
+    $e = efEmployee();
+    $gd = imagecreatetruecolor(120, 90);
+    ob_start();
+    imagejpeg($gd);
+    $jpeg = (string) ob_get_clean();
+    $exif = "Exif\0\0MM\0*\0\0\0\x08\0\0GPS-LATITUDE-SECRET";
+    $withExif = substr($jpeg, 0, 2)."\xFF\xE1".pack('n', strlen($exif) + 2).$exif.substr($jpeg, 2);
+    expect(str_contains($withExif, 'Exif'))->toBeTrue();
+
+    $this->actingAs(efAdmin())->post("/employees/{$e->id}/photo", ['photo' => UploadedFile::fake()->createWithContent('me.jpg', $withExif)])->assertSessionHasNoErrors();
+
+    $stored = Storage::disk('local')->get($e->fresh()->photo_path);
+    expect($stored)->not->toContain('Exif')->not->toContain('GPS-LATITUDE-SECRET');
+    $size = getimagesizefromstring($stored);
+    expect($size[2])->toBe(IMAGETYPE_JPEG)->and([$size[0], $size[1]])->toBe([120, 90]);
+});
+
+it('keeps a PNG photo a valid PNG with its transparency and size', function () {
+    $e = efEmployee();
+    $gd = imagecreatetruecolor(100, 80);
+    imagealphablending($gd, false);
+    imagesavealpha($gd, true);
+    imagefill($gd, 0, 0, imagecolorallocatealpha($gd, 10, 200, 30, 64));
+    ob_start();
+    imagepng($gd);
+    $png = (string) ob_get_clean();
+
+    $this->actingAs(efAdmin())->post("/employees/{$e->id}/photo", ['photo' => UploadedFile::fake()->createWithContent('me.png', $png)])->assertSessionHasNoErrors();
+
+    $stored = Storage::disk('local')->get($e->fresh()->photo_path);
+    $size = getimagesizefromstring($stored);
+    expect($size[2])->toBe(IMAGETYPE_PNG)->and([$size[0], $size[1]])->toBe([100, 80])
+        // PNG colour type 6 = truecolour with alpha.
+        ->and(ord($stored[25]))->toBe(6);
+    $alpha = (imagecolorat(imagecreatefromstring($stored), 5, 5) >> 24) & 0x7F;
+    expect($alpha)->toBeGreaterThan(0);
 });
 
 it('never serves a stored photo path that points outside the employee folder', function (callable $path) {
@@ -415,6 +484,8 @@ it('refuses a document whose content does not match an allowed type', function (
     'pdf named docx' => [fn () => UploadedFile::fake()->createWithContent('offer.docx', EF_PDF)],
     'plain zip named docx' => [fn () => efDocx('offer.docx', word: false)],
     'pdf named doc' => [fn () => UploadedFile::fake()->createWithContent('offer.doc', EF_PDF)],
+    // The OLE signature with a short unrecognised body: finfo calls it application/octet-stream, not an Office file.
+    'ole signature only, not an office file' => [fn () => UploadedFile::fake()->createWithContent('setup.doc', "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1".str_repeat("\0", 24).'abc')],
     'png named pdf' => [fn () => UploadedFile::fake()->createWithContent('a.pdf', efPngBytes())],
     'gif' => [fn () => UploadedFile::fake()->image('a.gif', 80, 80)],
     'exe' => [fn () => UploadedFile::fake()->createWithContent('setup.exe', "MZ\x90\x00".str_repeat("\0", 200))],
@@ -683,7 +754,30 @@ it('writes nothing to the audit log when an upload is refused', function () {
     expect(Activity::count())->toBe($before);
 });
 
+it('strips bidi and invisible characters from a stored file name', function () {
+    expect(EmployeeFiles::cleanName("invoice\u{202E}fdp.exe"))->toBe('invoicefdp.exe')
+        ->and(EmployeeFiles::cleanName("a\u{200B}b\u{200F}c\u{2066}d\u{2069}e\u{FEFF}.pdf"))->toBe('abcde.pdf');
+
+    $e = efEmployee();
+    $this->actingAs(efAdmin())->post("/employees/{$e->id}/documents", ['type' => 'other', 'title' => 'RTL', 'file' => efPdf("report\u{202E}fdp.pdf")])->assertSessionHasNoErrors();
+
+    expect($e->documents()->sole()->original_name)->toBe('reportfdp.pdf');
+});
+
 // ---------------------------------------------------------------- deleting an employee
+
+it('still deletes the employee when removing the files folder fails, and reports it', function () {
+    Exceptions::fake();
+    $e = efEmployee();
+    $disk = Mockery::mock(Filesystem::class);
+    $disk->shouldReceive('deleteDirectory')->once()->andThrow(new RuntimeException('disk gone'));
+    Storage::shouldReceive('disk')->with('local')->andReturn($disk);
+
+    $this->actingAs(efAdmin())->delete("/employees/{$e->id}")->assertSessionHas('success', 'Employee deleted.');
+
+    expect(Employee::find($e->id))->toBeNull();
+    Exceptions::assertReported(fn (RuntimeException $x) => $x->getMessage() === 'disk gone');
+});
 
 it('deleting an employee removes their files folder and nobody else\'s', function () {
     $e = efEmployee();

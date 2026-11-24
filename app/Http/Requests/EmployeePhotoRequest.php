@@ -11,7 +11,7 @@ use Illuminate\Http\UploadedFile;
 /**
  * Upload or replace an employee's photo. Same permission as editing the record: employees.manage, and only an Admin
  * touches an Admin or HR person's record. PNG, JPEG or WebP read from the content (never the name or the browser's
- * MIME type), at most 2 MB, 64x64 to 2000x2000 pixels. The image is stored as it is (not re-encoded) and served with
+ * MIME type), at most 2 MB, 64x64 to 2000x2000 pixels. The image is re-encoded on save (metadata such as EXIF dropped) and served with
  * its detected type and nosniff.
  */
 class EmployeePhotoRequest extends FormRequest
@@ -52,6 +52,14 @@ class EmployeePhotoRequest extends FormRequest
 
                     if ($width < $min || $height < $min || $width > $max || $height > $max) {
                         $fail(self::DIMENSIONS_MESSAGE);
+                    }
+                },
+                // Size and type are checked above, so the pixel count is bounded; now it must really decode (it is re-encoded on save).
+                function (string $attribute, mixed $value, Closure $fail): void {
+                    $extension = $value instanceof UploadedFile ? EmployeeFiles::photoExtension($value) : null;
+
+                    if ($extension === null || EmployeeFiles::cleanPhotoBytes($value, $extension) === null) {
+                        $fail(self::TYPE_MESSAGE);
                     }
                 },
             ],

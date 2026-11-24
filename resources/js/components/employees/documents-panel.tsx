@@ -1,6 +1,6 @@
 import { router, useForm, usePage } from '@inertiajs/react';
 import { Download, FileText, Plus, Trash2 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { ConfirmDialog } from '@/components/hrm/confirm-dialog';
 import { StatusPill } from '@/components/hrm/status-pill';
@@ -58,6 +58,8 @@ type Props = {
     types: string[];
     /** Whether the viewer may add and delete documents (the edit-record rule). False: read-only list. */
     canManage: boolean;
+    /** Called with true while an upload or deletion is in flight, so the page can hold its Save button. */
+    onBusyChange?: (busy: boolean) => void;
 };
 
 /**
@@ -70,6 +72,7 @@ export function DocumentsPanel({
     documents,
     types,
     canManage,
+    onBusyChange,
 }: Props) {
     const { props } = usePage();
     const dateFormat = props.app.dateFormat;
@@ -77,10 +80,19 @@ export function DocumentsPanel({
     const [adding, setAdding] = useState(false);
     const [deleting, setDeleting] = useState<EmployeeDocumentItem | null>(null);
     const [removing, setRemoving] = useState(false);
+    const [uploading, setUploading] = useState(false);
     const full = documents.length >= MAX_DOCUMENTS;
+    const busy = removing || uploading;
+
+    useEffect(() => {
+        onBusyChange?.(busy);
+    }, [busy, onBusyChange]);
+
+    // Leaving the page mid-request must not leave the form's Save held.
+    useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
 
     const remove = () => {
-        if (!deleting) {
+        if (!deleting || removing) {
             return;
         }
 
@@ -91,6 +103,8 @@ export function DocumentsPanel({
                 document: deleting.id,
             }),
             {
+                // Asynchronous: the form's Save must not cancel this request.
+                async: true,
                 preserveScroll: true,
                 preserveState: true,
                 onFinish: () => {
@@ -207,6 +221,7 @@ export function DocumentsPanel({
                 <AddDocumentDialog
                     employeeId={employeeId}
                     types={types}
+                    onBusyChange={setUploading}
                     onClose={() => setAdding(false)}
                 />
             )}
@@ -231,10 +246,12 @@ export function DocumentsPanel({
 function AddDocumentDialog({
     employeeId,
     types,
+    onBusyChange,
     onClose,
 }: {
     employeeId: number;
     types: string[];
+    onBusyChange: (busy: boolean) => void;
     onClose: () => void;
 }) {
     const form = useForm<{
@@ -249,6 +266,12 @@ function AddDocumentDialog({
         expiry_date: '',
     });
 
+    useEffect(() => {
+        onBusyChange(form.processing);
+    }, [form.processing, onBusyChange]);
+
+    useEffect(() => () => onBusyChange(false), [onBusyChange]);
+
     const aria = (field: 'type' | 'title' | 'file' | 'expiry_date') => ({
         'aria-invalid': form.errors[field] ? true : undefined,
         'aria-describedby': form.errors[field]
@@ -260,6 +283,11 @@ function AddDocumentDialog({
         event.preventDefault();
         // The dialog renders in a portal but React events still bubble to the page's own <form>: keep it out.
         event.stopPropagation();
+
+        // Never send the same upload twice.
+        if (form.processing) {
+            return;
+        }
 
         if (form.data.file) {
             const problem = documentProblem(form.data.file);
@@ -273,6 +301,8 @@ function AddDocumentDialog({
 
         form.post(storeDocument.url(employeeId), {
             forceFormData: true,
+            // Asynchronous: the form's Save must not cancel this upload.
+            async: true,
             errorBag: 'document',
             preserveScroll: true,
             preserveState: true,

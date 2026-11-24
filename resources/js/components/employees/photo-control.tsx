@@ -22,6 +22,8 @@ type Props = {
     photoUrl: string | null;
     /** Whether the viewer may change this record's photo (the edit-record rule). */
     canEdit: boolean;
+    /** Called with true while an upload or removal is in flight, so the page can hold its Save button. */
+    onBusyChange?: (busy: boolean) => void;
 };
 
 const ERROR_ID = 'employee-photo-error';
@@ -32,7 +34,13 @@ const HINT_ID = 'employee-photo-hint';
  * previewed at once and sent by its own request (not with the form's Save), so typed but unsaved fields stay as they
  * are. The server checks the file again (type from the content, size, dimensions).
  */
-export function PhotoControl({ employeeId, name, photoUrl, canEdit }: Props) {
+export function PhotoControl({
+    employeeId,
+    name,
+    photoUrl,
+    canEdit,
+    onBusyChange,
+}: Props) {
     const input = useRef<HTMLInputElement>(null);
     const [preview, setPreview] = useState<string | null>(null);
     const [progress, setProgress] = useState<number | null>(null);
@@ -48,6 +56,13 @@ export function PhotoControl({ employeeId, name, photoUrl, canEdit }: Props) {
             }
         };
     }, [preview]);
+
+    useEffect(() => {
+        onBusyChange?.(busy);
+    }, [busy, onBusyChange]);
+
+    // Leaving the page mid-request must not leave the form's Save held.
+    useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
 
     if (employeeId === null) {
         return (
@@ -65,7 +80,7 @@ export function PhotoControl({ employeeId, name, photoUrl, canEdit }: Props) {
         // Clear the picker so choosing the same file again still counts as a change.
         event.target.value = '';
 
-        if (!file) {
+        if (!file || busy) {
             return;
         }
 
@@ -87,6 +102,8 @@ export function PhotoControl({ employeeId, name, photoUrl, canEdit }: Props) {
             { photo: file },
             {
                 forceFormData: true,
+                // Asynchronous: the form's Save (or any other visit) must not cancel this upload.
+                async: true,
                 errorBag: 'photo',
                 preserveScroll: true,
                 // Keep the page (and the form's unsaved fields) as it is; only the props change.
@@ -108,10 +125,15 @@ export function PhotoControl({ employeeId, name, photoUrl, canEdit }: Props) {
     };
 
     const remove = () => {
+        if (busy) {
+            return;
+        }
+
         setBusy(true);
         setError(null);
 
         router.delete(destroyPhoto.url(employeeId), {
+            async: true,
             errorBag: 'photo',
             preserveScroll: true,
             preserveState: true,

@@ -79,6 +79,11 @@ class DeleteEmployee
         }, attempts: 3);
 
         // The rows went with the record (database cascade); the photo and document files go now that it has committed.
-        EmployeeFiles::deleteAll($id);
+        // A disk failure must not turn a completed delete into an error page; report it and leave the leftovers.
+        try {
+            EmployeeFiles::deleteAll($id);
+        } catch (\Throwable $e) {
+            report($e);
+        }
     }
 }

@@ -145,6 +145,9 @@ function EmployeeFormPage({
         account_number: employee?.account_number ?? '',
     });
 
+    // True while a photo or document request is in flight: Save waits, so it cannot cancel or race the upload.
+    const [photoBusy, setPhotoBusy] = useState(false);
+    const [documentsBusy, setDocumentsBusy] = useState(false);
     const [tab, setTab] = useState<FormTabKey>('basic');
     const [manager, setManager] = useState<ManagerOption | null>(
         initialManager,
@@ -219,6 +222,7 @@ function EmployeeFormPage({
                 name={fullName}
                 photoUrl={employee?.photo_url ?? null}
                 canEdit={can.edit}
+                onBusyChange={setPhotoBusy}
             />
             <Grid>
                 <Field
@@ -693,6 +697,7 @@ function EmployeeFormPage({
             documents={documentItems}
             types={documentTypes}
             canManage={can.edit}
+            onBusyChange={setDocumentsBusy}
         />
     ) : (
         <p className="text-sm text-muted-foreground">
@@ -786,7 +791,12 @@ function EmployeeFormPage({
                         </Button>
                         <Button
                             type="submit"
-                            disabled={form.processing || !can.edit}
+                            disabled={
+                                form.processing ||
+                                !can.edit ||
+                                photoBusy ||
+                                documentsBusy
+                            }
                         >
                             {form.processing && <Spinner />}
                             {editing ? 'Save Changes' : 'Add Employee'}

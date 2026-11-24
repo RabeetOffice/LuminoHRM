@@ -12,6 +12,7 @@ use App\Support\EmployeeFiles;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * An employee's photo and documents. Files live on the private disk (see EmployeeFiles) and leave it only through
@@ -26,7 +27,7 @@ use Symfony\Component\HttpFoundation\BinaryFileResponse;
  */
 class EmployeeFileController extends Controller
 {
-    public function showPhoto(Request $request, Employee $employee): BinaryFileResponse
+    public function showPhoto(Request $request, Employee $employee): BinaryFileResponse|Response
     {
         abort_unless((new EmployeeAccess($request->user()))->canView($employee), 403);
 
@@ -34,15 +35,25 @@ class EmployeeFileController extends Controller
 
         abort_unless(EmployeeFiles::isPhotoPath($employee->id, $path) && EmployeeFiles::disk()->exists($path), 404);
 
-        $response = response()->file(EmployeeFiles::disk()->path($path), [
-            'Content-Type' => EmployeeFiles::PHOTO_CONTENT_TYPES[pathinfo($path, PATHINFO_EXTENSION)],
+        // A strong ETag from the stored path and its modified time. The permission check above has already run.
+        $etag = '"'.sha1($path.'|'.EmployeeFiles::disk()->lastModified($path)).'"';
+        $headers = [
+            'ETag' => $etag,
             'X-Content-Type-Options' => 'nosniff',
             'Content-Security-Policy' => "default-src 'none'; sandbox",
+        ];
+
+        if (in_array($etag, array_map('trim', explode(',', (string) $request->header('If-None-Match'))), true)) {
+            return response('', 304, $headers + ['Cache-Control' => 'private, no-cache']);
+        }
+
+        $response = response()->file(EmployeeFiles::disk()->path($path), $headers + [
+            'Content-Type' => EmployeeFiles::PHOTO_CONTENT_TYPES[pathinfo($path, PATHINFO_EXTENSION)],
         ]);
 
-        // Personal data: the browser may keep it, a shared cache may not. The URL carries a version, so a new photo is a
-        // new URL. Set after construction, because a file response makes itself public by default.
-        $response->headers->set('Cache-Control', 'private, max-age=86400');
+        // Personal data: the browser may keep it but must revalidate (a 304 costs no body), a shared cache may not keep it.
+        // Set after construction, because a file response makes itself public by default.
+        $response->headers->set('Cache-Control', 'private, no-cache');
 
         return $response;
     }
