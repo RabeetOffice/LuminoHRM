@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Casts\NaiveDateTime;
+use App\Support\Attendance\AttendanceClock;
 use Carbon\CarbonImmutable;
 use Database\Factories\DevicePunchFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -17,8 +18,9 @@ use LogicException;
  *
  * punch_time is the machine's local wall-clock time, stored and read back exactly as received (App\Casts\NaiveDateTime:
  * no zone conversion by Eloquent; the DATETIME column is not converted by the database session either).
- * punch_date is always the date part of punch_time: it is set here on every save from the stored punch_time string and
- * cannot be written on its own. It is kept as the plain "Y-m-d" string.
+ * punch_date is the attendance day of punch_time (AttendanceClock::attendanceDateFor: its date, or the day before when it is
+ * before the day cutoff): it is set here on every save from the stored punch_time string and cannot be written on its own.
+ * It is kept as the plain "Y-m-d" string.
  *
  * employee_id is the employee whose device_user_id matched when the punch was stored (null for an unknown user).
  * Not audited: punches have device_logs and this table.
@@ -66,8 +68,9 @@ class DevicePunch extends Model
                 throw new InvalidArgumentException("Unknown punch source [{$punch->source}].");
             }
 
-            // Derived, never set on its own: the date part of exactly the stored string.
-            $punch->attributes['punch_date'] = substr($raw, 0, 10);
+            // Derived, never set on its own: the attendance day of exactly the stored string (its date, or the day
+            // before when it is before the day cutoff).
+            $punch->attributes['punch_date'] = app(AttendanceClock::class)->attendanceDateFor($raw);
         });
 
         static::updating(function (DevicePunch $punch): void {

@@ -83,6 +83,7 @@ class PunchIngestor
 
             $employees = $this->employeeIds(array_keys($pins));
             $createdAt = Date::now()->format('Y-m-d H:i:s');
+            $cutoff = $this->clock->dayCutoff(); // read once for the whole upload
             $days = [];
             $stored = 0;
 
@@ -93,7 +94,8 @@ class PunchIngestor
                     [$pin, $time] = explode("\t", (string) $key, 2);
                     [$status, $verify] = explode("\t", $codes, 2);
                     $employeeId = $employees[$pin] ?? null;
-                    $date = substr($time, 0, 10);
+                    // The attendance day: a punch before the day cutoff is the previous day's (AttendanceClock::attendanceDateFor).
+                    $date = AttendanceClock::dayOf($time, $cutoff);
 
                     $records[] = [
                         'device_id' => $locked->id,

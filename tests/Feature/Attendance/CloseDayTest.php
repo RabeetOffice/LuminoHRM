@@ -5,17 +5,24 @@ use App\Models\Department;
 use App\Models\Designation;
 use App\Models\Employee;
 use App\Models\Holiday;
+use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\AttendanceRebuilder;
+use App\Support\Attendance\DayCalculator;
+use App\Support\Settings;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /*
 | Default shift 09:00-18:00, Saturday and Sunday off. 2026-11-23 is a Monday, 2026-11-21/22 the weekend before.
-| "Now" is 2026-11-24 00:30 in Karachi (the nightly run) unless a test says otherwise.
+| "Now" is 2026-11-24 00:30 in Karachi (the nightly run) unless a test says otherwise. Attendance started on 2026-01-01
+| (settings('attendance.start_date')) unless a test says otherwise.
 */
 
 beforeEach(function () {
     $this->travelTo(CarbonImmutable::parse('2026-11-24 00:30:00', 'Asia/Karachi'));
+    Settings::set('attendance', ['start_date' => '2026-01-01']);
 });
 
 /** @param  array<string, mixed>  $attrs */
@@ -215,4 +222,142 @@ it('closes 55 employees x 31 days with a query count that does not grow with the
     expect($month)->toBeLessThanOrEqual(30 * $small);
     expect(Attendance::query()->where('date', '>=', '2026-11-01')->count())->toBe(55 * 30)
         ->and(Attendance::query()->where('date', '2026-10-02')->where('status', 'present')->count())->toBe(20);
+});
+
+/** @return Collection<int, Employee> */
+function cdStaff(int $n): Collection
+{
+    $department = Department::factory()->create();
+    $designation = Designation::factory()->create(['department_id' => $department->id]);
+
+    return Employee::factory()->count($n)->create([
+        'joining_date' => '2026-01-01', 'department_id' => $department->id, 'designation_id' => $designation->id,
+    ]);
+}
+
+it('creates no rows at all on the first close while attendance has not started', function () {
+    Settings::set('attendance', ['start_date' => null]);
+    cdStaff(55);
+
+    $this->artisan('hrm:attendance-close')->assertSuccessful();
+
+    expect(Attendance::query()->count())->toBe(0);
+});
+
+it('still decides days with punches while attendance has not started', function () {
+    Settings::set('attendance', ['start_date' => null]);
+    $staff = cdStaff(3);
+    punch($staff[0], '2026-11-23 09:00:00');
+    punch($staff[0], '2026-11-23 18:00:00');
+
+    $this->artisan('hrm:attendance-close')->assertSuccessful();
+
+    expect(Attendance::query()->count())->toBe(1)
+        ->and(cdRow($staff[0], '2026-11-23')->only(['status', 'closed']))->toBe(['status' => 'present', 'closed' => true]);
+});
+
+it('records absences only from the attendance start date', function () {
+    Settings::set('attendance', ['start_date' => '2026-11-19']); // a Thursday
+    $staff = cdStaff(55);
+
+    $this->artisan('hrm:attendance-close')->assertSuccessful();
+
+    expect(Attendance::query()->where('date', '<', '2026-11-19')->count())->toBe(0)
+        ->and(Attendance::query()->count())->toBe(55 * 5)
+        ->and(Attendance::query()->where('status', 'absent')->count())->toBe(55 * 3) // 19, 20, 23
+        ->and(Attendance::query()->where('status', 'weekend')->count())->toBe(55 * 2) // 21, 22
+        ->and(cdRow($staff[0], '2026-11-19')->status)->toBe('absent');
+});
+
+it('decides the pending rows (status null) of a closed day and leaves none behind', function () {
+    $worked = cdEmployee();
+    $relinked = cdEmployee();
+    punch($worked, '2026-11-23 09:00:00');
+    punch($worked, '2026-11-23 18:00:00');
+    // Bare rows as punch ingestion makes them; the second one's punch has since gone to someone else.
+    foreach ([$worked, $relinked] as $e) {
+        Attendance::query()->create(['employee_id' => $e->id, 'date' => '2026-11-23', 'status' => null, 'needs_rebuild' => true]);
+    }
+
+    $this->artisan('hrm:attendance-close', ['date' => '2026-11-23'])->assertSuccessful();
+
+    expect(Attendance::query()->where('date', '2026-11-23')->whereNull('status')->count())->toBe(0)
+        ->and(cdRow($worked, '2026-11-23')->only(['status', 'closed']))->toBe(['status' => 'present', 'closed' => true])
+        ->and(cdRow($relinked, '2026-11-23')->only(['status', 'closed']))->toBe(['status' => 'absent', 'closed' => true]);
+});
+
+it('closes everyone else when one employee-day cannot be decided, and flags that one', function () {
+    Log::spy();
+    $broken = cdEmployee();
+    $fine = cdEmployee();
+    $bad = shiftFor($broken, ['name' => 'Broken']);
+    DB::table('shifts')->where('id', $bad->id)->update(['start_time' => '18:00:00', 'end_time' => '09:00:00']);
+    punch($broken, '2026-11-23 09:00:00');
+    Attendance::query()->create(['employee_id' => $broken->id, 'date' => '2026-11-23', 'status' => null, 'needs_rebuild' => true]);
+
+    $this->artisan('hrm:attendance-close', ['date' => '2026-11-23'])->assertSuccessful();
+
+    expect(cdRow($fine, '2026-11-23')->only(['status', 'closed']))->toBe(['status' => 'absent', 'closed' => true])
+        ->and(cdRow($broken, '2026-11-23')->only(['status', 'needs_attention', 'needs_rebuild', 'closed']))
+        ->toBe(['status' => null, 'needs_attention' => true, 'needs_rebuild' => false, 'closed' => false]);
+    Log::shouldHaveReceived('warning')->withArgs(fn ($message, $context) => $context['employee_id'] === $broken->id)->atLeast()->once();
+});
+
+it('closes the later days when one day of the catch-up fails', function () {
+    Log::spy();
+    $e = cdEmployee();
+    $real = new AttendanceRebuilder(app(DayCalculator::class), app(AttendanceClock::class));
+    $rebuilder = Mockery::mock(AttendanceRebuilder::class, [app(DayCalculator::class), app(AttendanceClock::class)]);
+    $rebuilder->shouldReceive('closeDay')->andReturnUsing(
+        fn (string $date) => $date === '2026-11-19' ? throw new RuntimeException('boom') : $real->closeDay($date),
+    );
+    $this->app->instance(AttendanceRebuilder::class, $rebuilder);
+
+    $this->artisan('hrm:attendance-close')
+        ->expectsOutput('attendance_close date=2026-11-19 failed=RuntimeException')
+        ->expectsOutput('attendance_close date=2026-11-23 written=1')
+        ->assertFailed();
+
+    expect(Attendance::query()->where('employee_id', $e->id)->count())->toBe(6)
+        ->and(cdRow($e, '2026-11-19'))->toBeNull()
+        ->and(cdRow($e, '2026-11-20')->status)->toBe('absent');
+    Log::shouldHaveReceived('error')->with('Attendance day close failed', ['exception' => RuntimeException::class, 'date' => '2026-11-19'])->once();
+});
+
+// Measured: 10 queries to close a day of 55 employees, whether the close creates the rows or ingestion already made
+// pending ones (the updates are one bulk upsert per 200 rows, not one UPDATE per row).
+it('closes a day whose rows ingestion already created with the same queries as one it creates', function () {
+    $staff = cdStaff(55);
+    $this->travelTo(CarbonImmutable::parse('2026-12-01 00:30:00', 'Asia/Karachi'));
+    $rebuilder = app(AttendanceRebuilder::class);
+
+    $counter = new ArrayObject(['n' => 0]);
+    DB::listen(function () use ($counter) {
+        $counter['n']++;
+    });
+    $queriesFor = function (callable $work) use ($counter): int {
+        $counter['n'] = 0;
+        $work();
+
+        return $counter['n'];
+    };
+
+    $rebuilder->closeDay('2026-10-01'); // warm-up: the settings are read once per process
+    $created = $queriesFor(fn () => $rebuilder->closeDay('2026-10-02'));
+
+    // Every one of the 55 has an open pending row (status null) made by ingestion; 20 have both punches.
+    foreach ($staff as $i => $employee) {
+        if ($i < 20) {
+            punch($employee, '2026-10-05 09:00:00');
+            punch($employee, '2026-10-05 18:00:00');
+        }
+        Attendance::query()->create(['employee_id' => $employee->id, 'date' => '2026-10-05', 'status' => null, 'needs_rebuild' => true]);
+    }
+    $existing = $queriesFor(fn () => $rebuilder->closeDay('2026-10-05'));
+
+    expect($existing)->toBe($created)->and($created)->toBeLessThanOrEqual(10)
+        ->and(Attendance::query()->where('date', '2026-10-05')->whereNull('status')->count())->toBe(0)
+        ->and(Attendance::query()->where('date', '2026-10-05')->where('closed', true)->count())->toBe(55)
+        ->and(Attendance::query()->where('date', '2026-10-05')->where('status', 'present')->count())->toBe(20);
+
 });

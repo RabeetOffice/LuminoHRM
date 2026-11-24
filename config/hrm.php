@@ -152,6 +152,12 @@ return [
             'half_day_hours' => 4,
             'overtime_enabled' => false,
             'overtime_min_minutes' => 30,
+            // "Y-m-d"; null = attendance has not started: no absent / weekend / holiday day is recorded yet.
+            'start_date' => null,
+            // A punch less than this many minutes after the previously kept punch is a double tap and is dropped.
+            'duplicate_punch_minutes' => 5,
+            // "H:i": a punch before this time belongs to the previous day (its clock-out after a late night).
+            'day_cutoff_time' => '04:00',
         ],
         'leave' => [
             'hr_step_enabled' => true,

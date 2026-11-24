@@ -25,6 +25,9 @@ use InvalidArgumentException;
  */
 class AttendanceClock
 {
+    /** The default day cutoff, used when the setting is missing or not a valid "H:i". */
+    public const DEFAULT_CUTOFF = '04:00';
+
     public function zone(): DateTimeZone
     {
         $name = settings('company.timezone');
@@ -86,5 +89,42 @@ class AttendanceClock
         }
 
         throw new InvalidArgumentException("Not a naive date or date-time [{$naive}].");
+    }
+
+    /**
+     * The attendance day ("Y-m-d") a punch belongs to: its own date, or the day before when its time is before the day
+     * cutoff (settings('attendance.day_cutoff_time'), "04:00" by default), because a punch at 00:05 is the previous
+     * day's clock-out after a late night. No zone conversion. Every place that derives a day from a punch uses this.
+     *
+     *   $clock->attendanceDateFor('2026-11-25 00:05:00');   // "2026-11-24" with the 04:00 cutoff
+     *   $clock->attendanceDateFor('2026-11-25 04:00:00');   // "2026-11-25"
+     */
+    public function attendanceDateFor(string $naiveDateTime): string
+    {
+        return self::dayOf($naiveDateTime, $this->dayCutoff());
+    }
+
+    /** The day cutoff as "H:i" (settings('attendance.day_cutoff_time'); "04:00" when unset or unusable). */
+    public function dayCutoff(): string
+    {
+        $cutoff = settings('attendance.day_cutoff_time');
+
+        return is_string($cutoff) && preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $cutoff) === 1 ? $cutoff : self::DEFAULT_CUTOFF;
+    }
+
+    /** attendanceDateFor() with an explicit cutoff ("H:i"), for callers that read the setting once for many punches. */
+    public static function dayOf(string $naiveDateTime, string $cutoff): string
+    {
+        $value = trim($naiveDateTime);
+        $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', substr($value, 0, 19), new DateTimeZone('UTC'));
+
+        if ($parsed === false || $parsed->format('Y-m-d H:i:s') !== substr($value, 0, 19)) {
+            throw new InvalidArgumentException("Not a naive date-time [{$naiveDateTime}].");
+        }
+
+        // "H:i:s" strings compare in time order.
+        return $parsed->format('H:i:s') < $cutoff.':00'
+            ? $parsed->modify('-1 day')->format('Y-m-d')
+            : $parsed->format('Y-m-d');
     }
 }

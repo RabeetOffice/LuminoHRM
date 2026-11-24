@@ -5,11 +5,14 @@ namespace App\Console\Commands;
 use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\AttendanceRebuilder;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
  * The nightly close (routes/console.php). Without a date it closes each of the previous 7 days in the company zone
  * (AttendanceClock), oldest first: yesterday on a normal night, and any day a missed run left open. With a date it
- * closes just that past day. Every run is idempotent: a day already closed is left as it is.
+ * closes just that past day. Every run is idempotent: a day already closed is left as it is. A day whose close fails is
+ * logged and reported, the later days are still closed, and the command then exits with failure (the next run retries).
  */
 class CloseAttendanceDay extends Command
 {
@@ -48,11 +51,23 @@ class CloseAttendanceDay extends Command
             }
         }
 
+        $failed = 0;
+
         foreach ($days as $day) {
-            $written = $rebuilder->closeDay($day);
+            // One day that fails must not stop the later days: logged (class only), reported, and retried next run.
+            try {
+                $written = $rebuilder->closeDay($day);
+            } catch (Throwable $e) {
+                $failed++;
+                Log::error('Attendance day close failed', ['exception' => $e::class, 'date' => $day]);
+                $this->output->writeln("attendance_close date={$day} failed=".$e::class);
+
+                continue;
+            }
+
             $this->output->writeln("attendance_close date={$day} written={$written}");
         }
 
-        return self::SUCCESS;
+        return $failed === 0 ? self::SUCCESS : self::FAILURE;
     }
 }

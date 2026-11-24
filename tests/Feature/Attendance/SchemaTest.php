@@ -10,6 +10,7 @@ use App\Models\DevicePunch;
 use App\Models\Employee;
 use App\Models\Holiday;
 use App\Models\Shift;
+use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\DefaultShift;
 use App\Support\EmployeeAccess;
 use App\Support\Settings;
@@ -64,7 +65,7 @@ it('creates the attendance tables and the two employee columns', function () {
         'devices' => ['id', 'name', 'serial_no', 'is_active', 'last_seen_at', 'last_stamp', 'last_punch_at', 'created_at', 'updated_at'],
         'device_punches' => ['id', 'device_id', 'device_user_id', 'employee_id', 'punch_time', 'punch_date', 'verify_type', 'status_code', 'source', 'created_at'],
         'device_commands' => ['id', 'device_id', 'command', 'status', 'sent_at', 'result', 'created_by', 'created_at', 'updated_at'],
-        'attendances' => ['id', 'employee_id', 'date', 'shift_id', 'clock_in', 'clock_out', 'worked_minutes', 'late_minutes', 'early_minutes', 'overtime_minutes', 'status', 'is_manual', 'needs_attention', 'needs_rebuild', 'closed', 'note', 'created_at', 'updated_at'],
+        'attendances' => ['id', 'employee_id', 'date', 'shift_id', 'shift_rules', 'clock_in', 'clock_out', 'worked_minutes', 'late_minutes', 'early_minutes', 'overtime_minutes', 'status', 'is_manual', 'needs_attention', 'needs_rebuild', 'closed', 'note', 'created_at', 'updated_at'],
         'attendance_corrections' => ['id', 'employee_id', 'date', 'requested_in', 'requested_out', 'reason', 'status', 'manager_id', 'manager_decided_at', 'hr_id', 'hr_decided_at', 'decision_note', 'created_at', 'updated_at'],
         'holidays' => ['id', 'name', 'date', 'created_at', 'updated_at'],
     ];
@@ -306,14 +307,15 @@ it('labels a read punch with the company zone so it compares with the attendance
     expect($punch->fresh()->punch_time->getTimezone()->getName())->toBe('Asia/Karachi');
 });
 
-it('keeps punch_date equal to the date part of punch_time, and never lets either drift', function () {
+it('keeps punch_date equal to the attendance day of punch_time, and never lets either drift', function () {
+    // Before the 04:00 day cutoff a punch belongs to the previous day (AttendanceClock::attendanceDateFor).
     $punch = punch('503', '2026-11-25 00:00:00');
 
-    expect($punch->punch_date)->toBe('2026-11-25');
+    expect($punch->punch_date)->toBe('2026-11-24');
 
     // punch_date cannot be set on its own...
     $punch->forceFill(['punch_date' => '1999-01-01', 'verify_type' => '15'])->save();
-    expect($punch->fresh()->punch_date)->toBe('2026-11-25');
+    expect($punch->fresh()->punch_date)->toBe('2026-11-24');
 
     // ...and a stored punch time is never changed.
     $punch->punch_time = '2026-11-26 10:00:00';
@@ -322,9 +324,12 @@ it('keeps punch_date equal to the date part of punch_time, and never lets either
     // Every punch written through the model agrees.
     punch('503', '2026-11-25 23:59:59');
     punch('503', '2026-11-24 00:00:01');
+    punch('503', '2026-11-24 04:00:00');
     foreach (DB::table('device_punches')->get() as $row) {
-        expect($row->punch_date)->toStartWith(substr($row->punch_time, 0, 10));
+        expect($row->punch_date)->toStartWith(app(AttendanceClock::class)->attendanceDateFor(substr($row->punch_time, 0, 19)));
     }
+    expect(DB::table('device_punches')->orderBy('punch_time')->pluck('punch_date')->map(fn ($d) => substr((string) $d, 0, 10))->all())
+        ->toBe(['2026-11-23', '2026-11-24', '2026-11-24', '2026-11-25']);
 });
 
 it('refuses a punch time that is not a naive Y-m-d H:i:s', function (mixed $value) {

@@ -131,3 +131,29 @@ it('keeps no state between calls: a changed setting is seen at once', function (
     expect($clock->today()->format('Y-m-d'))->toBe('2026-11-24')
         ->and($clock->utcOffsetHours())->toBe(-5);
 });
+
+it('puts a punch before the day cutoff on the previous day', function (string $punch, string $day) {
+    expect(acClock()->attendanceDateFor($punch))->toBe($day);
+})->with([
+    'after midnight, before 04:00' => ['2026-11-25 00:05:00', '2026-11-24'],
+    'one second before the cutoff' => ['2026-11-25 03:59:59', '2026-11-24'],
+    'at the cutoff' => ['2026-11-25 04:00:00', '2026-11-25'],
+    'a normal clock-in' => ['2026-11-25 09:00:00', '2026-11-25'],
+    'late evening' => ['2026-11-25 23:59:59', '2026-11-25'],
+    'across a month end' => ['2026-12-01 01:00:00', '2026-11-30'],
+]);
+
+it('follows the day cutoff setting, and falls back to 04:00 when it is unusable', function () {
+    Settings::set('attendance', ['day_cutoff_time' => '00:00']);
+    expect(acClock()->attendanceDateFor('2026-11-25 00:05:00'))->toBe('2026-11-25');
+
+    Settings::set('attendance', ['day_cutoff_time' => '06:30']);
+    expect(acClock()->attendanceDateFor('2026-11-25 06:29:00'))->toBe('2026-11-24');
+
+    Settings::set('attendance', ['day_cutoff_time' => 'soon']);
+    expect(acClock()->dayCutoff())->toBe('04:00');
+});
+
+it('rejects a punch that is not a naive date-time', function () {
+    acClock()->attendanceDateFor('2026-11-25');
+})->throws(InvalidArgumentException::class);

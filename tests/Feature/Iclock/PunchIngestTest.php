@@ -127,12 +127,12 @@ it('leaves a manually corrected day untouched', function () {
         ->and(DevicePunch::sole()->employee_id)->toBe($employee->id);
 });
 
-it('puts punches at 23:59:59 and 00:00:00 on different dates', function () {
+it('puts a punch before the 04:00 day cutoff on the previous day, and one at the cutoff on its own date', function () {
     $employee = Employee::factory()->create(['device_user_id' => '101']);
 
-    attlog("101\t2026-11-22 23:59:59\t0\t1\n101\t2026-11-23 00:00:00\t0\t1\n");
+    attlog("101\t2026-11-22 23:59:59\t0\t1\n101\t2026-11-23 00:00:00\t0\t1\n101\t2026-11-23 03:59:59\t0\t1\n101\t2026-11-23 04:00:00\t0\t1\n");
 
-    expect(DevicePunch::orderBy('punch_time')->pluck('punch_date')->all())->toBe(['2026-11-22', '2026-11-23']);
+    expect(DevicePunch::orderBy('punch_time')->pluck('punch_date')->all())->toBe(['2026-11-22', '2026-11-22', '2026-11-22', '2026-11-23']);
     expect(Attendance::where('employee_id', $employee->id)->orderBy('date')->get()->map(fn ($a) => $a->date->format('Y-m-d'))->all())
         ->toBe(['2026-11-22', '2026-11-23']);
 });

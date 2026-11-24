@@ -58,6 +58,25 @@
 
 ---
 
+## Shared interfaces (added by the Task 3 fix round)
+
+- **New attendance settings** (backend defaults in `config('hrm.defaults.attendance')`, validated in `AttendanceRequest`; Settings screen inputs still to come):
+  - `attendance.start_date`: `"Y-m-d"` or `null` (default `null`). Null means attendance has not started, so no punch-less row (absent, weekend, holiday or exempt present) is created and existing punch-less non-manual rows are removed. Days with punches are still decided. Once it is set, the employment window starts at max(joining date, start date).
+  - `attendance.duplicate_punch_minutes`: integer 0–60 (default `5`). A punch less than this many minutes after the previously kept punch is a double tap and is dropped. `0` turns this off.
+  - `attendance.day_cutoff_time`: `"H:i"` from `00:00` to `06:00` (default `"04:00"`). A punch before the cutoff belongs to the previous calendar day, as that day's possible clock-out.
+- **Null status = pending.** `attendances.status` null means the row is waiting to be calculated: a bare row created by punch ingestion. The rebuild always decides or removes it. The close never leaves one behind, except a day that cannot be decided; that row stays open with `needs_attention = true`.
+- **Derive a punch's day with `AttendanceClock::attendanceDateFor($naiveDateTime)`.** Bulk callers use `AttendanceClock::dayOf($time, $clock->dayCutoff())`. Never use the date part of the punch time. `DevicePunch` (on save) and `PunchIngestor` already store `punch_date` this way, so group punches by `punch_date`. Changing the cutoff setting does not re-derive stored punches.
+- **`attendances.shift_rules`** (JSON, cast `array`) holds the shift rules a day was decided with: `shift_id`, `name`, `start_time`, `end_time`, `grace_minutes`, `half_day_hours`, `weekly_offs`. A closed row is recalculated from this snapshot. Only `hrm:attendance-rebuild --from --to` applies the current rules and refreshes it.
+- **Task 5's manual save must set `closed` itself and write `shift_rules`,** because the rebuild and the close never touch a manual row.
+- **Calculator rules after the fix:**
+  - An open day is never a half day and never has early minutes.
+  - A single punch before the shift midpoint is the clock-in (the late rule applies). At or after the midpoint it is the clock-out. Either way the status is present or late, flagged once the day is closed. On a weekend or holiday it is never flagged.
+  - Exactly two kept punches less than 60 minutes apart on a closed working day are flagged.
+  - A half day stores `late_minutes = 0`.
+  - Grace is compared in whole minutes, so 09:15:59 is on time with 15 minutes grace.
+
+---
+
 ## File map
 
 | Path | Responsibility |

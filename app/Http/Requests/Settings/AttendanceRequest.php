@@ -21,6 +21,12 @@ class AttendanceRequest extends SettingsGroupRequest
             'half_day_hours' => ['bail', 'required', 'integer', 'between:1,12'],
             'overtime_enabled' => ['required', 'boolean'],
             'overtime_min_minutes' => ['bail', 'required', 'integer', 'between:0,480'],
+            // Null: attendance has not started, no absent / weekend / holiday day is recorded yet.
+            'start_date' => ['bail', 'nullable', 'string', 'date_format:Y-m-d'],
+            // A punch less than this many minutes after the previously kept punch is a double tap (0 = off).
+            'duplicate_punch_minutes' => ['bail', 'required', 'integer', 'between:0,60'],
+            // A punch before this time belongs to the previous day (its clock-out after a late night).
+            'day_cutoff_time' => ['bail', 'required', 'string', 'date_format:H:i', 'before_or_equal:06:00'],
         ];
     }
 }

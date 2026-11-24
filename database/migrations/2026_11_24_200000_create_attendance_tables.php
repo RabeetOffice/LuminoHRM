@@ -88,6 +88,9 @@ return new class extends Migration
             $table->foreignId('employee_id')->constrained()->restrictOnDelete();
             $table->date('date');
             $table->foreignId('shift_id')->nullable()->constrained()->nullOnDelete(); // the shift used for this day
+            // The shift rules the day was decided with (start, end, grace, half-day hours, weekly offs): a closed day is
+            // decided again with these, so editing a shift never silently changes past days. Null until first decided.
+            $table->json('shift_rules')->nullable();
             $table->dateTime('clock_in')->nullable(); // naive machine time
             $table->dateTime('clock_out')->nullable(); // naive machine time
             $table->unsignedSmallInteger('worked_minutes')->default(0);

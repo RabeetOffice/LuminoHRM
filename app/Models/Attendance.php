@@ -23,6 +23,7 @@ use Illuminate\Support\Carbon;
  * @property int $employee_id
  * @property CarbonImmutable $date
  * @property int|null $shift_id
+ * @property array{shift_id: int|null, name: string, start_time: string, end_time: string, grace_minutes: int, half_day_hours: float, weekly_offs: list<string>}|null $shift_rules the rules the day was decided with (AttendanceRebuilder)
  * @property CarbonImmutable|null $clock_in
  * @property CarbonImmutable|null $clock_out
  * @property int $worked_minutes
@@ -46,7 +47,7 @@ class Attendance extends Model
     use HasNaiveDateScopes;
 
     protected $fillable = [
-        'employee_id', 'date', 'shift_id', 'clock_in', 'clock_out', 'worked_minutes', 'late_minutes', 'early_minutes',
+        'employee_id', 'date', 'shift_id', 'shift_rules', 'clock_in', 'clock_out', 'worked_minutes', 'late_minutes', 'early_minutes',
         'overtime_minutes', 'status', 'is_manual', 'needs_attention', 'needs_rebuild', 'closed', 'note',
     ];
 
@@ -68,6 +69,7 @@ class Attendance extends Model
             'date' => NaiveDate::class,
             'clock_in' => NaiveDateTime::class,
             'clock_out' => NaiveDateTime::class,
+            'shift_rules' => 'array',
             'worked_minutes' => 'integer',
             'late_minutes' => 'integer',
             'early_minutes' => 'integer',
