@@ -10,10 +10,13 @@ use App\Support\LastAdminGuard;
 use App\Support\Settings;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Auth\Notifications\ResetPassword;
+use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\Route;
 
 // ---------------------------------------------------------------- brief tests
@@ -40,7 +43,7 @@ it('will not demote or disable the last active admin', function () {
     $admin = userWithRole('admin');
     $this->actingAs($admin)->put("/users/{$admin->id}", ['name' => $admin->name, 'email' => $admin->email, 'role' => 'hr'])
         ->assertSessionHas('error', 'There must be at least one active Admin.');
-    $this->actingAs($admin)->patch("/users/{$admin->id}/active")->assertSessionHas('error');
+    $this->actingAs($admin)->patch("/users/{$admin->id}/active", ['active' => false])->assertSessionHas('error');
     expect($admin->fresh()->hasRole('admin'))->toBeTrue()->and($admin->fresh()->is_active)->toBeTrue();
 });
 
@@ -53,9 +56,9 @@ it('allows demoting an admin when another active admin exists', function () {
 
 it('disables and re-enables a user', function () {
     $u = userWithRole('employee');
-    $this->actingAs(userWithRole('admin'))->patch("/users/{$u->id}/active");
+    $this->actingAs(userWithRole('admin'))->patch("/users/{$u->id}/active", ['active' => false]);
     expect($u->fresh()->is_active)->toBeFalse();
-    $this->actingAs(userWithRole('admin'))->patch("/users/{$u->id}/active");
+    $this->actingAs(userWithRole('admin'))->patch("/users/{$u->id}/active", ['active' => true]);
     expect($u->fresh()->is_active)->toBeTrue();
 });
 
@@ -68,7 +71,7 @@ it('forbids hr, manager and employee on every users route and changes nothing', 
 
     $this->actingAs($actor)->post('/users', ['name' => 'New', 'email' => 'new@example.com', 'role' => 'hr'])->assertForbidden();
     $this->actingAs($actor)->put("/users/{$target->id}", ['name' => 'Changed', 'email' => 'c@example.com', 'role' => 'admin'])->assertForbidden();
-    $this->actingAs($actor)->patch("/users/{$target->id}/active")->assertForbidden();
+    $this->actingAs($actor)->patch("/users/{$target->id}/active", ['active' => false])->assertForbidden();
     $this->actingAs($actor)->post("/users/{$target->id}/send-reset")->assertForbidden();
 
     expect(User::whereEmail('new@example.com')->exists())->toBeFalse()
@@ -382,7 +385,7 @@ it('will not let an admin demote or disable themselves even when other admins ex
 
     $this->actingAs($a)->put("/users/{$a->id}", ['name' => $a->name, 'email' => $a->email, 'role' => 'hr'])
         ->assertSessionHas('error', $message);
-    $this->actingAs($a)->patch("/users/{$a->id}/active")->assertSessionHas('error', $message);
+    $this->actingAs($a)->patch("/users/{$a->id}/active", ['active' => false])->assertSessionHas('error', $message);
 
     expect($a->fresh()->hasRole('admin'))->toBeTrue()->and($a->fresh()->is_active)->toBeTrue();
 });
@@ -420,7 +423,7 @@ it('ends the sessions and the remember token of a disabled user, and only theirs
         DB::table('sessions')->insert(['id' => $id, 'user_id' => $uid, 'ip_address' => '127.0.0.1', 'user_agent' => 'x', 'payload' => '', 'last_activity' => time()]);
     }
 
-    $this->actingAs($admin)->patch("/users/{$u->id}/active")->assertSessionHas('success');
+    $this->actingAs($admin)->patch("/users/{$u->id}/active", ['active' => false])->assertSessionHas('success');
 
     expect($u->fresh()->is_active)->toBeFalse()
         ->and($u->fresh()->remember_token)->toBeNull()
@@ -431,7 +434,7 @@ it('ends the sessions and the remember token of a disabled user, and only theirs
 
 it('signs a disabled user out on their next request', function () {
     $u = userWithRole('employee');
-    $this->actingAs(userWithRole('admin'))->patch("/users/{$u->id}/active");
+    $this->actingAs(userWithRole('admin'))->patch("/users/{$u->id}/active", ['active' => false]);
 
     $this->actingAs($u->fresh())->get('/dashboard')->assertRedirect('/login');
 });
@@ -441,7 +444,7 @@ it('does not touch sessions when a user is enabled again', function () {
     $u->forceFill(['is_active' => false])->save();
     DB::table('sessions')->insert(['id' => 's1', 'user_id' => $u->id, 'ip_address' => '127.0.0.1', 'user_agent' => 'x', 'payload' => '', 'last_activity' => time()]);
 
-    $this->actingAs(userWithRole('admin'))->patch("/users/{$u->id}/active");
+    $this->actingAs(userWithRole('admin'))->patch("/users/{$u->id}/active", ['active' => true]);
 
     expect($u->fresh()->is_active)->toBeTrue()->and(DB::table('sessions')->where('user_id', $u->id)->count())->toBe(1);
 });
@@ -583,4 +586,123 @@ it('offers the four roles as options and reports the filters it applied', functi
 
     expect(collect($props['roleOptions'])->pluck('value')->all())->toBe(['admin', 'hr', 'manager', 'employee'])
         ->and($props['filters'])->toBe(['status' => 'active', 'role' => 'hr', 'search' => 'sa', 'per_page' => 25]);
+});
+
+// ------------------------------------------------------------- fix round 1
+
+it('takes the desired state explicitly: a repeat or stale request is a no-op, not a flip', function () {
+    $admin = userWithRole('admin');
+    $u = userWithRole('employee');
+
+    $this->actingAs($admin)->patch("/users/{$u->id}/active", ['active' => false])->assertSessionHas('success');
+    // A second admin (or a stale tab) sends the same instruction: still disabled.
+    $this->actingAs($admin)->patch("/users/{$u->id}/active", ['active' => false])->assertSessionHasNoErrors()->assertSessionHas('success');
+    expect($u->fresh()->is_active)->toBeFalse();
+
+    $this->actingAs($admin)->patch("/users/{$u->id}/active", ['active' => true]);
+    $this->actingAs($admin)->patch("/users/{$u->id}/active", ['active' => true]);
+    expect($u->fresh()->is_active)->toBeTrue();
+});
+
+it('requires a boolean active value', function () {
+    $admin = userWithRole('admin');
+    $u = userWithRole('employee');
+
+    $this->actingAs($admin)->patch("/users/{$u->id}/active")->assertSessionHasErrors('active');
+    $this->actingAs($admin)->patch("/users/{$u->id}/active", ['active' => 'maybe'])->assertSessionHasErrors('active');
+    $this->actingAs($admin)->patch("/users/{$u->id}/active", ['active' => [true]])->assertSessionHasErrors('active');
+    expect($u->fresh()->is_active)->toBeTrue();
+});
+
+it('keeps the account and shows a friendly error when the set-password link cannot be sent', function () {
+    $admin = userWithRole('admin');
+    Password::shouldReceive('broker')->andThrow(new RuntimeException('mail down: secret-detail'));
+    Log::spy();
+
+    $this->actingAs($admin)->post('/users', ['name' => 'Sara', 'email' => 'sara@example.com', 'role' => 'hr'])
+        ->assertRedirect()
+        ->assertSessionHas('error', 'Account created, but the link could not be sent. Use the reset icon.');
+
+    expect(User::whereEmail('sara@example.com')->exists())->toBeTrue();
+    Log::shouldHaveReceived('warning')->withArgs(fn ($m, $c = []) => ! str_contains(json_encode([$m, $c]), 'secret-detail'));
+});
+
+it('reports delivery through linkSent() without throwing', function () {
+    Notification::fake();
+    $action = app(CreateUserAccount::class);
+    $action->handle('A One', 'a1@example.com', 'employee');
+    expect($action->linkSent())->toBeTrue();
+});
+
+it('answers a mail failure on send-reset with a friendly error, never a 500', function () {
+    $u = userWithRole('employee');
+    $admin = userWithRole('admin');
+    Password::shouldReceive('sendResetLink')->andThrow(new RuntimeException('smtp exploded secret-detail'));
+    Log::spy();
+
+    $this->actingAs($admin)->post("/users/{$u->id}/send-reset")->assertRedirect()
+        ->assertSessionHas('error', fn ($m) => str_contains($m, 'could not be sent') && ! str_contains($m, 'secret-detail'));
+    Log::shouldHaveReceived('warning')->withArgs(fn ($m, $c = []) => ! str_contains(json_encode([$m, $c]), 'secret-detail'));
+});
+
+it('deletes the pending broker token when a user is disabled, so old links stop working', function () {
+    Notification::fake();
+    $admin = userWithRole('admin');
+    $u = app(CreateUserAccount::class)->handle('Sara', 'sara@example.com', 'employee');
+    $token = null;
+    Notification::assertSentTo($u, SetPasswordNotification::class, function ($n) use (&$token) {
+        $token = $n->token;
+
+        return true;
+    });
+    expect(DB::table('password_reset_tokens')->where('email', $u->email)->exists())->toBeTrue();
+
+    $this->actingAs($admin)->patch("/users/{$u->id}/active", ['active' => false]);
+
+    expect(DB::table('password_reset_tokens')->where('email', $u->email)->exists())->toBeFalse()
+        ->and(Password::broker()->tokenExists($u->fresh(), $token))->toBeFalse();
+});
+
+it('still refuses a disabled user at sign-in even after a password reset', function () {
+    $u = User::factory()->create(['is_active' => false, 'email' => 'off@example.com']);
+    $u->forceFill(['password' => 'A-Strong-Passw0rd!x'])->save();
+
+    $this->post('/login', ['email' => 'off@example.com', 'password' => 'A-Strong-Passw0rd!x'])->assertSessionHasErrors('email');
+    $this->assertGuest();
+});
+
+it('does not email a reset link to a disabled account from the public forgot-password form', function () {
+    Notification::fake();
+    $off = User::factory()->create(['is_active' => false]);
+    $on = User::factory()->create();
+
+    $this->post('/forgot-password', ['email' => $off->email]);
+    Notification::assertNothingSent();
+    $this->post('/forgot-password', ['email' => $on->email]);
+    Notification::assertSentTo($on, ResetPassword::class);
+});
+
+it('answers the forgot-password form for a disabled account exactly as for an active one', function () {
+    $off = User::factory()->create(['is_active' => false]);
+    $on = User::factory()->create();
+    $state = fn ($r) => [$r->getStatusCode(), $r->headers->get('Location'), session('status'), json_encode(session('errors'))];
+
+    $first = $state($this->post('/forgot-password', ['email' => $off->email]));
+    $this->flushSession();
+    $second = $state($this->post('/forgot-password', ['email' => $on->email]));
+
+    // The kit itself answers an unknown address differently ("We can't find a user"), so the account state
+    // is hidden only relative to active accounts; see the task 8 fix report.
+    expect($first)->toBe($second);
+});
+
+it('ends in the clamp redirect for a huge page number', function () {
+    $admin = userWithRole('admin');
+    $this->actingAs($admin)->get('/users?page=99999999999999999999')->assertRedirect('/users');
+});
+
+it('encrypts the queued set-password payload and limits retries', function () {
+    $n = new SetPasswordNotification('tok');
+    expect($n)->toBeInstanceOf(ShouldBeEncrypted::class)
+        ->and($n->tries)->toBe(3);
 });

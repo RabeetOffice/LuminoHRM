@@ -49,6 +49,6 @@ final class LastAdminGuard
             }
 
             return $change();
-        });
+        }, attempts: 3); // a deadlock between two admins changing at once is retried
     }
 }

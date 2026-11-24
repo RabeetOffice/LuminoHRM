@@ -6,6 +6,7 @@ use App\Exceptions\AccountRuleViolation;
 use App\Models\User;
 use App\Support\LastAdminGuard;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -25,6 +26,11 @@ class SetUserActive
         return LastAdminGuard::protect($user, function () use ($user, $active, $actor) {
             $account = User::query()->lockForUpdate()->findOrFail($user->getKey());
 
+            // Re-read under the lock: asking for the state the account already has is a no-op.
+            if ($account->is_active === $active) {
+                return $account;
+            }
+
             if (! $active && $actor?->is($account)) {
                 throw new AccountRuleViolation(UpdateUserAccount::SELF_MESSAGE);
             }
@@ -39,6 +45,8 @@ class SetUserActive
 
             if (! $active) {
                 $this->endSessions($account);
+                // An old set-password or reset link must stop working too.
+                Password::broker()->deleteToken($account);
             }
 
             return $account;
@@ -47,6 +55,7 @@ class SetUserActive
 
     private function endSessions(User $user): void
     {
+        // Only the database session driver can be cleared here; EnsureUserIsActive is the backstop for the rest.
         $table = (string) config('session.table', 'sessions');
 
         if (Schema::hasTable($table)) {

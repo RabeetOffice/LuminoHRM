@@ -12,9 +12,11 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Password;
 use Inertia\Inertia;
 use Inertia\Response;
+use Throwable;
 
 /**
  * Users and roles. Every route is behind the can:users.manage middleware.
@@ -51,15 +53,18 @@ class UserController extends Controller
             ->orderBy('id');
 
         $requested = $request->query('page');
-        $page = is_scalar($requested) && ctype_digit((string) $requested) ? max(1, (int) $requested) : 1;
+        // Very long digit strings would overflow the int / the SQL offset: treat them as "far past the end".
+        $page = is_scalar($requested) && ctype_digit((string) $requested)
+            ? max(1, strlen((string) $requested) > 9 ? 1_000_000_000 : (int) $requested)
+            : 1;
         $paginator = $query->paginate($perPage, ['*'], 'page', $page);
 
         // A page past the end (for example after the last row of the last page was filtered out):
         // send the browser to the real page so the address is right.
         if ($page > $paginator->lastPage()) {
-            return redirect()->to($request->fullUrlWithQuery([
+            return redirect()->to(rtrim($request->fullUrlWithQuery([
                 'page' => $paginator->lastPage() === 1 ? null : $paginator->lastPage(),
-            ]));
+            ]), '?'));
         }
 
         $me = $request->user()->getKey();
@@ -113,6 +118,10 @@ class UserController extends Controller
             return back()->withErrors(['email' => 'A user with this email already exists.']);
         }
 
+        if (! $create->linkSent()) {
+            return back()->with('error', 'Account created, but the link could not be sent. Use the reset icon.');
+        }
+
         return back()->with('success', "Account created for {$user->email}. A link to set a password has been emailed.");
     }
 
@@ -138,7 +147,8 @@ class UserController extends Controller
     /** Disable an active account or enable a disabled one. */
     public function toggle(Request $request, User $user, SetUserActive $setActive): RedirectResponse
     {
-        $enable = ! $user->is_active;
+        // The caller says which state it wants, so a stale tab or two admins at once cannot flip it the wrong way.
+        $enable = (bool) $request->validate(['active' => ['required', 'boolean']])['active'];
 
         try {
             $setActive->handle($user, $enable, actor: $request->user());
@@ -156,7 +166,14 @@ class UserController extends Controller
         }
 
         // The broker applies its own throttle (config auth.passwords.users.throttle).
-        $status = Password::sendResetLink(['email' => $user->email]);
+        try {
+            $status = Password::sendResetLink(['email' => $user->email]);
+        } catch (Throwable $e) {
+            // Class only: the message can carry addresses or tokens.
+            Log::warning('Password reset link could not be sent.', ['exception' => $e::class]);
+
+            return back()->with('error', 'The password reset link could not be sent. Please try again later.');
+        }
 
         return match ($status) {
             Password::RESET_LINK_SENT => back()->with('success', "Password reset link sent to {$user->email}."),

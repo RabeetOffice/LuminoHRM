@@ -6,10 +6,11 @@ use App\Models\User;
 use App\Notifications\SetPasswordNotification;
 use App\Support\Names;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
-use RuntimeException;
+use Throwable;
 
 /**
  * Creates a sign-in account and emails its owner a link to set a password.
@@ -25,6 +26,18 @@ use RuntimeException;
  */
 class CreateUserAccount
 {
+    private bool $linkSent = false;
+
+    /**
+     * Whether the set-password link was created and handed to the mail queue by the last handle() call.
+     * handle() does not throw when only the link fails: the account exists and the caller decides what to tell
+     * the user (the admin can resend from the user list).
+     */
+    public function linkSent(): bool
+    {
+        return $this->linkSent;
+    }
+
     public function handle(string $name, string $email, string $role): User
     {
         if (! in_array($role, config('hrm.roles'), true)) {
@@ -44,13 +57,17 @@ class CreateUserAccount
             return $user;
         });
 
-        $status = Password::broker()->sendResetLink(
-            ['email' => $user->email],
-            fn (User $account, string $token) => $account->notify(new SetPasswordNotification($token)),
-        );
+        $this->linkSent = false;
 
-        if ($status !== Password::RESET_LINK_SENT) {
-            throw new RuntimeException("The set-password link could not be created ({$status}).");
+        try {
+            $status = Password::broker()->sendResetLink(
+                ['email' => $user->email],
+                fn (User $account, string $token) => $account->notify(new SetPasswordNotification($token)),
+            );
+            $this->linkSent = $status === Password::RESET_LINK_SENT;
+        } catch (Throwable $e) {
+            // Class only: the message can carry addresses or tokens.
+            Log::warning('Set-password link could not be sent for a new account.', ['exception' => $e::class]);
         }
 
         return $user;

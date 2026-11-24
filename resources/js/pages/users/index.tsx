@@ -103,7 +103,7 @@ export default function Users({ users, counts, roleOptions, filters }: Props) {
     const enable = (row: UserRow) => {
         router.patch(
             UserController.toggle(row.id).url,
-            {},
+            { active: true },
             { preserveScroll: true },
         );
     };
@@ -123,7 +123,7 @@ export default function Users({ users, counts, roleOptions, filters }: Props) {
 
         router.patch(
             UserController.toggle(disabling.id).url,
-            {},
+            { active: false },
             {
                 preserveScroll: true,
                 onStart: () => setBusy(true),

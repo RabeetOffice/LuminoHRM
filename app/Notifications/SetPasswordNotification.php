@@ -3,6 +3,7 @@
 namespace App\Notifications;
 
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
@@ -13,9 +14,12 @@ use Illuminate\Notifications\Notification;
  * so it expires on the broker's schedule. Queued: the database queue is drained
  * every minute in production, and the admin's request does not wait for SMTP.
  */
-class SetPasswordNotification extends Notification implements ShouldQueue
+class SetPasswordNotification extends Notification implements ShouldBeEncrypted, ShouldQueue
 {
     use Queueable;
+
+    /** The payload holds the raw token: encrypted at rest, and not retried forever. */
+    public int $tries = 3;
 
     public function __construct(public readonly string $token) {}
 

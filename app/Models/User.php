@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Database\Factories\UserFactory;
+use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
@@ -36,6 +37,19 @@ class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
 {
     /** @use HasFactory<UserFactory> */
     use HasFactory, HasRoles, Notifiable, PasskeyAuthenticatable, TwoFactorAuthenticatable;
+
+    /**
+     * A disabled account gets no reset link. The public forgot-password form calls this after the broker has
+     * accepted the address, so the response stays the same and does not reveal that the account is disabled.
+     */
+    public function sendPasswordResetNotification($token): void
+    {
+        if (! $this->is_active) {
+            return;
+        }
+
+        $this->notify(new ResetPassword($token));
+    }
 
     /**
      * Get the attributes that should be cast.

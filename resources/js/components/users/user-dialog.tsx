@@ -52,6 +52,15 @@ export function UserDialog({ user, roles, onClose }: Props) {
     const submit = (event: FormEvent) => {
         event.preventDefault();
 
+        // A row without a role must not submit an empty one: make the admin choose.
+        if (form.data.role === '') {
+            form.setError('role', 'Choose a role.');
+
+            return;
+        }
+
+        form.clearErrors('role');
+
         const options = {
             preserveScroll: true,
             onSuccess: () => onClose(),
