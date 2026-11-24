@@ -200,7 +200,7 @@ it('creates the employee, satellites and a login account in one go', function ()
     $response = $this->actingAs($hr)->post('/employees', ewPayload());
 
     $employee = Employee::where('email', 'ayesha.khan@corp.test')->firstOrFail();
-    $response->assertRedirect("/employees/{$employee->id}/edit")->assertSessionHas('success');
+    $response->assertRedirect("/employees/{$employee->id}")->assertSessionHas('success');
 
     expect($employee->employee_code)->toBe('LD-0001')
         ->and($employee->first_name)->toBe('Ayesha')
@@ -413,7 +413,7 @@ it('keeps the employee and flashes the Phase 1 message when the link cannot be s
     $response = $this->actingAs(userWithRole('hr'))->post('/employees', ewPayload());
 
     $e = Employee::where('email', 'ayesha.khan@corp.test')->firstOrFail();
-    $response->assertRedirect("/employees/{$e->id}/edit")
+    $response->assertRedirect("/employees/{$e->id}")
         ->assertSessionHas('error', 'Account created, but the link could not be sent. Use the reset icon.');
     expect($e->user)->not->toBeNull();
 });
@@ -599,7 +599,7 @@ it('syncs the linked account name and email, keeps it verified, and sends no lin
 
     $this->actingAs(userWithRole('hr'))->put("/employees/{$employee->id}", ewEditPayload($employee, [
         'first_name' => 'Zara', 'last_name' => 'Ali', 'email' => 'Zara.Ali@Corp.test',
-    ]))->assertSessionHasNoErrors()->assertRedirect("/employees/{$employee->id}/edit");
+    ]))->assertSessionHasNoErrors()->assertRedirect("/employees/{$employee->id}");
 
     $user->refresh();
     expect($user->name)->toBe('Zara Ali')->and($user->email)->toBe('zara.ali@corp.test')->and($user->email_verified_at)->not->toBeNull()

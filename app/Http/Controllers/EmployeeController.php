@@ -10,6 +10,7 @@ use App\Exceptions\AccountRuleViolation;
 use App\Http\Requests\EmployeeRequest;
 use App\Http\Requests\EmployeeStatusRequest;
 use App\Http\Resources\EmployeeListResource;
+use App\Http\Resources\EmployeeProfileResource;
 use App\Models\Department;
 use App\Models\Designation;
 use App\Models\Employee;
@@ -119,6 +120,48 @@ class EmployeeController extends Controller
         ]);
     }
 
+    /**
+     * The profile page. Any signed-in user may ask for it: EmployeeAccess decides (403), and the field groups, the tabs
+     * and the manager and reports lists all come from EmployeeProfileResource, which asks EmployeeAccess again. A person
+     * who may see only their own record is sent to My Profile instead of being shown this page.
+     */
+    public function show(Request $request, Employee $employee): Response|RedirectResponse
+    {
+        $user = $request->user();
+        $access = new EmployeeAccess($user);
+        $own = $this->isOwnRecord($user, $employee);
+
+        if ($own && ! $user->canAny(['employees.view-all', 'employees.view-team'])) {
+            return redirect('/my/profile');
+        }
+
+        abort_unless($access->canView($employee), 403);
+
+        $profile = new EmployeeProfileResource($employee, $access, $user);
+
+        // Edit and the status change follow the edit page's rule (employees.manage, and only an Admin touches an Admin or
+        // HR login). Delete adds the delete rules and is never offered on your own record (the route refuses it).
+        $mayTouch = EmployeeRoles::mayTouchAccount($user, $employee->user()->first());
+        $mayEdit = $access->canManage() && $mayTouch;
+
+        return Inertia::render('employees/show', [
+            'employee' => $profile->resolve($request),
+            'tabs' => $profile->tabs(),
+            // The statuses the "Change status" dialog offers (the same list the edit page gets).
+            'statusOptions' => config('hrm.employees.statuses'),
+            'can' => [
+                'edit' => $mayEdit,
+                'changeStatus' => $mayEdit,
+                'delete' => ! $own && $mayTouch && $access->canDelete($employee),
+            ],
+        ]);
+    }
+
+    private function isOwnRecord(User $user, Employee $employee): bool
+    {
+        return $user->employee_id !== null && (int) $user->employee_id === (int) $employee->getKey();
+    }
+
     public function create(Request $request): Response
     {
         return $this->form($request, null);
@@ -140,8 +183,7 @@ class EmployeeController extends Controller
             default => ['error', self::LINK_FAILED],
         };
 
-        // The profile page arrives with a later task; until then a save goes to the edit page.
-        return redirect()->route('employees.edit', $employee)->with(...$flash);
+        return redirect()->route('employees.show', $employee)->with(...$flash);
     }
 
     public function edit(Request $request, Employee $employee): Response
@@ -170,7 +212,7 @@ class EmployeeController extends Controller
             default => ['success', 'Employee updated.'],
         };
 
-        return redirect()->route('employees.edit', $employee)->with(...$flash);
+        return redirect()->route('employees.show', $employee)->with(...$flash);
     }
 
     public function status(EmployeeStatusRequest $request, Employee $employee, ChangeEmployeeStatus $change): RedirectResponse
@@ -181,7 +223,10 @@ class EmployeeController extends Controller
             return back()->with('error', $e->getMessage());
         }
 
-        return back()->with('success', 'Status changed to '.ucfirst($request->validated('status')).'.');
+        // Asking for the status the person already has is not a change: say so instead of announcing one.
+        return $change->changed()
+            ? back()->with('success', 'Status changed to '.ucfirst($request->validated('status')).'.')
+            : back()->with('info', 'No change.');
     }
 
     public function destroy(Request $request, Employee $employee, DeleteEmployee $delete): RedirectResponse

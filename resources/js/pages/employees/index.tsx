@@ -10,8 +10,9 @@ import {
 } from 'lucide-react';
 import { useState } from 'react';
 import type { ComponentProps, ReactNode } from 'react';
+import { DeleteEmployeeDialog } from '@/components/employees/delete-employee-dialog';
+import { STATUS_TONE } from '@/components/employees/status-dialog';
 import { Avatar } from '@/components/hrm/avatar';
-import { ConfirmDialog } from '@/components/hrm/confirm-dialog';
 import { DataTable } from '@/components/hrm/data-table';
 import type {
     DataTableColumn,
@@ -35,7 +36,7 @@ import { formatDate } from '@/lib/format-date';
 import { nextTableUrl } from '@/lib/table-query';
 import { statusPanelId, statusTabId } from '@/lib/tabs';
 import { cn } from '@/lib/utils';
-import { create, destroy, edit, index } from '@/routes/employees';
+import { create, edit, index, show } from '@/routes/employees';
 
 type Login = 'active' | 'disabled' | 'none';
 
@@ -82,14 +83,6 @@ const STATUS_TABS = [
     { key: 'terminated', label: 'Terminated' },
 ];
 
-const STATUS_TONE: Record<string, StatusTone> = {
-    active: 'green',
-    probation: 'amber',
-    inactive: 'grey',
-    resigned: 'grey',
-    terminated: 'red',
-};
-
 const LOGIN_PILL: Record<Login, { tone: StatusTone; label: string }> = {
     active: { tone: 'green', label: 'Active' },
     disabled: { tone: 'amber', label: 'Disabled' },
@@ -100,7 +93,7 @@ const statusLabel = (status: string) =>
     STATUS_TABS.find((tab) => tab.key === status)?.label ?? status;
 
 /**
- * A control whose page does not exist yet (later tasks wire each one to its route). It stays visible so the
+ * A control whose page does not exist yet (Import and Export wait for a later task). It stays visible so the
  * layout is final, is announced as disabled, and says "Coming soon" on hover.
  */
 function SoonButton({
@@ -141,14 +134,15 @@ function RowActions({
 }) {
     return (
         <div className={cn('flex justify-end gap-0.5', className)}>
-            <SoonButton
-                variant="ghost"
-                size="icon"
-                className="size-7"
-                aria-label={`View ${row.name}`}
-            >
-                <Eye />
-            </SoonButton>
+            <Button asChild variant="ghost" size="icon" className="size-7">
+                <Link
+                    href={show(row.id)}
+                    aria-label={`View ${row.name}`}
+                    title="View"
+                >
+                    <Eye />
+                </Link>
+            </Button>
             {can.manage && (
                 <Button asChild variant="ghost" size="icon" className="size-7">
                     <Link
@@ -188,7 +182,6 @@ export default function Employees({
     const { url, props } = usePage();
     const dateFormat = props.app.dateFormat;
     const [deleting, setDeleting] = useState<EmployeeRow | null>(null);
-    const [deleteProcessing, setDeleteProcessing] = useState(false);
     const status = filters.status === '' ? ALL : filters.status;
     const filtering =
         filters.search !== '' ||
@@ -256,7 +249,12 @@ export default function Employees({
                 <div className="flex items-center gap-3">
                     <Avatar src={row.photo_url} name={row.name} />
                     <div className="min-w-0">
-                        <div className="truncate font-medium">{row.name}</div>
+                        <Link
+                            href={show(row.id)}
+                            className="block truncate font-medium hover:underline focus-visible:underline"
+                        >
+                            {row.name}
+                        </Link>
                         <div className="max-w-40 truncate text-xs text-muted-foreground">
                             {row.email}
                         </div>
@@ -335,7 +333,12 @@ export default function Employees({
                 >
                     <Avatar src={row.photo_url} name={row.name} size="lg" />
                     <h2 className="mt-3 w-full truncate font-semibold">
-                        {row.name}
+                        <Link
+                            href={show(row.id)}
+                            className="hover:underline focus-visible:underline"
+                        >
+                            {row.name}
+                        </Link>
                     </h2>
                     <p className="w-full truncate text-sm">{row.designation}</p>
                     <p className="w-full truncate text-sm text-muted-foreground">
@@ -366,21 +369,6 @@ export default function Employees({
             </Link>
         </Button>
     );
-
-    const confirmDelete = () => {
-        if (deleting === null) {
-            return;
-        }
-
-        router.delete(destroy(deleting.id), {
-            preserveScroll: true,
-            onStart: () => setDeleteProcessing(true),
-            onFinish: () => {
-                setDeleteProcessing(false);
-                setDeleting(null);
-            },
-        });
-    };
 
     return (
         <>
@@ -526,14 +514,9 @@ export default function Employees({
                 </div>
             </div>
 
-            <ConfirmDialog
-                open={deleting !== null}
-                onOpenChange={(open) => !open && setDeleting(null)}
-                title={`Delete ${deleting?.name ?? 'this employee'}?`}
-                description="This removes the record, its contact and bank details and its login account. It only works for a record that was added by mistake and was never used; otherwise set the status to Inactive, Resigned or Terminated. This cannot be undone."
-                confirmLabel="Delete employee"
-                onConfirm={confirmDelete}
-                processing={deleteProcessing}
+            <DeleteEmployeeDialog
+                employee={deleting}
+                onClose={() => setDeleting(null)}
             />
         </>
     );

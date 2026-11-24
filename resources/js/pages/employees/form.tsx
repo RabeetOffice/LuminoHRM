@@ -1,9 +1,10 @@
 import { Head, Link, useForm } from '@inertiajs/react';
 import { useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
+import { ChangeStatusButton } from '@/components/employees/change-status-button';
 import {
-    StatusDialog,
     STATUS_LABELS,
+    STATUS_TONE,
 } from '@/components/employees/status-dialog';
 import { Avatar } from '@/components/hrm/avatar';
 import { FormTabs } from '@/components/hrm/form-tabs';
@@ -11,7 +12,6 @@ import { ManagerPicker } from '@/components/hrm/manager-picker';
 import type { ManagerOption } from '@/components/hrm/manager-picker';
 import { PageHeader } from '@/components/hrm/page-header';
 import { StatusPill } from '@/components/hrm/status-pill';
-import type { StatusTone } from '@/components/hrm/status-pill';
 import { Field, fieldAria } from '@/components/settings/settings-form';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -32,7 +32,7 @@ import {
     tabsWithErrors,
 } from '@/lib/employee-form';
 import type { FormTabKey } from '@/lib/employee-form';
-import { create, index, store, update } from '@/routes/employees';
+import { create, index, show, store, update } from '@/routes/employees';
 
 type EmployeeRecord = {
     id: number;
@@ -92,14 +92,6 @@ const LABELS: Record<string, string> = {
 
 const label = (value: string) => LABELS[value] ?? value;
 
-const STATUS_TONE: Record<string, StatusTone> = {
-    active: 'green',
-    probation: 'amber',
-    inactive: 'grey',
-    resigned: 'grey',
-    terminated: 'red',
-};
-
 /** A two-column grid of fields (one column on a phone). */
 function Grid({ children }: { children: ReactNode }) {
     return <div className="grid gap-5 sm:grid-cols-2">{children}</div>;
@@ -149,7 +141,6 @@ function EmployeeFormPage({
     const [manager, setManager] = useState<ManagerOption | null>(
         initialManager,
     );
-    const [changingStatus, setChangingStatus] = useState(false);
     const { data, errors } = form;
 
     useUnsavedChangesGuard(form.isDirty);
@@ -527,14 +518,11 @@ function EmployeeFormPage({
                         >
                             {STATUS_LABELS[employee.status] ?? employee.status}
                         </StatusPill>
-                        <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setChangingStatus(true)}
-                        >
-                            Change status
-                        </Button>
+                        <ChangeStatusButton
+                            employee={employee}
+                            statuses={statusOptions}
+                            disabled={!can.edit}
+                        />
                     </div>
                     <p className="text-xs text-muted-foreground">
                         {employee.has_login
@@ -711,6 +699,15 @@ function EmployeeFormPage({
                             ? `Employee ID ${employee.code}`
                             : 'Fill in the tabs, then save once. The new employee gets a login.'
                     }
+                    actions={
+                        editing ? (
+                            <Button variant="outline" asChild>
+                                <Link href={show(employee.id)}>
+                                    View profile
+                                </Link>
+                            </Button>
+                        ) : undefined
+                    }
                 />
 
                 {!can.edit && (
@@ -785,14 +782,6 @@ function EmployeeFormPage({
                     </div>
                 </form>
             </div>
-
-            {editing && changingStatus && (
-                <StatusDialog
-                    employee={employee}
-                    statuses={statusOptions}
-                    onClose={() => setChangingStatus(false)}
-                />
-            )}
         </>
     );
 }

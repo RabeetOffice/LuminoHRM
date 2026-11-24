@@ -32,7 +32,15 @@ class ChangeEmployeeStatus
     /** Statuses that need a last working day. */
     public const NEEDS_DAY = ['resigned', 'terminated'];
 
+    private bool $changed = false;
+
     public function __construct(private readonly SetUserActive $setActive) {}
+
+    /** Whether the last handle() changed anything (false when the stored status and day were asked for again). */
+    public function changed(): bool
+    {
+        return $this->changed;
+    }
 
     /**
      * @throws AccountRuleViolation the account rules refused (nothing is saved)
@@ -40,6 +48,8 @@ class ChangeEmployeeStatus
      */
     public function handle(Employee $employee, string $status, ?string $lastWorkingDay, User $by): Employee
     {
+        $this->changed = false;
+
         if (! in_array($status, config('hrm.employees.statuses'), true)) {
             throw new InvalidArgumentException("Unknown status [{$status}].");
         }
@@ -94,6 +104,8 @@ class ChangeEmployeeStatus
                 ],
                 $by,
             );
+
+            $this->changed = true;
 
             return $current;
         }, attempts: 3);

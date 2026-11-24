@@ -47,6 +47,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::delete('employees/{employee}', [EmployeeController::class, 'destroy'])
         ->whereNumber('employee')->middleware('can:employees.delete')->name('employees.destroy');
 
+    // The profile page. Any signed-in user may ask; EmployeeAccess::canView decides (403), and a person who only has
+    // their own record is sent to My Profile. Registered after every static /employees/... route above.
+    Route::get('employees/{employee}', [EmployeeController::class, 'show'])->whereNumber('employee')->name('employees.show');
+
     // Users and roles. No delete route: accounts are disabled, never removed.
     Route::middleware('can:users.manage')->prefix('users')->name('users.')->group(function () {
         Route::get('/', [UserController::class, 'index'])->name('index');

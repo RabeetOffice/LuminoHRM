@@ -1,5 +1,6 @@
 import { useForm } from '@inertiajs/react';
 import type { FormEvent } from 'react';
+import type { StatusTone } from '@/components/hrm/status-pill';
 import InputError from '@/components/input-error';
 import { Button } from '@/components/ui/button';
 import {
@@ -30,6 +31,15 @@ export const STATUS_LABELS: Record<string, string> = {
     terminated: 'Terminated',
 };
 
+/** The pill colour of each status, shared by the list, the profile and the edit page. */
+export const STATUS_TONE: Record<string, StatusTone> = {
+    active: 'green',
+    probation: 'amber',
+    inactive: 'grey',
+    resigned: 'grey',
+    terminated: 'red',
+};
+
 const NEEDS_DAY = ['resigned', 'terminated'];
 const SHOWS_DAY = ['inactive', 'resigned', 'terminated'];
 
@@ -57,6 +67,9 @@ export function StatusDialog({ employee, statuses, onClose }: Props) {
 
     const submit = (event: FormEvent) => {
         event.preventDefault();
+        // The dialog may sit inside another page's <form> in the React tree (it renders in a portal, but events still
+        // bubble to React parents): the page's own form must never see this submit.
+        event.stopPropagation();
 
         form.transform((data) => ({
             status: data.status,

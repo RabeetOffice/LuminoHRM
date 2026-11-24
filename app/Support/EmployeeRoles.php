@@ -19,12 +19,32 @@ final class EmployeeRoles
     /** Order of the role choices in the form. */
     public const ORDER = ['employee', 'manager', 'hr', 'admin'];
 
-    /** The role an account holds now (one role per user), or null when it has none. */
+    /**
+     * The role an account holds now, or null when it has none. The rule is one role per user, but should an account
+     * somehow hold two, the most powerful one is reported (never an arbitrary row), so the screens treat it as the
+     * more privileged person.
+     */
     public static function currentRole(?User $account): ?string
     {
-        $name = $account?->roles()->value('name');
+        if ($account === null) {
+            return null;
+        }
 
-        return is_string($name) ? $name : null;
+        $held = $account->roles()->pluck('name')->all();
+
+        foreach (array_reverse(self::ORDER) as $role) {
+            if (in_array($role, $held, true)) {
+                return $role;
+            }
+        }
+
+        return is_string($held[0] ?? null) ? $held[0] : null;
+    }
+
+    /** Whether the account holds the admin or the hr role (any of its roles, not just one of them). */
+    public static function isPrivileged(?User $account): bool
+    {
+        return $account !== null && $account->hasAnyRole(['admin', 'hr']);
     }
 
     public const PRIVILEGED_MESSAGE = 'This login belongs to an Admin or HR account. Ask an Admin to make this change.';
@@ -36,7 +56,7 @@ final class EmployeeRoles
      */
     public static function mayTouchAccount(User $by, ?User $account): bool
     {
-        return $account === null || $by->hasRole('admin') || ! self::isLockedFor($by, self::currentRole($account));
+        return $account === null || $by->hasRole('admin') || ! self::isPrivileged($account);
     }
 
     /** @return list<string> */

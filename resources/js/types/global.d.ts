@@ -20,7 +20,11 @@ declare module '@inertiajs/core' {
                 logoDarkUrl: string | null;
             };
             auth: Auth;
-            flash: { success: string | null; error: string | null };
+            flash: {
+                success: string | null;
+                error: string | null;
+                info: string | null;
+            };
             sidebarOpen: boolean;
             [key: string]: unknown;
         };
