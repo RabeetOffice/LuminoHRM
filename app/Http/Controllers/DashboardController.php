@@ -64,7 +64,7 @@ class DashboardController extends Controller
     /** @return list<array{id: int, name: string, designation: string|null, photo_url: string|null}> */
     private function birthdays(EmployeeAccess $access): array
     {
-        $today = Date::now()->setTimezone(settings('company.timezone', config('app.timezone')));
+        $today = Date::now()->setTimezone($this->displayZone());
         $month = (int) $today->format('n');
         $day = (int) $today->format('j');
         // Born on 29 February: celebrated on 28 February when this year has no 29th.
@@ -94,5 +94,19 @@ class DashboardController extends Controller
             'designation' => $e->designation?->name,
             'photo_url' => EmployeeFiles::photoUrl($e),
         ])->all());
+    }
+
+    /** The company display timezone, or the app timezone when the setting is unusable. */
+    private function displayZone(): string
+    {
+        $zone = (string) settings('company.timezone', config('app.timezone'));
+
+        try {
+            new \DateTimeZone($zone);
+        } catch (\Throwable) {
+            return (string) config('app.timezone');
+        }
+
+        return $zone;
     }
 }

@@ -15,6 +15,8 @@ beforeEach(function () {
     $this->dnZone = [date_default_timezone_get(), config('app.timezone')];
     config(['app.timezone' => 'UTC']);
     date_default_timezone_set('UTC');
+    // Pin the display zone so the day-boundary tests never depend on the default setting.
+    \App\Support\Settings::set('company', ['timezone' => 'Asia/Karachi']);
 });
 
 afterEach(function () {
