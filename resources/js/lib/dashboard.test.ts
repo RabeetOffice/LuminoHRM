@@ -4,6 +4,7 @@ import {
     formatLongDate,
     greetingFor,
     hourIn,
+    probationNote,
 } from '@/lib/dashboard';
 
 describe('greetingFor', () => {
@@ -22,25 +23,59 @@ describe('greetingFor', () => {
 });
 
 describe('dashboardTiles', () => {
-    const base = [
-        'Total Employees',
+    const rest = [
         'Present Today',
         'Absent Today',
         'Late Today',
         'Pending Leaves',
     ];
+    const labels = (...args: Parameters<typeof dashboardTiles>) =>
+        dashboardTiles(...args).map((t) => t.label);
 
-    test('with payroll.view the sixth tile is Payroll This Month', () => {
-        expect(dashboardTiles(true).map((t) => t.label)).toEqual([
-            ...base,
+    test('Admin and HR: Total Employees first, then the rest, Payroll last with payroll.view', () => {
+        expect(labels(true, 'company')).toEqual([
+            'Total Employees',
+            ...rest,
             'Payroll This Month',
         ]);
     });
 
     test('without payroll.view the sixth tile is Leave Balance', () => {
-        const labels = dashboardTiles(false).map((t) => t.label);
-        expect(labels).toEqual([...base, 'Leave Balance']);
-        expect(labels).not.toContain('Payroll This Month');
+        const result = labels(false, 'company');
+        expect(result).toEqual(['Total Employees', ...rest, 'Leave Balance']);
+        expect(result).not.toContain('Payroll This Month');
+    });
+
+    test('a Manager gets the same slot labelled Team Members', () => {
+        const tiles = dashboardTiles(false, 'team');
+        expect(tiles.map((t) => t.label)).toEqual([
+            'Team Members',
+            ...rest,
+            'Leave Balance',
+        ]);
+        expect(tiles[0].key).toBe('employees');
+    });
+
+    test('a plain Employee gets five tiles and no employee tile at all', () => {
+        const tiles = dashboardTiles(false, null);
+        expect(tiles).toHaveLength(5);
+        expect(tiles.map((t) => t.label)).toEqual([...rest, 'Leave Balance']);
+        expect(tiles.map((t) => t.key)).not.toContain('employees');
+    });
+
+    test('every tile has a unique key', () => {
+        const keys = dashboardTiles(true, 'company').map((t) => t.key);
+        expect(new Set(keys).size).toBe(keys.length);
+    });
+});
+
+describe('probationNote', () => {
+    test.each([
+        [0, 'No one on probation'],
+        [1, '1 on probation'],
+        [12, '12 on probation'],
+    ])('%i', (n, expected) => {
+        expect(probationNote(n)).toBe(expected);
     });
 });
 

@@ -41,24 +41,84 @@ export const tileTones: Record<TileColor, { tile: string; icon: string }> = {
     },
 };
 
+export type DashboardTileKey =
+    | 'employees'
+    | 'present'
+    | 'absent'
+    | 'late'
+    | 'pending-leaves'
+    | 'payroll'
+    | 'leave-balance';
+
 export type DashboardTile = {
+    key: DashboardTileKey;
     label: string;
     icon: LucideIcon;
     color: TileColor;
 };
 
-/** Spec 9.1 tiles; the sixth depends on whether the user may see payroll. */
-export function dashboardTiles(canViewPayroll: boolean): DashboardTile[] {
+/** Whose employees the first tile counts: the company (Admin, HR), the viewer's team (Manager), or no tile (null). */
+export type EmployeeTileScope = 'company' | 'team' | null;
+
+/**
+ * Spec 9.1 tiles. The first counts employees and exists only when the server sent a count (`employeeCount.scope`):
+ * "Total Employees" for the company, "Team Members" for a Manager, and nothing at all for a plain Employee (five
+ * tiles). The last depends on whether the user may see payroll.
+ */
+export function dashboardTiles(
+    canViewPayroll: boolean,
+    employeeScope: EmployeeTileScope,
+): DashboardTile[] {
+    const employees: DashboardTile[] =
+        employeeScope === null
+            ? []
+            : [
+                  {
+                      key: 'employees',
+                      label:
+                          employeeScope === 'team'
+                              ? 'Team Members'
+                              : 'Total Employees',
+                      icon: Users,
+                      color: 'green',
+                  },
+              ];
+
     return [
-        { label: 'Total Employees', icon: Users, color: 'green' },
-        { label: 'Present Today', icon: UserCheck, color: 'blue' },
-        { label: 'Absent Today', icon: UserX, color: 'rose' },
-        { label: 'Late Today', icon: Clock, color: 'amber' },
-        { label: 'Pending Leaves', icon: CalendarClock, color: 'violet' },
+        ...employees,
+        {
+            key: 'present',
+            label: 'Present Today',
+            icon: UserCheck,
+            color: 'blue',
+        },
+        { key: 'absent', label: 'Absent Today', icon: UserX, color: 'rose' },
+        { key: 'late', label: 'Late Today', icon: Clock, color: 'amber' },
+        {
+            key: 'pending-leaves',
+            label: 'Pending Leaves',
+            icon: CalendarClock,
+            color: 'violet',
+        },
         canViewPayroll
-            ? { label: 'Payroll This Month', icon: Wallet, color: 'teal' }
-            : { label: 'Leave Balance', icon: WalletCards, color: 'teal' },
+            ? {
+                  key: 'payroll',
+                  label: 'Payroll This Month',
+                  icon: Wallet,
+                  color: 'teal',
+              }
+            : {
+                  key: 'leave-balance',
+                  label: 'Leave Balance',
+                  icon: WalletCards,
+                  color: 'teal',
+              },
     ];
+}
+
+/** The employee tile's footnote. */
+export function probationNote(count: number): string {
+    return count === 0 ? 'No one on probation' : `${count} on probation`;
 }
 
 /** Morning 05:00-11:59, afternoon 12:00-16:59, evening otherwise. */

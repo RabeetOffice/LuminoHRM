@@ -30,6 +30,8 @@ export type UserRow = {
     is_active: boolean;
     last_login_at: string | null;
     is_self: boolean;
+    /** The linked employee record (name and code only), or null. */
+    employee: { id: number; name: string; code: string } | null;
 };
 
 export type RoleOption = { value: string; label: string };

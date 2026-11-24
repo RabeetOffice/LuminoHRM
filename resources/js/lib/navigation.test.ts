@@ -80,6 +80,7 @@ describe('ready flag', () => {
             'Overview',
             'Workforce',
             'System',
+            'My Space',
         ]);
         expect(r[0].items.map((i) => i.title)).toEqual(['Dashboard']);
         expect(r[1].items.map((i) => i.title)).toEqual([
@@ -92,6 +93,7 @@ describe('ready flag', () => {
             'Users & Roles',
             'Audit Log',
         ]);
+        expect(r[3].items.map((i) => i.title)).toEqual(['My Profile']);
     });
 
     test('Audit Log is for admin only', () => {
@@ -275,7 +277,16 @@ describe('soon entries (default)', () => {
             ],
         ]);
         const soon = r.flatMap((g) => g.items).map((i) => i.soon);
-        expect(soon).toEqual([false, true, true, true, true, true, true, true]);
+        expect(soon).toEqual([
+            false,
+            true,
+            false,
+            true,
+            true,
+            true,
+            true,
+            true,
+        ]);
     });
 
     test('a manager never sees Payroll, Settings, Users or Audit Log, soon or not', () => {
@@ -368,7 +379,16 @@ describe('soon entries (default)', () => {
         expect(r.map((g) => g.label)).toEqual(navigation.map((g) => g.label));
     });
 
-    test('the ready entries today are exactly the seven built pages', () => {
+    test('My Profile is ready for every signed-in user, with no permission', () => {
+        const entry = filterNavigation(navigation, [])
+            .flatMap((g) => g.items)
+            .find((i) => i.title === 'My Profile');
+        expect(entry?.soon).toBe(false);
+        expect(entry?.href).toBe('/my/profile');
+        expect(entry?.permission).toBeUndefined();
+    });
+
+    test('the ready entries today are exactly the eight built pages', () => {
         const ready = navigation
             .flatMap((g) => g.items)
             .filter((i) => i.children === undefined && i.ready !== false)
@@ -381,6 +401,7 @@ describe('soon entries (default)', () => {
             'Settings',
             'Users & Roles',
             'Audit Log',
+            'My Profile',
         ]);
     });
 });

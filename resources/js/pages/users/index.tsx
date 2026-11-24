@@ -1,4 +1,4 @@
-import { Head, router, usePage } from '@inertiajs/react';
+import { Head, Link, router, usePage } from '@inertiajs/react';
 import { KeyRound, Pencil, Plus, UserCheck, UserX } from 'lucide-react';
 import { useState } from 'react';
 import UserController from '@/actions/App/Http/Controllers/UserController';
@@ -26,6 +26,7 @@ import {
 import { useInitials } from '@/hooks/use-initials';
 import { nextTableUrl } from '@/lib/table-query';
 import { statusPanelId, statusTabId } from '@/lib/tabs';
+import { show as showEmployee } from '@/routes/employees';
 import { index } from '@/routes/users';
 
 type Status = 'all' | 'active' | 'disabled';
@@ -177,6 +178,30 @@ export default function Users({ users, counts, roleOptions, filters }: Props) {
             header: 'Email',
             className: 'hidden text-muted-foreground md:table-cell',
             cell: (row) => row.email,
+        },
+        {
+            key: 'employee',
+            header: 'Employee',
+            className: 'hidden lg:table-cell',
+            cell: (row) =>
+                row.employee ? (
+                    <Link
+                        href={showEmployee(row.employee.id)}
+                        className="group block text-sm"
+                    >
+                        <span className="block font-medium group-hover:underline">
+                            {row.employee.name}
+                        </span>
+                        <span className="block text-xs whitespace-nowrap text-muted-foreground">
+                            {row.employee.code}
+                        </span>
+                    </Link>
+                ) : (
+                    <span className="text-muted-foreground">
+                        <span aria-hidden="true">—</span>
+                        <span className="sr-only">Not linked</span>
+                    </span>
+                ),
         },
         {
             key: 'role',

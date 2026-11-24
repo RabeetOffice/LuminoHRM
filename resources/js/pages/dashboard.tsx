@@ -1,4 +1,5 @@
-import { Head, usePage } from '@inertiajs/react';
+import { Head, Link, usePage } from '@inertiajs/react';
+import { Avatar } from '@/components/hrm/avatar';
 import { PageHeader } from '@/components/hrm/page-header';
 import { useCan } from '@/hooks/use-can';
 import {
@@ -6,13 +7,35 @@ import {
     formatLongDate,
     greetingFor,
     hourIn,
+    probationNote,
     tileTones,
 } from '@/lib/dashboard';
 import { cn } from '@/lib/utils';
 import { dashboard } from '@/routes';
+import { show } from '@/routes/employees';
 
-// Placeholder frame: real figures arrive with the attendance, leave, payroll
-// and asset modules. Until then every tile shows a dash.
+/** Sent only to people who may see employees (Admin, HR: the company; Manager: their team). */
+type EmployeeCount = {
+    scope: 'company' | 'team';
+    total: number;
+    probation: number;
+};
+
+/** Sent only to Admin and HR. Never a date: only the fact that today is their birthday. */
+type Birthday = {
+    id: number;
+    name: string;
+    designation: string | null;
+    photo_url: string | null;
+};
+
+type Props = {
+    employeeCount?: EmployeeCount;
+    birthdays?: Birthday[];
+};
+
+// The employee tile is real; the other figures arrive with the attendance, leave,
+// payroll and asset modules. Until then those tiles show a dash.
 const cards = [
     {
         title: 'Attendance, last 7 days',
@@ -21,13 +44,16 @@ const cards = [
     { title: 'Leave overview', note: 'Leave requests by status appear here.' },
 ];
 
-export default function Dashboard() {
+export default function Dashboard({ employeeCount, birthdays }: Props) {
     const { auth, app } = usePage().props;
     const can = useCan();
     const now = new Date();
     const firstName = auth.user.name.trim().split(/\s+/)[0] ?? '';
     const today = formatLongDate(now, app.timezone);
-    const tiles = dashboardTiles(can('payroll.view'));
+    const tiles = dashboardTiles(
+        can('payroll.view'),
+        employeeCount?.scope ?? null,
+    );
 
     return (
         <>
@@ -49,11 +75,16 @@ export default function Dashboard() {
 
                 <section
                     aria-label="Key figures"
-                    className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6"
+                    className={cn(
+                        'grid grid-cols-2 gap-4 md:grid-cols-3',
+                        tiles.length === 6
+                            ? 'xl:grid-cols-6'
+                            : 'xl:grid-cols-5',
+                    )}
                 >
-                    {tiles.map(({ label, icon: Icon, color }) => (
+                    {tiles.map(({ key, label, icon: Icon, color }) => (
                         <div
-                            key={label}
+                            key={key}
                             className={cn(
                                 'rounded-xl border p-4 shadow-xs',
                                 tileTones[color].tile,
@@ -70,17 +101,35 @@ export default function Dashboard() {
                             <p className="mt-3 text-sm text-muted-foreground">
                                 {label}
                             </p>
-                            <p className="mt-1 text-2xl font-semibold">
-                                <span aria-label="No data yet">—</span>
-                            </p>
-                            <p className="mt-1 text-xs text-muted-foreground">
-                                No data yet
-                            </p>
+                            {key === 'employees' && employeeCount ? (
+                                <>
+                                    <p className="mt-1 text-2xl font-semibold tabular-nums">
+                                        {employeeCount.total}
+                                    </p>
+                                    <p className="mt-1 text-xs text-muted-foreground">
+                                        {probationNote(employeeCount.probation)}
+                                    </p>
+                                </>
+                            ) : (
+                                <>
+                                    <p className="mt-1 text-2xl font-semibold">
+                                        <span aria-label="No data yet">—</span>
+                                    </p>
+                                    <p className="mt-1 text-xs text-muted-foreground">
+                                        No data yet
+                                    </p>
+                                </>
+                            )}
                         </div>
                     ))}
                 </section>
 
-                <section className="grid gap-4 lg:grid-cols-2">
+                <section
+                    className={cn(
+                        'grid gap-4 lg:grid-cols-2',
+                        birthdays && 'xl:grid-cols-3',
+                    )}
+                >
                     {cards.map(({ title, note }) => (
                         <div
                             key={title}
@@ -94,9 +143,54 @@ export default function Dashboard() {
                             </div>
                         </div>
                     ))}
+                    {birthdays && <BirthdaysCard people={birthdays} />}
                 </section>
             </div>
         </>
+    );
+}
+
+/** Admin and HR only: who has a birthday today (in the company's time zone, decided on the server). */
+function BirthdaysCard({ people }: { people: Birthday[] }) {
+    return (
+        <div className="flex min-h-64 flex-col rounded-xl border bg-card shadow-xs">
+            <h3 className="border-b px-5 py-4 text-base font-semibold">
+                Today's Birthdays
+            </h3>
+            {people.length === 0 ? (
+                <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
+                    No birthdays today.
+                </div>
+            ) : (
+                <ul role="list" className="divide-y overflow-y-auto">
+                    {people.map((person) => (
+                        <li
+                            key={person.id}
+                            className="flex items-center gap-3 px-5 py-3"
+                        >
+                            <Avatar
+                                src={person.photo_url}
+                                name={person.name}
+                                size="md"
+                            />
+                            <div className="min-w-0">
+                                <Link
+                                    href={show(person.id)}
+                                    className="block truncate text-sm font-medium hover:underline"
+                                >
+                                    {person.name}
+                                </Link>
+                                {person.designation && (
+                                    <div className="truncate text-xs text-muted-foreground">
+                                        {person.designation}
+                                    </div>
+                                )}
+                            </div>
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </div>
     );
 }
 

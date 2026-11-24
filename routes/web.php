@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\BrandingMediaController;
+use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DepartmentController;
 use App\Http\Controllers\DesignationController;
 use App\Http\Controllers\EmployeeController;
@@ -9,6 +10,7 @@ use App\Http\Controllers\EmployeeExportController;
 use App\Http\Controllers\EmployeeFileController;
 use App\Http\Controllers\EmployeeImportController;
 use App\Http\Controllers\EmployeeLinkController;
+use App\Http\Controllers\MyProfileController;
 use App\Http\Controllers\OrganizationChartController;
 use App\Http\Controllers\Settings\HrmSettingsController;
 use App\Http\Controllers\UserController;
@@ -25,7 +27,11 @@ Route::get('media/branding/{filename}', BrandingMediaController::class)
     ->name('media.branding');
 
 Route::middleware(['auth', 'verified'])->group(function () {
-    Route::inertia('dashboard', 'dashboard')->name('dashboard');
+    // The dashboard's figures are worked out for the viewer (DashboardController); a figure they may not have is absent.
+    Route::get('dashboard', [DashboardController::class, 'index'])->name('dashboard');
+
+    // My Profile: the signed-in person's own employee record, read-only (an empty state when the account is not linked).
+    Route::get('my/profile', [MyProfileController::class, 'show'])->name('my.profile');
 
     // Departments & Designations. Authorisation is enforced here, on the server.
     Route::middleware('can:org.manage')->prefix('organization')->group(function () {

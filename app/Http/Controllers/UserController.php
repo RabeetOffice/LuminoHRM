@@ -39,8 +39,9 @@ class UserController extends Controller
 
         $query = User::query()
             // Explicit columns: password hashes, remember tokens and two-factor secrets never leave the database.
-            ->select(['id', 'name', 'email', 'is_active', 'last_login_at'])
-            ->with('roles')
+            ->select(['id', 'name', 'email', 'is_active', 'last_login_at', 'employee_id'])
+            // The linked employee: only what the "Employee" column shows (name and code), nothing else of the record.
+            ->with(['roles', 'employee:id,employee_code,first_name,last_name'])
             ->when($status === 'active', fn (Builder $q) => $q->where('is_active', true))
             ->when($status === 'disabled', fn (Builder $q) => $q->where('is_active', false))
             ->when($role !== '', fn (Builder $q) => $q->whereHas('roles', fn (Builder $r) => $r->where('name', $role)))
@@ -72,6 +73,11 @@ class UserController extends Controller
                     'is_active' => $u->is_active,
                     'last_login_at' => $u->last_login_at?->toIso8601String(),
                     'is_self' => $u->id === $me,
+                    'employee' => $u->employee === null ? null : [
+                        'id' => $u->employee->id,
+                        'name' => $u->employee->full_name,
+                        'code' => $u->employee->employee_code,
+                    ],
                 ])->values()->all(),
                 'current_page' => $paginator->currentPage(),
                 'last_page' => $paginator->lastPage(),

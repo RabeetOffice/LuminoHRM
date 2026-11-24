@@ -115,7 +115,7 @@ class EmployeeController extends Controller
         $own = $this->isOwnRecord($user, $employee);
 
         if ($own && ! $user->canAny(['employees.view-all', 'employees.view-team'])) {
-            return redirect('/my/profile');
+            return redirect()->route('my.profile');
         }
 
         abort_unless($access->canView($employee), 403);

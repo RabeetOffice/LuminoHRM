@@ -504,7 +504,7 @@ it('lists users with totals, sorted by name then id, with explicit row keys only
     expect(collect($props['users']['data'])->pluck('name')->all())->toBe(['Abe', 'Abe', 'Mia Admin', 'Off', 'Zed'])
         ->and(collect($props['users']['data'])->take(2)->pluck('id')->all())->toBe(collect($props['users']['data'])->take(2)->pluck('id')->sort()->values()->all())
         ->and($props['counts'])->toBe(['all' => 5, 'active' => 4, 'disabled' => 1])
-        ->and(array_keys($props['users']['data'][0]))->toBe(['id', 'name', 'email', 'role', 'is_active', 'last_login_at', 'is_self']);
+        ->and(array_keys($props['users']['data'][0]))->toBe(['id', 'name', 'email', 'role', 'is_active', 'last_login_at', 'is_self', 'employee']);
 });
 
 it('never puts password hashes, tokens or two-factor secrets in the page props', function () {
@@ -737,4 +737,31 @@ it('verifies an already-unverified account when an admin saves it, even with the
         ->assertSessionHasNoErrors();
 
     expect($u->fresh()->email_verified_at)->not->toBeNull();
+});
+
+// ---------------------------------------------------------------- linked employee column
+
+it('shows each user\'s linked employee as id, name and code only, and null when not linked', function () {
+    $admin = userWithRole('admin');
+    $linked = userWithRole('employee');
+    $employee = employeeFor($linked, [
+        'first_name' => 'Linked',
+        'last_name' => 'Person',
+        'cnic' => '4220199887766',
+        'dob' => '1980-04-04',
+        'device_user_id' => 'USERS-COL-1',
+        'phone' => '0300-7654321',
+    ]);
+
+    $rows = collect($this->actingAs($admin)->get('/users?per_page=50')->assertOk()
+        ->viewData('page')['props']['users']['data'])->keyBy('id');
+
+    expect($rows[$linked->id]['employee'])->toBe(['id' => $employee->id, 'name' => 'Linked Person', 'code' => $employee->employee_code])
+        ->and($rows[$admin->id]['employee'])->toBeNull()
+        ->and(array_keys($rows[$linked->id]))->toBe(['id', 'name', 'email', 'role', 'is_active', 'last_login_at', 'is_self', 'employee']);
+
+    $json = json_encode($rows->all());
+    foreach (['4220199887766', '1980-04-04', 'USERS-COL-1', '0300-7654321'] as $secret) {
+        expect($json)->not->toContain($secret);
+    }
 });

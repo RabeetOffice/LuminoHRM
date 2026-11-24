@@ -247,7 +247,6 @@ export const navigation: NavGroup[] = [
                 title: 'My Profile',
                 href: '/my/profile',
                 icon: UserCircle,
-                ...unready,
             },
             {
                 title: 'My Attendance',
