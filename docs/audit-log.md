@@ -4,16 +4,20 @@ Who changed what, when, with old and new values. Admins read it at `/audit-log` 
 
 Built on `spatie/laravel-activitylog` (table `activity_log`). Reads and writes go through `App\Models\ActivityEntry`, which throws if anything updates or deletes a row. `activitylog:clean` is never scheduled and never to be run: its action is replaced by `NeverCleanActivityLogAction` (deletes nothing) and `clean_after_days` is 36500.
 
+The package is pinned to `~5.1.5` in `composer.json`. `AuditLogAction` overrides protected package methods (`transformChanges`, `beforeActivityLogged`, `save`) to keep old/new values in `properties`. **Upgrading the package requires the test "fails loudly if the package integration stops putting model changes into properties" in `tests/Feature/Audit/AuditLogTest.php` to pass.**
+
+There is no way to delete a user account anywhere in the app (the starter kit's "delete my account" was removed): an Admin disables accounts, nobody removes them.
+
 ## Areas
 
 An area is the entry's `log_name`. The list lives in one place, `App\Support\Audit\Audit::AREAS` (`log name => label`), and the viewer's filter reads it. **A new phase adds its area there and nowhere else.**
 
-| Area           | Records                                                                                                                                                             |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `organization` | Department and designation created, updated, deleted                                                                                                                |
-| `users`        | Account created, name or email changed, role changed, disabled, enabled, reset link sent or failed, set-password link sent or failed, first admin created by system |
-| `settings`     | Each save that changes a setting: only the changed keys, old and new                                                                                                |
-| `auth`         | Signed in, Failed sign-in, Signed out, Sign-in refused: account disabled                                                                                            |
+| Area           | Records                                                                                                                                                                                                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `organization` | Department and designation created, updated, deleted                                                                                                                                                                                                                      |
+| `users`        | Account created, name or email changed, role changed, disabled, enabled, reset link sent or failed, set-password link sent or failed, first admin created by system                                                                                                       |
+| `settings`     | Each save that changes a setting: only the changed keys, old and new                                                                                                                                                                                                      |
+| `auth`         | Signed in, Failed sign-in (at most 20 per IP address per hour, then one marker entry), Signed out, Sign-in refused: account disabled, Password changed, Password reset, Two-factor authentication enabled / disabled, Recovery codes regenerated, Passkey added / removed |
 
 Planned (add when the phase ships): `employees`, `salary`, `payroll`, `attendance`, `leave`.
 
@@ -70,7 +74,12 @@ DB::transaction(function () use ($user, $actor) {
 });
 ```
 
-`Audit::record()` throws if it cannot write, so call it inside the transaction of the change it describes. `Audit::tryRecord()` never throws (it reports to the error log) and is for sign-in and sign-out only, where a logging failure must never lock anyone out. A console command or migration has no causer; the viewer shows "System". Say so in the description ("First admin created by system").
+There are two categories of entry, and each uses one function:
+
+1. **Rollback is still possible** (the change and its entry are in one transaction): `Audit::record()`, which throws if it cannot write, so the change rolls back. An audited action that cannot be logged must not happen.
+2. **Rollback is impossible, or the entry must never block the action**: `Audit::tryRecord()` (never throws; it `report()`s to the error log). Use it for sign-in, sign-out and self-service security events (a logging failure must never lock anyone out), and for entries written after an email has been sent (reset link sent or refused, set-password link sent or failed): the mail cannot be taken back, so a logging failure must not turn it into an error page.
+
+A console command or migration has no causer; the viewer shows "System". Say so in the description ("First admin created by system").
 
 Put the values the viewer should compare side by side under `old` and `attributes` with the same keys. Anything else scalar under `ip`, `user_agent` or `attempted_email` shows as a detail line.
 
@@ -84,7 +93,7 @@ Put the values the viewer should compare side by side under `old` and `attribute
 - The password typed in a failed sign-in (record the attempted email, at most 255 characters, and the IP).
 - Salary figures belong in a dedicated `salary` area and are visible to Admin only through this viewer: decide per phase what a salary entry may contain before logging it.
 
-`AuditLogAction` replaces the value of any property whose name contains `password`, `token`, `secret`, `recovery`, `passkey`, `credential`, `api_key` or `remember` with `[hidden]` before saving. That is a safety net, not a substitute for the allow-list.
+`AuditLogAction` replaces the value of any property whose name ENDS in the word `password`, `token`, `secret`, `hash`, `codes`, `passkey`, `credential(s)`, `remember` or `api_key` (words split on `_`, `.` and camelCase, so `reset_token` is hidden and `token_count` is not) with `[hidden]` before saving. That is a safety net, not a substitute for the allow-list.
 
 ## Not audited here
 

@@ -9,11 +9,18 @@ use Carbon\CarbonImmutable;
 use Illuminate\Auth\Events\Failed;
 use Illuminate\Auth\Events\Login;
 use Illuminate\Auth\Events\Logout;
+use Illuminate\Auth\Events\PasswordReset;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Validation\Rules\Password;
+use Laravel\Fortify\Events\RecoveryCodesGenerated;
+use Laravel\Fortify\Events\TwoFactorAuthenticationConfirmed;
+use Laravel\Fortify\Events\TwoFactorAuthenticationDisabled;
+use Laravel\Fortify\Events\TwoFactorAuthenticationEnabled;
+use Laravel\Passkeys\Events\PasskeyDeleted;
+use Laravel\Passkeys\Events\PasskeyRegistered;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -40,6 +47,13 @@ class AppServiceProvider extends ServiceProvider
         Event::listen(Login::class, [LogAuthEvents::class, 'onLogin']);
         Event::listen(Failed::class, [LogAuthEvents::class, 'onFailed']);
         Event::listen(Logout::class, [LogAuthEvents::class, 'onLogout']);
+        Event::listen(PasswordReset::class, [LogAuthEvents::class, 'onPasswordReset']);
+        Event::listen(TwoFactorAuthenticationEnabled::class, [LogAuthEvents::class, 'onTwoFactorEnabled']);
+        Event::listen(TwoFactorAuthenticationConfirmed::class, [LogAuthEvents::class, 'onTwoFactorConfirmed']);
+        Event::listen(TwoFactorAuthenticationDisabled::class, [LogAuthEvents::class, 'onTwoFactorDisabled']);
+        Event::listen(RecoveryCodesGenerated::class, [LogAuthEvents::class, 'onRecoveryCodesGenerated']);
+        Event::listen(PasskeyRegistered::class, [LogAuthEvents::class, 'onPasskeyRegistered']);
+        Event::listen(PasskeyDeleted::class, [LogAuthEvents::class, 'onPasskeyDeleted']);
     }
 
     /**

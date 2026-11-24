@@ -172,14 +172,17 @@ class UserController extends Controller
         } catch (Throwable $e) {
             // Class only: the message can carry addresses or tokens.
             Log::warning('Password reset link could not be sent.', ['exception' => $e::class]);
-            Audit::record('users', 'Password reset link failed', $user);
+            Audit::tryRecord('users', 'Password reset link failed', $user);
 
             return back()->with('error', 'The password reset link could not be sent. Please try again later.');
         }
 
-        // The email cannot be taken back, so the entry follows the send; a failure to write it surfaces as an error.
+        // The email cannot be taken back, so rollback is impossible: these entries use tryRecord (a failure is
+        // reported to the error log) and never turn a sent email into an error page.
         if ($status === Password::RESET_LINK_SENT) {
-            Audit::record('users', 'Password reset link sent', $user);
+            Audit::tryRecord('users', 'Password reset link sent', $user);
+        } else {
+            Audit::tryRecord('users', 'Reset link not sent: '.Audit::clean((string) $status, 100), $user);
         }
 
         return match ($status) {

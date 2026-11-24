@@ -79,7 +79,8 @@ class CreateUserAccount
             Log::warning('Set-password link could not be sent for a new account.', ['exception' => $e::class]);
         }
 
-        Audit::record('users', $this->linkSent ? 'Set-password link sent' : 'Set-password link failed', $user);
+        // After the account is committed and the mail queued: nothing to roll back, so a logging failure is reported, not thrown.
+        Audit::tryRecord('users', $this->linkSent ? 'Set-password link sent' : 'Set-password link failed', $user);
 
         return $user;
     }

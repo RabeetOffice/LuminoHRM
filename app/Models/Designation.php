@@ -34,6 +34,23 @@ class Designation extends Model
             ->setDescriptionForEvent(fn (string $event) => "Designation {$event}");
     }
 
+    /**
+     * Called by the audit log before an entry is saved: shows the department by name next to its id,
+     * for both the old and the new value.
+     */
+    public function beforeActivityLogged(Model $activity, string $event): void
+    {
+        $properties = $activity->properties?->toArray() ?? [];
+
+        foreach (['old', 'attributes'] as $side) {
+            if (isset($properties[$side]) && array_key_exists('department_id', $properties[$side])) {
+                $properties[$side]['department'] = Department::query()->whereKey($properties[$side]['department_id'])->value('name');
+            }
+        }
+
+        $activity->properties = collect($properties);
+    }
+
     /** Last known name, stored with each entry so it survives deletion. */
     public function auditLabel(): string
     {

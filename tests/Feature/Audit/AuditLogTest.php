@@ -13,10 +13,12 @@ use App\Support\Audit\AuditLogAction;
 use App\Support\Audit\NeverCleanActivityLogAction;
 use App\Support\Settings;
 use Database\Seeders\RolePermissionSeeder;
+use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
@@ -25,6 +27,12 @@ use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Storage;
+use Laravel\Fortify\Events\TwoFactorAuthenticationConfirmed;
+use Laravel\Fortify\Events\TwoFactorAuthenticationDisabled;
+use Laravel\Fortify\Events\TwoFactorAuthenticationEnabled;
+use Laravel\Passkeys\Events\PasskeyDeleted;
+use Laravel\Passkeys\Events\PasskeyRegistered;
+use Laravel\Passkeys\Passkey;
 use Spatie\Activitylog\Models\Activity;
 
 /** A log action that always fails, to prove audited changes roll back. */
@@ -565,4 +573,188 @@ it('has a clock-independent order check', function () {
     Audit::record('users', 'second');
     expect(ActivityEntry::orderByDesc('created_at')->orderByDesc('id')->pluck('description')->all())->toBe(['second', 'first']);
     Carbon::setTestNow();
+});
+
+// ---------------------------------------------------------------- fix round 1
+
+it('no route in the application can delete a user, and the profile page no longer offers it', function () {
+    $user = userWithRole('employee');
+    $this->actingAs($user)->delete('/settings/profile', ['password' => 'password'])->assertStatus(405);
+    expect(User::whereKey($user->id)->exists())->toBeTrue();
+
+    $names = collect(Route::getRoutes())->map->getName()->filter()->all();
+    expect($names)->not->toContain('profile.destroy');
+
+    // No DELETE route anywhere in the application whose action is a user or profile controller.
+    $deleting = collect(Route::getRoutes())
+        ->filter(fn ($r) => in_array('DELETE', $r->methods(), true))
+        ->map(fn ($r) => $r->getActionName())
+        ->filter(fn ($a) => str_contains($a, 'UserController') || str_contains($a, 'ProfileController'));
+    expect($deleting->all())->toBe([]);
+
+    expect(file_exists(resource_path('js/components/delete-user.tsx')))->toBeFalse();
+    expect(file_get_contents(resource_path('js/pages/settings/profile.tsx')))->not->toContain('DeleteUser')->not->toContain('Delete account');
+    $this->actingAs($user)->get('/settings/profile')->assertInertia(fn ($p) => $p->component('settings/profile'));
+});
+
+it('records a self-service password change without the password', function () {
+    $u = userWithRole('employee');
+    $this->actingAs($u)->put('/settings/password', [
+        'current_password' => 'password', 'password' => 'brand-new-pass-1A!', 'password_confirmation' => 'brand-new-pass-1A!',
+    ])->assertSessionHasNoErrors();
+    $entries = Activity::where('log_name', 'auth')->get();
+    expect($entries->pluck('description')->all())->toBe(['Password changed'])
+        ->and($entries[0]->causer_id)->toBe($u->id);
+    expect(json_encode(Activity::all()))->not->toContain('brand-new-pass');
+});
+
+it('records a completed password reset once', function () {
+    $u = userWithRole('employee');
+    $token = Password::broker()->createToken($u);
+    $this->post('/reset-password', [
+        'token' => $token, 'email' => $u->email, 'password' => 'brand-new-pass-1A!', 'password_confirmation' => 'brand-new-pass-1A!',
+    ])->assertSessionHasNoErrors();
+    expect(Activity::where('description', 'Password reset')->count())->toBe(1);
+    expect(Activity::where('description', 'Password reset')->first()->causer_id)->toBe($u->id);
+    expect(json_encode(Activity::all()))->not->toContain($token)->not->toContain('brand-new-pass');
+});
+
+it('records two-factor changes and recovery codes through HTTP, never the secrets', function () {
+    $u = userWithRole('employee');
+    $this->actingAs($u)->withSession(['auth.password_confirmed_at' => time()]);
+
+    $this->post('/user/two-factor-authentication')->assertSessionHasNoErrors();
+    // Confirmation is switched on: enabling is not finished yet, so nothing is recorded.
+    expect(Activity::where('log_name', 'auth')->count())->toBe(0);
+    expect($u->fresh()->two_factor_secret)->not->toBeNull();
+
+    $this->post('/user/two-factor-recovery-codes')->assertSessionHasNoErrors();
+    $this->delete('/user/two-factor-authentication')->assertSessionHasNoErrors();
+
+    expect(Activity::where('log_name', 'auth')->orderBy('id')->pluck('description')->all())
+        ->toBe(['Recovery codes regenerated', 'Two-factor authentication disabled']);
+    expect(json_encode(Activity::all()))->not->toContain('secret')->not->toContain('recovery_codes');
+});
+
+it('records confirmed two-factor setup and passkey add/remove events (listener driven directly)', function () {
+    $u = userWithRole('employee');
+    $passkey = new Passkey;
+
+    event(new TwoFactorAuthenticationEnabled($u));
+    expect(Activity::count())->toBe(0);
+    event(new TwoFactorAuthenticationConfirmed($u));
+    event(new PasskeyRegistered($u, $passkey));
+    event(new PasskeyDeleted($u, $passkey));
+
+    expect(Activity::orderBy('id')->pluck('description')->all())->toBe([
+        'Two-factor authentication enabled', 'Passkey added', 'Passkey removed',
+    ]);
+    expect(Activity::pluck('causer_id')->unique()->all())->toBe([$u->id]);
+});
+
+it('never fails a security action when the audit log is broken', function () {
+    $u = userWithRole('employee');
+    breakAuditLog();
+    Log::spy();
+    $this->actingAs($u)->put('/settings/password', [
+        'current_password' => 'password', 'password' => 'brand-new-pass-1A!', 'password_confirmation' => 'brand-new-pass-1A!',
+    ])->assertSessionHasNoErrors()->assertRedirect();
+    event(new TwoFactorAuthenticationDisabled($u));
+    expect(Activity::count())->toBe(0);
+});
+
+it('caps failed sign-in entries per IP per hour with a single marker, then resets', function () {
+    foreach (range(1, 25) as $i) {
+        $this->post('/login', ['email' => "attacker{$i}@example.com", 'password' => 'x']);
+    }
+    expect(Activity::where('description', 'Failed sign-in')->count())->toBe(20);
+    $markers = Activity::where('description', 'Further failed sign-ins from this address are not being recorded');
+    expect($markers->count())->toBe(1)->and($markers->first()->properties['ip'])->not->toBeEmpty();
+
+    // Successful sign-ins and refusals are always recorded, even while capped.
+    $u = userWithRole('employee');
+    $this->post('/login', ['email' => $u->email, 'password' => 'password'])->assertRedirect();
+    expect(Activity::where('description', 'Signed in')->count())->toBe(1);
+    auth()->logout();
+    $off = userWithRole('employee');
+    $off->forceFill(['is_active' => false])->save();
+    $this->post('/login', ['email' => $off->email, 'password' => 'password']);
+    expect(Activity::where('description', 'Sign-in refused: account disabled')->count())->toBe(1);
+    expect(Activity::where('description', 'Failed sign-in')->count())->toBe(20);
+
+    // A new window records again.
+    $this->travel(61)->minutes();
+    $this->post('/login', ['email' => 'later@example.com', 'password' => 'x']);
+    expect(Activity::where('description', 'Failed sign-in')->count())->toBe(21);
+});
+
+it('records a failed sign-in when the cache is unavailable', function () {
+    Cache::shouldReceive('add')->andThrow(new RuntimeException('cache down'));
+    $this->post('/login', ['email' => 'nobody@example.com', 'password' => 'x']);
+    expect(Activity::where('description', 'Failed sign-in')->count())->toBe(1);
+});
+
+it('strips control characters from stored text', function () {
+    expect(Audit::clean("bad\x00\x07\r\nname@example.com"))->toBe('badname@example.com');
+    expect(mb_strlen(Audit::clean(str_repeat('é', 400))))->toBe(255);
+    expect(Audit::clean("ok\xC3\x28bad"))->toBeString();
+    $this->post('/login', ['email' => "a\x07b@example.com", 'password' => 'x']);
+    expect(Activity::where('description', 'Failed sign-in')->first()->properties['attempted_email'])->toBe('ab@example.com');
+});
+
+it('never turns a sent reset link into an error when the entry cannot be written, and records refusals', function () {
+    Notification::fake();
+    $admin = userWithRole('admin');
+    $u = userWithRole('employee');
+
+    $this->actingAs($admin)->post("/users/{$u->id}/send-reset")->assertSessionHas('success');
+    $this->actingAs($admin)->post("/users/{$u->id}/send-reset")->assertSessionHas('error');
+    expect(Activity::where('description', 'Reset link not sent: passwords.throttled')->where('subject_id', $u->id)->count())->toBe(1);
+
+    $other = userWithRole('employee');
+    breakAuditLog();
+    $this->actingAs($admin)->post("/users/{$other->id}/send-reset")->assertSessionHas('success');
+    Notification::assertSentTo($other, ResetPassword::class);
+});
+
+it('fails loudly if the package integration stops putting model changes into properties', function () {
+    $admin = userWithRole('admin');
+    $d = Department::create(['name' => 'Before Rename']);
+    $this->actingAs($admin)->put("/organization/departments/{$d->id}", ['name' => 'After Rename']);
+    $log = Activity::where('log_name', 'organization')->where('description', 'Department updated')->latest('id')->first();
+    $message = 'spatie/laravel-activitylog integration broke: a model change no longer lands in properties.old / properties.attributes. Do not upgrade the package until AuditLogAction is fixed.';
+    expect($log)->not->toBeNull($message);
+    expect($log->properties['old']['name'] ?? null)->toBe('Before Rename', $message);
+    expect($log->properties['attributes']['name'] ?? null)->toBe('After Rename', $message);
+});
+
+it('records the real old settings value even when the request cache was stale', function () {
+    userWithRole('admin');
+    Settings::set('attendance', ['grace_minutes' => 20]);
+    expect(Settings::get('attendance.grace_minutes'))->toBe(20); // loads the request-scoped copy
+    DB::table('settings')->where('group', 'attendance')->where('key', 'grace_minutes')->update(['value' => '25']);
+    Settings::set('attendance', ['grace_minutes' => 30]);
+    $log = Activity::where('log_name', 'settings')->latest('id')->first();
+    expect($log->properties['old']['attendance.grace_minutes'])->toBe(25)->and($log->properties['attributes']['attendance.grace_minutes'])->toBe(30);
+});
+
+it('records designation department names next to the ids', function () {
+    $a = Department::create(['name' => 'Alpha Dept']);
+    $b = Department::create(['name' => 'Beta Dept']);
+    $g = Designation::create(['name' => 'Lead', 'department_id' => $a->id]);
+    expect(Activity::where('description', 'Designation created')->first()->properties['attributes']['department'])->toBe('Alpha Dept');
+    $g->update(['department_id' => $b->id]);
+    $log = Activity::where('description', 'Designation updated')->first();
+    expect($log->properties['old']['department'])->toBe('Alpha Dept')->and($log->properties['attributes']['department'])->toBe('Beta Dept')
+        ->and($log->properties['old']['department_id'])->toBe($a->id);
+    $g->delete();
+    expect(Activity::where('description', 'Designation deleted')->first()->properties['old']['department'])->toBe('Beta Dept');
+});
+
+it('scrubs by whole key words, so token_count survives but reset_token does not', function () {
+    Audit::record('users', 'Scrub', null, ['attributes' => ['token_count' => 3, 'reset_token' => 'abc', 'twoFactorSecret' => 'x', 'two_factor_recovery_codes' => 'y', 'email.password' => '[changed]', 'password_hash' => 'z', 'name' => 'n']]);
+    $p = Activity::latest('id')->first()->properties['attributes'];
+    expect($p['token_count'])->toBe(3)->and($p['reset_token'])->toBe('[hidden]')->and($p['twoFactorSecret'])->toBe('[hidden]')
+        ->and($p['two_factor_recovery_codes'])->toBe('[hidden]')->and($p['email.password'])->toBe('[changed]')
+        ->and($p['password_hash'])->toBe('[hidden]')->and($p['name'])->toBe('n');
 });

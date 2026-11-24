@@ -20,8 +20,11 @@ class AuditLogAction extends LogActivityAction
     /** Marks a secret that changed without recording it (also used by Settings). */
     public const CHANGED = '[changed]';
 
-    /** Substrings of a property name that mark it as secret. */
-    private const SECRET_NAMES = ['password', 'token', 'secret', 'recovery', 'passkey', 'credential', 'api_key', 'remember'];
+    /**
+     * Backstop only (the declared allow-lists and secret settings are the real control): a property is hidden when the
+     * last word of its name is one of these ("reset_token", "two_factor_secret", "email.password"), so "token_count" is not.
+     */
+    private const SECRET_WORDS = ['password', 'passwd', 'token', 'secret', 'hash', 'codes', 'passkey', 'credential', 'credentials', 'remember'];
 
     protected function transformChanges(Model $activity): void
     {
@@ -37,7 +40,7 @@ class AuditLogAction extends LogActivityAction
 
         if ($ip !== null && ! isset($properties['ip'])) {
             $properties['ip'] = $ip;
-            $properties['user_agent'] = mb_substr((string) $request->userAgent(), 0, 255);
+            $properties['user_agent'] = Audit::clean((string) $request->userAgent());
         }
 
         $activity->properties = collect($properties);
@@ -84,14 +87,13 @@ class AuditLogAction extends LogActivityAction
 
     private function looksSecret(string $key): bool
     {
-        $key = strtolower($key);
+        $key = strtolower((string) preg_replace('/([a-z])([A-Z])/', '$1_$2', $key));
+        $words = preg_split('/[^a-z0-9]+/', $key, -1, PREG_SPLIT_NO_EMPTY) ?: [];
 
-        foreach (self::SECRET_NAMES as $needle) {
-            if (str_contains($key, $needle)) {
-                return true;
-            }
+        if ($words === []) {
+            return false;
         }
 
-        return false;
+        return in_array(end($words), self::SECRET_WORDS, true) || str_ends_with(implode('_', $words), 'api_key');
     }
 }

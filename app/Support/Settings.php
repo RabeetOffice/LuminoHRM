@@ -55,9 +55,12 @@ class Settings
             return;
         }
 
-        $before = static::group($group);
+        DB::transaction(function () use ($group, $accepted, $declared): void {
+            // Lock the group's rows, then read: the recorded old value is the real one even with two saves at once.
+            Setting::query()->where('group', $group)->lockForUpdate()->get(['id']);
+            static::store()->forget();
+            $before = static::group($group);
 
-        DB::transaction(function () use ($group, $accepted, $declared, $before): void {
             $old = [];
             $new = [];
 
