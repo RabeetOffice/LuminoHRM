@@ -196,8 +196,9 @@ final class EmployeeFiles
 
     /**
      * The photo re-encoded with GD so EXIF and other metadata (GPS position, device) are dropped, or null when it
-     * cannot be decoded. JPEG orientation is applied first (when the exif extension exists) so the picture does not
-     * turn. PNG and WebP keep their transparency. Where this PHP build cannot write WebP, the original bytes are kept.
+     * cannot be decoded. A JPEG's EXIF orientation is applied first so a phone photo stays upright: read with
+     * exif_read_data when the exif extension is loaded, otherwise with jpegOrientation(). PNG and WebP keep their
+     * transparency. Where this PHP build cannot write WebP, the original bytes are kept.
      */
     public static function cleanPhotoBytes(UploadedFile $file, string $extension): ?string
     {
@@ -218,18 +219,8 @@ final class EmployeeFiles
             return null;
         }
 
-        if ($extension === 'jpg' && function_exists('exif_read_data')) {
-            $orientation = (int) (@exif_read_data($path)['Orientation'] ?? 1);
-            $rotated = match ($orientation) {
-                3 => imagerotate($image, 180, 0),
-                6 => imagerotate($image, -90, 0),
-                8 => imagerotate($image, 90, 0),
-                default => false,
-            };
-
-            if ($rotated !== false) {
-                $image = $rotated;
-            }
+        if ($extension === 'jpg') {
+            $image = self::applyOrientation($image, self::orientationOf((string) $path, $original));
         }
 
         if ($extension !== 'jpg') {
@@ -246,6 +237,145 @@ final class EmployeeFiles
         $bytes = (string) ob_get_clean();
 
         return $ok && $bytes !== '' ? $bytes : null;
+    }
+
+    /** The EXIF orientation of a JPEG (1-8) or null: from the exif extension when it is loaded, else read from the bytes. */
+    private static function orientationOf(string $path, string $bytes): ?int
+    {
+        if (function_exists('exif_read_data')) {
+            $value = @exif_read_data($path)['Orientation'] ?? null;
+
+            return is_int($value) && $value >= 1 && $value <= 8 ? $value : null;
+        }
+
+        return self::jpegOrientation($bytes);
+    }
+
+    /** At most this many JPEG segments are walked looking for the EXIF one. */
+    private const MAX_JPEG_SEGMENTS = 64;
+
+    /** At most this many IFD0 entries are read looking for the Orientation tag. */
+    private const MAX_IFD_ENTRIES = 256;
+
+    /**
+     * The EXIF Orientation (1-8) read straight from JPEG bytes, or null when there is none or anything about it cannot
+     * be trusted. Used when the exif extension is missing. Finds the APP1 segment that starts with "Exif\0\0", reads
+     * the TIFF byte order (II or MM), and looks through IFD0 for tag 0x0112. Every length and offset comes from the
+     * file, so each is checked against the bytes actually there, and the segments and entries walked are capped.
+     */
+    public static function jpegOrientation(string $bytes): ?int
+    {
+        $length = strlen($bytes);
+
+        if ($length < 4 || ! str_starts_with($bytes, "\xFF\xD8")) {
+            return null;
+        }
+
+        $pos = 2;
+
+        for ($segment = 0; $segment < self::MAX_JPEG_SEGMENTS && $pos + 4 <= $length; $segment++) {
+            if ($bytes[$pos] !== "\xFF") {
+                return null;
+            }
+
+            $marker = ord($bytes[$pos + 1]);
+
+            // Start of scan or end of image: the metadata segments are behind us.
+            if ($marker === 0xDA || $marker === 0xD9) {
+                return null;
+            }
+
+            $size = unpack('n', $bytes, $pos + 2)[1];
+
+            if ($size < 2 || $pos + 2 + $size > $length) {
+                return null;
+            }
+
+            if ($marker === 0xE1 && $size >= 8 && substr($bytes, $pos + 4, 6) === "Exif\0\0") {
+                return self::tiffOrientation(substr($bytes, $pos + 10, $size - 8));
+            }
+
+            $pos += 2 + $size;
+        }
+
+        return null;
+    }
+
+    /** The Orientation in IFD0 of a TIFF block (the part of an EXIF segment after "Exif\0\0"), or null. */
+    private static function tiffOrientation(string $tiff): ?int
+    {
+        $length = strlen($tiff);
+
+        if ($length < 8) {
+            return null;
+        }
+
+        [$u16, $u32] = match (substr($tiff, 0, 2)) {
+            'II' => ['v', 'V'],
+            'MM' => ['n', 'N'],
+            default => [null, null],
+        };
+
+        if ($u16 === null || unpack($u16, $tiff, 2)[1] !== 42) {
+            return null;
+        }
+
+        $ifd = unpack($u32, $tiff, 4)[1];
+
+        if ($ifd < 8 || $ifd + 2 > $length) {
+            return null;
+        }
+
+        $entries = min(unpack($u16, $tiff, $ifd)[1], self::MAX_IFD_ENTRIES);
+
+        for ($i = 0; $i < $entries; $i++) {
+            $entry = $ifd + 2 + 12 * $i;
+
+            if ($entry + 12 > $length) {
+                return null;
+            }
+
+            if (unpack($u16, $tiff, $entry)[1] !== 0x0112) {
+                continue;
+            }
+
+            // Type SHORT (3), one value, held in the first two bytes of the value field.
+            if (unpack($u16, $tiff, $entry + 2)[1] !== 3) {
+                return null;
+            }
+
+            $value = unpack($u16, $tiff, $entry + 8)[1];
+
+            return $value >= 1 && $value <= 8 ? $value : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * $image turned and flipped so it displays upright for an EXIF orientation (1 or null: unchanged). GD turns
+     * anticlockwise for a positive angle.
+     */
+    public static function applyOrientation(\GdImage $image, ?int $orientation): \GdImage
+    {
+        if (in_array($orientation, [2, 4, 5, 7], true)) {
+            imageflip($image, $orientation === 4 ? IMG_FLIP_VERTICAL : IMG_FLIP_HORIZONTAL);
+        }
+
+        $angle = match ($orientation) {
+            3 => 180,
+            6, 7 => -90,
+            5, 8 => 90,
+            default => null,
+        };
+
+        if ($angle === null) {
+            return $image;
+        }
+
+        $turned = imagerotate($image, $angle, 0);
+
+        return $turned === false ? $image : $turned;
     }
 
     /** Stores the photo (re-encoded, metadata dropped) under a generated name and returns its path. The caller checked photoExtension(). */

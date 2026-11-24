@@ -923,3 +923,146 @@ it('shares the more privileged role of a two-role account as auth.role', functio
     $this->actingAs($user->refresh())->get('/dashboard')
         ->assertInertia(fn ($p) => $p->where('auth.role', 'admin'));
 });
+
+// ---------------------------------------------------------------- JPEG orientation (without the exif extension)
+
+/** The payload of an APP1 segment: "Exif\0\0" then a TIFF header and IFD0 with one Orientation (0x0112) entry. */
+function efExifPayload(int $orientation, bool $littleEndian = true): string
+{
+    $u16 = fn (int $v) => pack($littleEndian ? 'v' : 'n', $v);
+    $u32 = fn (int $v) => pack($littleEndian ? 'V' : 'N', $v);
+
+    $tiff = ($littleEndian ? 'II' : 'MM').$u16(42).$u32(8)
+        .$u16(1)                                            // one entry
+        .$u16(0x0112).$u16(3).$u32(1).$u16($orientation).$u16(0) // Orientation, SHORT, count 1, value
+        .$u32(0);                                           // no next IFD
+
+    return "Exif\0\0".$tiff;
+}
+
+/** A real JPEG of $w x $h (left half red, right half blue) with an APP1 segment holding $payload right after SOI. */
+function efJpegWithApp1(?string $payload, int $w = 120, int $h = 90): string
+{
+    $gd = imagecreatetruecolor($w, $h);
+    imagefilledrectangle($gd, 0, 0, intdiv($w, 2) - 1, $h - 1, imagecolorallocate($gd, 255, 0, 0));
+    imagefilledrectangle($gd, intdiv($w, 2), 0, $w - 1, $h - 1, imagecolorallocate($gd, 0, 0, 255));
+    ob_start();
+    imagejpeg($gd, null, 95);
+    $jpeg = (string) ob_get_clean();
+
+    if ($payload === null) {
+        return $jpeg;
+    }
+
+    return substr($jpeg, 0, 2)."\xFF\xE1".pack('n', strlen($payload) + 2).$payload.substr($jpeg, 2);
+}
+
+/** Uploads $bytes as a JPG photo and returns the stored bytes. */
+function efUploadJpeg(string $bytes): string
+{
+    $e = efEmployee();
+    test()->actingAs(efAdmin())->post("/employees/{$e->id}/photo", ['photo' => UploadedFile::fake()->createWithContent('phone.jpg', $bytes)])
+        ->assertSessionHasNoErrors();
+
+    return Storage::disk('local')->get($e->fresh()->photo_path);
+}
+
+it('turns a JPEG photo upright from its EXIF orientation and drops the EXIF', function (bool $littleEndian) {
+    $stored = efUploadJpeg(efJpegWithApp1(efExifPayload(6, $littleEndian)));
+
+    $size = getimagesizefromstring($stored);
+    // Orientation 6 = turn 90° clockwise: 120x90 becomes 90x120.
+    expect([$size[0], $size[1]])->toBe([90, 120])
+        ->and($stored)->not->toContain('Exif');
+
+    // The red (left) half of the upload is now on top.
+    $img = imagecreatefromstring($stored);
+    $top = imagecolorsforindex($img, imagecolorat($img, 45, 10));
+    $bottom = imagecolorsforindex($img, imagecolorat($img, 45, 110));
+    expect($top['red'])->toBeGreaterThan(200)->and($top['blue'])->toBeLessThan(60)
+        ->and($bottom['blue'])->toBeGreaterThan(200)->and($bottom['red'])->toBeLessThan(60);
+})->with(['little-endian (II)' => true, 'big-endian (MM)' => false]);
+
+it('leaves a JPEG photo as it is for orientation 1 or no EXIF', function (?string $payload) {
+    $stored = efUploadJpeg(efJpegWithApp1($payload));
+
+    $size = getimagesizefromstring($stored);
+    expect([$size[0], $size[1]])->toBe([120, 90])->and($stored)->not->toContain('Exif');
+})->with([
+    'orientation 1' => [efExifPayload(1)],
+    'no EXIF' => [null],
+]);
+
+it('accepts a JPEG photo whose EXIF segment is garbage or cut short, as having no orientation', function (string $payload) {
+    $stored = efUploadJpeg(efJpegWithApp1($payload));
+
+    $size = getimagesizefromstring($stored);
+    expect([$size[0], $size[1]])->toBe([120, 90])->and($stored)->not->toContain('Exif');
+})->with([
+    'cut short' => [substr(efExifPayload(6), 0, 14)],
+    'random bytes' => ["Exif\0\0".str_repeat("\xA7\x13\xFF", 20)],
+    'unknown byte order' => ["Exif\0\0XX\0*\0\0\0\x08".str_repeat("\0", 20)],
+]);
+
+describe('EmployeeFiles::jpegOrientation (the reader used when exif_read_data is missing)', function () {
+    it('reads the orientation in both byte orders', function (int $orientation, bool $littleEndian) {
+        expect(EmployeeFiles::jpegOrientation(efJpegWithApp1(efExifPayload($orientation, $littleEndian), 16, 16)))->toBe($orientation);
+    })->with([1, 2, 3, 4, 5, 6, 7, 8])->with(['II' => true, 'MM' => false]);
+
+    it('finds the EXIF segment after other segments', function () {
+        // GD writes an APP0 (JFIF) segment; put the EXIF one after it.
+        $jpeg = efJpegWithApp1(null, 16, 16);
+        $app0Length = unpack('n', substr($jpeg, 4, 2))[1];
+        $payload = efExifPayload(8, false);
+        $at = 4 + $app0Length;
+        $bytes = substr($jpeg, 0, $at)."\xFF\xE1".pack('n', strlen($payload) + 2).$payload.substr($jpeg, $at);
+
+        expect(substr($jpeg, 2, 2))->toBe("\xFF\xE0")
+            ->and(EmployeeFiles::jpegOrientation($bytes))->toBe(8);
+    });
+
+    it('gives null for anything it cannot trust', function (string $bytes) {
+        expect(EmployeeFiles::jpegOrientation($bytes))->toBeNull();
+    })->with([
+        'empty' => [''],
+        'not a JPEG' => [efPngBytes()],
+        'no EXIF' => [efJpegWithApp1(null, 16, 16)],
+        'orientation 0' => [efJpegWithApp1(efExifPayload(0), 16, 16)],
+        'orientation 9' => [efJpegWithApp1(efExifPayload(9), 16, 16)],
+        'IFD offset past the end' => [efJpegWithApp1("Exif\0\0II*\0".pack('V', 0xFFFFFFF0).str_repeat("\0", 20), 16, 16)],
+        'entry count past the end' => [efJpegWithApp1("Exif\0\0II*\0".pack('V', 8).pack('v', 0xFFFF).str_repeat("\0", 30), 16, 16)],
+        'segment length past the end' => ["\xFF\xD8\xFF\xE1\xFF\xFFExif\0\0II*\0"],
+        'segment length below 2' => ["\xFF\xD8\xFF\xE1\x00\x01Exif\0\0II*\0\x08\0\0\0"],
+        'only SOI' => ["\xFF\xD8"],
+    ]);
+
+    it('does not read more than a capped number of IFD entries', function () {
+        // 300 harmless entries, then the Orientation entry: past the cap, so it is not reached.
+        $entries = str_repeat(pack('v', 0x010F).pack('v', 2).pack('V', 1).pack('V', 0), 300)
+            .pack('v', 0x0112).pack('v', 3).pack('V', 1).pack('v', 6).pack('v', 0);
+        $payload = "Exif\0\0II*\0".pack('V', 8).pack('v', 301).$entries.pack('V', 0);
+
+        expect(EmployeeFiles::jpegOrientation(efJpegWithApp1($payload, 16, 16)))->toBeNull();
+    });
+});
+
+it('turns and flips an image for each EXIF orientation', function (?int $orientation, array $size, array $marker) {
+    // 4x2, black, with one white pixel at the top-left corner.
+    $gd = imagecreatetruecolor(4, 2);
+    imagesetpixel($gd, 0, 0, imagecolorallocate($gd, 255, 255, 255));
+
+    $out = EmployeeFiles::applyOrientation($gd, $orientation);
+
+    expect([imagesx($out), imagesy($out)])->toBe($size)
+        ->and(imagecolorat($out, $marker[0], $marker[1]) & 0xFFFFFF)->toBe(0xFFFFFF);
+})->with([
+    'null' => [null, [4, 2], [0, 0]],
+    '1' => [1, [4, 2], [0, 0]],
+    '2 mirror' => [2, [4, 2], [3, 0]],
+    '3 half turn' => [3, [4, 2], [3, 1]],
+    '4 flip' => [4, [4, 2], [0, 1]],
+    '5 transpose' => [5, [2, 4], [0, 0]],
+    '6 clockwise' => [6, [2, 4], [1, 0]],
+    '7 transverse' => [7, [2, 4], [1, 3]],
+    '8 anticlockwise' => [8, [2, 4], [0, 3]],
+]);
