@@ -43,7 +43,7 @@ class AccessSync
         $map = config('hrm.permissions');
 
         foreach (array_keys($map) as $name) {
-            Permission::findOrCreate($name, 'web');
+            Permission::findOrCreate((string) $name, 'web');
         }
 
         foreach (config('hrm.roles') as $roleName) {

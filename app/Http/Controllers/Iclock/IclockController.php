@@ -7,12 +7,22 @@ use App\Models\DeviceLog;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
 class IclockController extends Controller
 {
     private const MAX_BODY_BYTES = 1048576;
+
+    /** Rejected requests keep only this much of the body. */
+    private const REJECTED_BODY_BYTES = 1024;
+
+    private const REJECTED_PER_IP_PER_HOUR = 60;
+
+    private const REJECTED_WINDOW_SECONDS = 3600;
+
+    private const CAP_MARKER = 'further rejected requests from this address not logged';
 
     /** GET /iclock/cdata: the machine asks for its options. */
     public function handshake(Request $request): Response
@@ -75,7 +85,7 @@ class IclockController extends Controller
     {
         $rows = [];
 
-        foreach (preg_split('/\r\n|\n|\r/', $body) as $line) {
+        foreach (preg_split('/\r\n|\n|\r/', $body) ?: [] as $line) {
             if (trim($line) === '') {
                 continue;
             }
@@ -156,11 +166,34 @@ class IclockController extends Controller
         return response($content, $status, ['Content-Type' => 'text/plain; charset=UTF-8']);
     }
 
-    /** Write one device_logs row. A logging failure must never change the reply. */
+    /**
+     * Write one device_logs row. A logging failure must never change the reply.
+     *
+     * Rejected requests (no or unknown serial number) come from anyone on the internet, so they are
+     * cheap on purpose: only the first REJECTED_BODY_BYTES of the body are kept, and each address may
+     * add REJECTED_PER_IP_PER_HOUR rows per hour, then one marker row, then nothing until the hour is up.
+     */
     private function record(Request $request, ?string $sn, bool $accepted, string $summary): void
     {
         try {
-            $body = $request->getContent();
+            $bodyLimit = self::MAX_BODY_BYTES;
+
+            if (! $accepted) {
+                $verdict = $this->rejectedVerdict($request->ip());
+
+                if ($verdict === 'skip') {
+                    return;
+                }
+
+                if ($verdict === 'marker') {
+                    $summary = self::CAP_MARKER;
+                    $bodyLimit = 0;
+                } else {
+                    $bodyLimit = self::REJECTED_BODY_BYTES;
+                }
+            }
+
+            $body = $bodyLimit > 0 ? $request->getContent() : '';
 
             DeviceLog::create([
                 'serial_no' => $sn !== null ? mb_substr($this->utf8($sn), 0, 255) : null,
@@ -168,14 +201,37 @@ class IclockController extends Controller
                 'path' => mb_substr($this->utf8($request->path()), 0, 255),
                 // Cut on bytes first (TEXT holds 65535 bytes), then sanitise: '?' is 1 byte, so it never grows.
                 'query' => $this->utf8(mb_strcut((string) $request->server->get('QUERY_STRING', ''), 0, 60000)),
-                'body' => $body === '' ? null : $this->utf8(mb_strcut($body, 0, self::MAX_BODY_BYTES)),
+                'body' => $body === '' ? null : $this->utf8(mb_strcut($body, 0, $bodyLimit)),
                 'ip' => $request->ip(),
                 'scheme' => $request->isSecure() ? 'https' : 'http',
                 'accepted' => $accepted,
                 'summary' => mb_substr($summary, 0, 255),
             ]);
         } catch (Throwable $e) {
-            Log::warning('iclock: could not write device_logs row', ['error' => $e->getMessage()]);
+            // Class only: a QueryException message embeds the bound request body.
+            Log::warning('iclock: could not write device_logs row', ['exception' => $e::class]);
         }
+    }
+
+    /**
+     * 'log' (under the cap), 'marker' (the first request over it) or 'skip'. Uses the app cache,
+     * which starts no session and sets no cookie. If the cache is unavailable: 'log'.
+     */
+    private function rejectedVerdict(?string $ip): string
+    {
+        try {
+            $key = 'iclock:rejected:'.sha1((string) $ip);
+
+            Cache::add($key, 0, self::REJECTED_WINDOW_SECONDS);
+            $count = (int) Cache::increment($key);
+        } catch (Throwable) {
+            return 'log';
+        }
+
+        return match (true) {
+            $count <= self::REJECTED_PER_IP_PER_HOUR => 'log',
+            $count === self::REJECTED_PER_IP_PER_HOUR + 1 => 'marker',
+            default => 'skip',
+        };
     }
 }

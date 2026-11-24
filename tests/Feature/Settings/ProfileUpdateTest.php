@@ -4,6 +4,7 @@ namespace Tests\Feature\Settings;
 
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Spatie\Activitylog\Models\Activity;
 use Tests\TestCase;
 
 class ProfileUpdateTest extends TestCase
@@ -14,93 +15,67 @@ class ProfileUpdateTest extends TestCase
     {
         $user = User::factory()->create();
 
-        $response = $this
-            ->actingAs($user)
-            ->get(route('profile.edit'));
-
-        $response->assertOk();
+        $this->actingAs($user)->get(route('profile.edit'))->assertOk();
     }
 
-    public function test_profile_information_can_be_updated()
+    public function test_the_name_can_be_updated_and_is_normalised()
     {
         $user = User::factory()->create();
 
-        $response = $this
-            ->actingAs($user)
-            ->patch(route('profile.update'), [
-                'name' => 'Test User',
-                'email' => 'test@example.com',
-            ]);
+        $this->actingAs($user)
+            ->patch(route('profile.update'), ['name' => "  Test \t  User  "])
+            ->assertSessionHasNoErrors()
+            ->assertRedirect(route('profile.edit'));
 
-        $response
+        $this->assertSame('Test User', $user->refresh()->name);
+    }
+
+    public function test_a_posted_email_is_ignored_and_verification_is_unchanged()
+    {
+        $user = User::factory()->create(['email' => 'keep@example.com']);
+        $verifiedAt = $user->email_verified_at;
+
+        $this->actingAs($user)
+            ->patch(route('profile.update'), ['name' => 'Test User', 'email' => 'other@example.com'])
             ->assertSessionHasNoErrors()
             ->assertRedirect(route('profile.edit'));
 
         $user->refresh();
 
-        $this->assertSame('Test User', $user->name);
-        $this->assertSame('test@example.com', $user->email);
-        $this->assertNull($user->email_verified_at);
+        $this->assertSame('keep@example.com', $user->email);
+        $this->assertNotNull($user->email_verified_at);
+        $this->assertTrue($verifiedAt->equalTo($user->email_verified_at));
     }
 
-    public function test_email_is_stored_in_lowercase_so_the_user_can_still_log_in()
+    public function test_an_invalid_posted_email_is_not_an_error()
     {
         $user = User::factory()->create();
 
-        $this
-            ->actingAs($user)
-            ->patch(route('profile.update'), [
-                'name' => 'Test User',
-                'email' => 'Test@Example.com',
-            ])
+        $this->actingAs($user)
+            ->patch(route('profile.update'), ['name' => 'Test User', 'email' => 'not-an-email'])
             ->assertSessionHasNoErrors();
-
-        $this->assertSame('test@example.com', $user->refresh()->email);
-
-        $this->post(route('logout'));
-
-        $this->post(route('login.store'), [
-            'email' => 'Test@Example.com',
-            'password' => 'password',
-        ]);
-
-        $this->assertAuthenticatedAs($user);
     }
 
-    public function test_email_must_be_unique_regardless_of_case()
+    public function test_a_blank_name_is_rejected()
     {
-        User::factory()->create(['email' => 'taken@example.com']);
-
         $user = User::factory()->create();
 
-        $response = $this
-            ->actingAs($user)
+        $this->actingAs($user)
             ->from(route('profile.edit'))
-            ->patch(route('profile.update'), [
-                'name' => 'Test User',
-                'email' => 'Taken@Example.com',
-            ]);
-
-        $response
-            ->assertSessionHasErrors('email')
-            ->assertRedirect(route('profile.edit'));
+            ->patch(route('profile.update'), ['name' => "  \t "])
+            ->assertSessionHasErrors('name');
     }
 
-    public function test_email_verification_status_is_unchanged_when_the_email_address_is_unchanged()
+    public function test_the_name_change_is_still_audited()
     {
-        $user = User::factory()->create();
+        $user = User::factory()->create(['name' => 'Old Name']);
 
-        $response = $this
-            ->actingAs($user)
-            ->patch(route('profile.update'), [
-                'name' => 'Test User',
-                'email' => $user->email,
-            ]);
+        $this->actingAs($user)->patch(route('profile.update'), ['name' => 'New Name']);
 
-        $response
-            ->assertSessionHasNoErrors()
-            ->assertRedirect(route('profile.edit'));
+        $log = Activity::where('log_name', 'users')->latest('id')->first();
 
-        $this->assertNotNull($user->refresh()->email_verified_at);
+        $this->assertNotNull($log);
+        $this->assertSame('New Name', $log->properties['attributes']['name']);
+        $this->assertSame('Old Name', $log->properties['old']['name']);
     }
 }

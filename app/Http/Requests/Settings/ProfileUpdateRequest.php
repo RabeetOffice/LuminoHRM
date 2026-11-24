@@ -3,10 +3,14 @@
 namespace App\Http\Requests\Settings;
 
 use App\Concerns\ProfileValidationRules;
+use App\Support\Names;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
-use Illuminate\Support\Str;
 
+/**
+ * A signed-in user may change only their own name. The sign-in email is managed by an Admin
+ * (a posted "email" is ignored: it is not validated and never reaches validated()).
+ */
 class ProfileUpdateRequest extends FormRequest
 {
     use ProfileValidationRules;
@@ -16,9 +20,7 @@ class ProfileUpdateRequest extends FormRequest
      */
     protected function prepareForValidation(): void
     {
-        if (config('fortify.lowercase_usernames') && is_string($this->input('email'))) {
-            $this->merge(['email' => Str::lower($this->input('email'))]);
-        }
+        $this->merge(['name' => Names::normalise($this->input('name'))]);
     }
 
     /**
@@ -28,6 +30,6 @@ class ProfileUpdateRequest extends FormRequest
      */
     public function rules(): array
     {
-        return $this->profileRules($this->user()->id);
+        return ['name' => $this->nameRules()];
     }
 }

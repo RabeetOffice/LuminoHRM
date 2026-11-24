@@ -25,7 +25,7 @@ class SetUserActive
     public function handle(User $user, bool $active, ?User $actor = null): User
     {
         return LastAdminGuard::protect($user, function () use ($user, $active, $actor) {
-            $account = User::query()->lockForUpdate()->findOrFail($user->getKey());
+            $account = User::query()->whereKey($user->getKey())->lockForUpdate()->firstOrFail();
 
             // Re-read under the lock: asking for the state the account already has is a no-op.
             if ($account->is_active === $active) {

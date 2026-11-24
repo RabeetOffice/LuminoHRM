@@ -706,3 +706,35 @@ it('encrypts the queued set-password payload and limits retries', function () {
     expect($n)->toBeInstanceOf(ShouldBeEncrypted::class)
         ->and($n->tries)->toBe(3);
 });
+
+it('marks an account verified when an admin changes its email, so it can always be repaired', function () {
+    $admin = userWithRole('admin');
+    $u = userWithRole('employee');
+    $u->forceFill(['email_verified_at' => null])->save();
+
+    $this->actingAs($admin)->put("/users/{$u->id}", ['name' => $u->name, 'email' => 'Repaired@Example.com', 'role' => 'employee'])
+        ->assertSessionHasNoErrors();
+
+    expect($u->fresh()->email)->toBe('repaired@example.com')->and($u->fresh()->email_verified_at)->not->toBeNull();
+});
+
+it('leaves a verified account verified when an admin saves it with an unchanged email', function () {
+    $admin = userWithRole('admin');
+    $u = userWithRole('employee');
+    $before = $u->email_verified_at;
+
+    $this->actingAs($admin)->put("/users/{$u->id}", ['name' => 'Renamed', 'email' => $u->email, 'role' => 'employee'])
+        ->assertSessionHasNoErrors();
+
+    expect($u->fresh()->email_verified_at->equalTo($before))->toBeTrue();
+});
+
+it('verifies an already-unverified account when an admin saves it, even with the same email', function () {
+    $u = userWithRole('employee');
+    $u->forceFill(['email_verified_at' => null])->save();
+
+    $this->actingAs(userWithRole('admin'))->put("/users/{$u->id}", ['name' => $u->name, 'email' => $u->email, 'role' => 'employee'])
+        ->assertSessionHasNoErrors();
+
+    expect($u->fresh()->email_verified_at)->not->toBeNull();
+});

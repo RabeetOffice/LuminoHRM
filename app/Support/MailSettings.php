@@ -41,8 +41,8 @@ class MailSettings
             // A dead host must not hang the Settings screen for the default minute.
             'mail.mailers.smtp.timeout' => 15,
             'mail.mailers.smtp.port' => (int) $email['port'],
-            'mail.mailers.smtp.username' => static::nullIfEmpty($email['username']),
-            'mail.mailers.smtp.password' => static::password((string) $email['password']),
+            'mail.mailers.smtp.username' => self::nullIfEmpty($email['username']),
+            'mail.mailers.smtp.password' => self::password((string) $email['password']),
             // ssl = implicit TLS (usually port 465); tls = STARTTLS; none = plain, no STARTTLS upgrade.
             'mail.mailers.smtp.scheme' => $encryption === 'ssl' ? 'smtps' : 'smtp',
             'mail.mailers.smtp.auto_tls' => $encryption !== 'none',

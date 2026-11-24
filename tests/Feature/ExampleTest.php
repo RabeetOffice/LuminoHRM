@@ -9,10 +9,19 @@ class ExampleTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_returns_a_successful_response()
+    public function test_the_public_root_redirects_to_the_dashboard()
     {
-        $response = $this->get(route('home'));
+        $this->get(route('home'))->assertRedirect('/dashboard');
+    }
 
-        $response->assertOk();
+    public function test_a_guest_following_the_root_redirect_ends_up_at_login()
+    {
+        $this->get('/dashboard')->assertRedirect(route('login'));
+    }
+
+    public function test_no_welcome_page_component_remains()
+    {
+        $this->assertFileDoesNotExist(resource_path('js/pages/welcome.tsx'));
+        $this->assertFileDoesNotExist(resource_path('js/layouts/bare-layout.tsx'));
     }
 }

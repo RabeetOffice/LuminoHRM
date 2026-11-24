@@ -1,7 +1,7 @@
 import { usePage } from '@inertiajs/react';
 import { Moon, Sun } from 'lucide-react';
 import { Breadcrumbs } from '@/components/breadcrumbs';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import {
     DropdownMenu,
@@ -48,7 +48,6 @@ function AvatarMenu() {
                     className="rounded-full outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40"
                 >
                     <Avatar className="size-8">
-                        <AvatarImage src={auth.user.avatar} alt="" />
                         <AvatarFallback className="bg-primary/15 text-xs font-medium text-brand-ink">
                             {getInitials(auth.user.name)}
                         </AvatarFallback>

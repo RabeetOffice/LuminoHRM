@@ -30,7 +30,7 @@ class UpdateUserAccount
         }
 
         return LastAdminGuard::protect($user, function () use ($user, $name, $email, $role, $actor) {
-            $account = User::query()->lockForUpdate()->findOrFail($user->getKey());
+            $account = User::query()->whereKey($user->getKey())->lockForUpdate()->firstOrFail();
 
             if ($actor?->is($account) && $account->roles()->pluck('name')->all() !== [$role]) {
                 throw new AccountRuleViolation(self::SELF_MESSAGE);
@@ -38,10 +38,17 @@ class UpdateUserAccount
 
             $oldRoles = $account->roles()->pluck('name')->sort()->values()->all();
 
-            // Email changes need no re-verification: these accounts are admin-managed.
+            // These accounts are admin-managed: an Admin changing the email also marks it verified, so the
+            // account can always be repaired (every page needs a verified email); saving an unverified account verifies it too.
             // The model logs a name/email change itself (inside this transaction).
             $account->name = Names::normalise($name);
-            $account->email = Str::lower(trim($email));
+            $newEmail = Str::lower(trim($email));
+
+            if ($newEmail !== $account->email || $account->email_verified_at === null) {
+                $account->email_verified_at = now();
+            }
+
+            $account->email = $newEmail;
             $account->save();
             $account->syncRoles([$role]);
 

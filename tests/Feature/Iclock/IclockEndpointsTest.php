@@ -1,6 +1,9 @@
 <?php
 
 use App\Models\DeviceLog;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 beforeEach(function () {
     config(['hrm.devices.allowed_serials' => ['TESTSN001']]);
@@ -40,7 +43,7 @@ it('rejects a request with no serial number', function () {
 
 it('answers command polling and command results with OK', function () {
     expect($this->get('/iclock/getrequest?SN=TESTSN001')->getContent())->toBe("OK\n");
-    expect($this->call('POST', '/iclock/devicecmd?SN=TESTSN001', [], [], [], [], "ID=1&Return=0&CMD=DATA")->getContent())->toBe("OK\n");
+    expect($this->call('POST', '/iclock/devicecmd?SN=TESTSN001', [], [], [], [], 'ID=1&Return=0&CMD=DATA')->getContent())->toBe("OK\n");
 });
 
 it('accepts OPERLOG uploads', function () {
@@ -111,8 +114,99 @@ it('truncates the stored body at 1 MB without changing the reply', function () {
 });
 
 it('keeps the reply unchanged when writing the log fails', function () {
-    Illuminate\Support\Facades\Schema::drop('device_logs');
+    Schema::drop('device_logs');
     $r = $this->get('/iclock/getrequest?SN=TESTSN001');
     $r->assertOk();
     expect($r->getContent())->toBe("OK\n");
+});
+
+// --- Abuse limits on unauthenticated (rejected) requests --------------------------------
+
+it('keeps only the first 1 KB of the body of a rejected request', function () {
+    $body = str_repeat('A', 5000);
+    $r = $this->call('POST', '/iclock/cdata?SN=EVIL999&table=ATTLOG', [], [], [], ['CONTENT_TYPE' => 'text/plain'], $body);
+    $r->assertStatus(403);
+    expect(strlen(DeviceLog::latest('id')->first()->body))->toBe(1024);
+
+    $this->call('POST', '/iclock/cdata?table=ATTLOG', [], [], [], [], $body)->assertStatus(400);
+    expect(strlen(DeviceLog::latest('id')->first()->body))->toBe(1024);
+});
+
+it('does not truncate the body of an accepted request', function () {
+    $body = str_repeat("101\t2026-11-23 09:00:17\t0\t1\n", 200); // well over 1 KB
+    $this->call('POST', '/iclock/cdata?SN=TESTSN001&table=ATTLOG', [], [], [], [], $body)->assertOk();
+    expect(DeviceLog::latest('id')->first()->body)->toBe($body);
+});
+
+it('caps rejected rows per address per hour, writes one marker, and replies the same throughout', function () {
+    Cache::flush();
+
+    foreach (range(1, 70) as $i) {
+        $r = $this->get('/iclock/cdata?SN=EVIL'.$i);
+        $r->assertStatus(403);
+        expect($r->getContent())->toBe("ERROR: unknown device\n");
+    }
+
+    expect(DeviceLog::where('accepted', false)->count())->toBe(61);
+    $marker = DeviceLog::where('summary', 'further rejected requests from this address not logged')->get();
+    expect($marker)->toHaveCount(1)->and($marker->first()->body)->toBeNull();
+    expect(DeviceLog::where('summary', 'rejected: unknown device')->count())->toBe(60);
+});
+
+it('counts rejected requests per address, not globally', function () {
+    Cache::flush();
+
+    foreach (range(1, 65) as $i) {
+        $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.9'])->get('/iclock/cdata?SN=EVIL'.$i);
+    }
+    $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.10'])->get('/iclock/cdata?SN=OTHER');
+
+    expect(DeviceLog::where('ip', '203.0.113.10')->where('summary', 'rejected: unknown device')->count())->toBe(1);
+});
+
+it('never caps accepted requests', function () {
+    Cache::flush();
+
+    foreach (range(1, 70) as $i) {
+        $this->get('/iclock/getrequest?SN=TESTSN001')->assertOk();
+    }
+
+    expect(DeviceLog::where('accepted', true)->count())->toBe(70);
+});
+
+it('logs rejected requests again once the hour has passed', function () {
+    Cache::flush();
+
+    foreach (range(1, 65) as $i) {
+        $this->get('/iclock/cdata?SN=EVIL'.$i);
+    }
+    expect(DeviceLog::count())->toBe(61);
+
+    $this->travel(61)->minutes();
+    $this->get('/iclock/cdata?SN=AFTER')->assertStatus(403);
+
+    expect(DeviceLog::where('serial_no', 'AFTER')->exists())->toBeTrue();
+});
+
+it('falls back to logging, with the same reply, when the cache is unavailable', function () {
+    Cache::shouldReceive('add')->andThrow(new RuntimeException('cache down'));
+
+    $r = $this->get('/iclock/cdata?SN=EVIL999');
+
+    $r->assertStatus(403);
+    expect($r->getContent())->toBe("ERROR: unknown device\n");
+    expect(DeviceLog::where('serial_no', 'EVIL999')->exists())->toBeTrue();
+});
+
+it('sets no cookie and starts no session on a rejected request', function () {
+    expect($this->get('/iclock/cdata?SN=EVIL999')->headers->getCookies())->toBeEmpty();
+});
+
+it('logs only the class of an exception that happens while writing the row', function () {
+    DeviceLog::creating(fn () => throw new RuntimeException('secret-body-text'));
+
+    Log::shouldReceive('warning')->once()
+        ->with('iclock: could not write device_logs row', ['exception' => RuntimeException::class]);
+
+    $this->get('/iclock/getrequest?SN=TESTSN001')->assertOk();
 });

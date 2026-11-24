@@ -1,5 +1,7 @@
 <?php
 
+use App\Models\User;
+use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -19,11 +21,11 @@ pest()->extend(TestCase::class)->in('Unit');
 /**
  * Seeds roles and permissions (idempotent) and returns an active, verified user holding $role.
  */
-function userWithRole(string $role): App\Models\User
+function userWithRole(string $role): User
 {
-    test()->seed(Database\Seeders\RolePermissionSeeder::class);
+    test()->seed(RolePermissionSeeder::class);
 
-    $user = App\Models\User::factory()->create();
+    $user = User::factory()->create();
     $user->assignRole($role);
 
     return $user;

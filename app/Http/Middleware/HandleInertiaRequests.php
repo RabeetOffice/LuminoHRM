@@ -48,7 +48,8 @@ class HandleInertiaRequests extends Middleware
                 'logoDarkUrl' => Branding::url(settings('branding.logo_dark')),
             ],
             'auth' => [
-                'user' => $request->user(),
+                // An explicit list on purpose: sharing the model would serialise any relation a page loads on it.
+                'user' => $request->user()?->only(['id', 'name', 'email', 'email_verified_at']),
                 'role' => $request->user()?->getRoleNames()->first() ?? '',
                 'permissions' => $request->user()?->getAllPermissions()->pluck('name')->values()->all() ?? [],
             ],

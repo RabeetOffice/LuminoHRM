@@ -4,6 +4,7 @@ namespace Tests\Feature\Settings;
 
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Inertia\Testing\AssertableInertia as Assert;
 use Laravel\Fortify\Features;
@@ -114,5 +115,53 @@ class SecurityTest extends TestCase
         $response
             ->assertSessionHasErrors('current_password')
             ->assertRedirect(route('security.edit'));
+    }
+
+    public function test_changing_the_password_ends_other_sessions_but_keeps_the_current_one()
+    {
+        config(['session.driver' => 'database']);
+
+        $user = User::factory()->create(['remember_token' => 'old-token']);
+        $other = User::factory()->create();
+        $this->insertSession('other-device', $user->id);
+        $this->insertSession('someone-else', $other->id);
+
+        $this->actingAs($user)
+            ->put(route('user-password.update'), [
+                'current_password' => 'password',
+                'password' => 'new-password',
+                'password_confirmation' => 'new-password',
+            ])
+            ->assertSessionHasNoErrors();
+
+        $this->assertDatabaseMissing('sessions', ['id' => 'other-device']);
+        $this->assertDatabaseHas('sessions', ['id' => 'someone-else']);
+        $this->assertNotSame('old-token', $user->refresh()->remember_token);
+        $this->assertAuthenticatedAs($user);
+    }
+
+    public function test_a_failed_password_change_leaves_other_sessions_alone()
+    {
+        config(['session.driver' => 'database']);
+
+        $user = User::factory()->create();
+        $this->insertSession('other-device', $user->id);
+
+        $this->actingAs($user)
+            ->put(route('user-password.update'), [
+                'current_password' => 'wrong',
+                'password' => 'new-password',
+                'password_confirmation' => 'new-password',
+            ])
+            ->assertSessionHasErrors('current_password');
+
+        $this->assertDatabaseHas('sessions', ['id' => 'other-device']);
+    }
+
+    private function insertSession(string $id, int $userId): void
+    {
+        DB::table('sessions')->insert([
+            'id' => $id, 'user_id' => $userId, 'payload' => 'x', 'last_activity' => time(),
+        ]);
     }
 }

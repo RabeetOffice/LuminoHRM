@@ -5,6 +5,7 @@ namespace Tests\Feature\Auth;
 use App\Models\User;
 use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
 use Laravel\Fortify\Features;
 use Tests\TestCase;
@@ -91,5 +92,36 @@ class PasswordResetTest extends TestCase
         ]);
 
         $response->assertSessionHasErrors('email');
+    }
+
+    public function test_a_password_reset_ends_every_session_of_that_user(): void
+    {
+        config(['session.driver' => 'database']);
+        Notification::fake();
+
+        $user = User::factory()->create(['remember_token' => 'old-token']);
+        $other = User::factory()->create();
+        DB::table('sessions')->insert([
+            ['id' => 'a', 'user_id' => $user->id, 'payload' => 'x', 'last_activity' => time()],
+            ['id' => 'b', 'user_id' => $user->id, 'payload' => 'x', 'last_activity' => time()],
+            ['id' => 'c', 'user_id' => $other->id, 'payload' => 'x', 'last_activity' => time()],
+        ]);
+
+        $this->post(route('password.email'), ['email' => $user->email]);
+
+        Notification::assertSentTo($user, ResetPassword::class, function ($notification) use ($user) {
+            $this->post(route('password.update'), [
+                'token' => $notification->token,
+                'email' => $user->email,
+                'password' => 'a-new-password',
+                'password_confirmation' => 'a-new-password',
+            ])->assertSessionHasNoErrors();
+
+            return true;
+        });
+
+        $this->assertDatabaseMissing('sessions', ['user_id' => $user->id]);
+        $this->assertDatabaseHas('sessions', ['id' => 'c']);
+        $this->assertNotSame('old-token', $user->refresh()->remember_token);
     }
 }

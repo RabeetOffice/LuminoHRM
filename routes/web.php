@@ -9,7 +9,7 @@ use App\Http\Controllers\UserController;
 use App\Support\Branding;
 use Illuminate\Support\Facades\Route;
 
-Route::inertia('/', 'welcome')->name('home');
+Route::redirect('/', '/dashboard')->name('home');
 
 // Company logos (the login page shows them, so no auth). Served from the private disk, only
 // names the app generated. No session, cookies or CSRF, so the response stays cacheable.

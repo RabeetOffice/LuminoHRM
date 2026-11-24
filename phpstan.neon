@@ -1,6 +1,8 @@
 includes:
     - vendor/larastan/larastan/extension.neon
     - vendor/nesbot/carbon/extension.neon
+    # Known findings accepted at the end of phases 0-1 (mostly PDO/Eloquent generics). New errors still fail.
+    - phpstan-baseline.neon
 
 parameters:
     paths:
