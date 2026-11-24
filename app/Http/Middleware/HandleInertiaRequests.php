@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Support\Branding;
+use App\Support\EmployeeRoles;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 
@@ -51,7 +52,8 @@ class HandleInertiaRequests extends Middleware
             'auth' => [
                 // An explicit list on purpose: sharing the model would serialise any relation a page loads on it.
                 'user' => $request->user()?->only(['id', 'name', 'email', 'email_verified_at']),
-                'role' => $request->user()?->getRoleNames()->first() ?? '',
+                // The same answer as the privileged checks (the most powerful role, should an account hold two).
+                'role' => EmployeeRoles::currentRole($request->user()) ?? '',
                 'permissions' => $request->user()?->getAllPermissions()->pluck('name')->values()->all() ?? [],
             ],
             // One-shot messages set with redirect()->with('success'|'error'|'info', ...).

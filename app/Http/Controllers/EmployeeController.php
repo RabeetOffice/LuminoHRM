@@ -16,6 +16,7 @@ use App\Models\Designation;
 use App\Models\Employee;
 use App\Models\User;
 use App\Support\EmployeeAccess;
+use App\Support\EmployeeFiles;
 use App\Support\EmployeeRoles;
 use App\Support\ListQuery;
 use App\Support\ManagerLoop;
@@ -66,7 +67,7 @@ class EmployeeController extends Controller
         $paginator = $base()
             ->when($status !== '', fn (Builder $q) => $q->status($status))
             // Explicit columns: only what the list shows leaves the database.
-            ->select(['id', 'employee_code', 'first_name', 'last_name', 'email', 'department_id', 'designation_id', 'status', 'joining_date'])
+            ->select(['id', 'employee_code', 'first_name', 'last_name', 'email', 'department_id', 'designation_id', 'status', 'joining_date', 'photo_path', 'updated_at'])
             ->with([
                 'department:id,name',
                 'designation:id,name',
@@ -149,6 +150,8 @@ class EmployeeController extends Controller
             'tabs' => $profile->tabs(),
             // The statuses the "Change status" dialog offers (the same list the edit page gets).
             'statusOptions' => config('hrm.employees.statuses'),
+            // For the Documents tab's "Add document" dialog (shown when can.edit).
+            'documentTypes' => config('hrm.employees.document_types'),
             'can' => [
                 'edit' => $mayEdit,
                 'changeStatus' => $mayEdit,
@@ -325,6 +328,9 @@ class EmployeeController extends Controller
                 array_values(array_intersect(EmployeeRoles::ORDER, $roleChoices)),
             ),
             'roleLocked' => $roleLocked,
+            // Admin and HR, the only roles here, see every group of the record, documents included.
+            'documents' => $employee === null ? [] : EmployeeFiles::documentItems($employee),
+            'documentTypes' => config('hrm.employees.document_types'),
             // edit: false when the record belongs to an Admin or HR login and the viewer is not an Admin (the server refuses the save too).
             'can' => ['editCode' => $user->hasRole('admin'), 'edit' => EmployeeRoles::mayTouchAccount($user, $account)],
         ]);
@@ -341,7 +347,7 @@ class EmployeeController extends Controller
             'first_name' => $employee->first_name,
             'last_name' => $employee->last_name,
             'name' => $employee->full_name,
-            'photo_url' => null,
+            'photo_url' => EmployeeFiles::photoUrl($employee),
             'email' => $employee->email,
             'phone' => $employee->phone,
             'dob' => $employee->dob?->format('Y-m-d'),

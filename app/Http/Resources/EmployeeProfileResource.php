@@ -5,6 +5,7 @@ namespace App\Http\Resources;
 use App\Models\Employee;
 use App\Models\User;
 use App\Support\EmployeeAccess;
+use App\Support\EmployeeFiles;
 use App\Support\EmployeeRoles;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -23,7 +24,7 @@ use Illuminate\Http\Resources\Json\JsonResource;
  *              and for view-all viewers device_user_id, for employees.manage viewers role and login
  *   contact    address, emergency_name, emergency_phone
  *   banking    bank_name, account_title, account_number
- *   documents  items [{id, type, title, expiry_date, size_bytes}]
+ *   documents  items [{id, type, title, original_name, size_bytes, uploaded_at, expiry_date, download_url}]
  *
  * Never add a field to a group without asking whether the roles that see that group may see it, and never return
  * the model or a relation as it is.
@@ -76,8 +77,8 @@ class EmployeeProfileResource extends JsonResource
             'id' => $employee->id,
             'code' => $employee->employee_code,
             'name' => $employee->full_name,
-            // The photo route arrives with the file handling; until then the page shows initials.
-            'photo_url' => null,
+            // The authorised photo route with a version, or null (initials). Anyone who may open the record may see it.
+            'photo_url' => EmployeeFiles::photoUrl($employee),
         ];
 
         if ($this->allows('basic')) {
@@ -122,21 +123,8 @@ class EmployeeProfileResource extends JsonResource
         }
 
         if ($this->allows('documents')) {
-            $data['documents'] = [
-                'items' => $employee->documents()
-                    ->orderBy('created_at')
-                    ->orderBy('id')
-                    ->get(['id', 'type', 'title', 'expiry_date', 'size_bytes'])
-                    ->map(fn ($document) => [
-                        'id' => $document->id,
-                        'type' => $document->type,
-                        'title' => $document->title,
-                        'expiry_date' => $document->expiry_date?->format('Y-m-d'),
-                        'size_bytes' => $document->size_bytes,
-                    ])
-                    ->values()
-                    ->all(),
-            ];
+            // Never the stored path: a document leaves the disk only through its download route.
+            $data['documents'] = ['items' => EmployeeFiles::documentItems($employee)];
         }
 
         return $data;

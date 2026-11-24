@@ -62,17 +62,17 @@ class ChangeEmployeeStatus
 
         return DB::transaction(function () use ($employee, $status, $day, $by): Employee {
             $current = Employee::query()->whereKey($employee->getKey())->lockForUpdate()->firstOrFail();
+            $account = $current->user;
+
+            // Only an Admin changes anything about an Admin or HR person (judged on the role as stored now). Asked
+            // before the no-op check, so a refused person is told so even when they re-post the current status.
+            if (! EmployeeRoles::mayTouchAccount($by, $account)) {
+                throw new AccountRuleViolation(EmployeeRoles::PRIVILEGED_MESSAGE);
+            }
 
             // Asking for what is already stored is a successful no-op: no write, no entry, the login is not touched.
             if ($current->status === $status && EmployeeWriter::auditValue($current->last_working_day) === $day) {
                 return $current;
-            }
-
-            $account = $current->user;
-
-            // Only an Admin changes anything about an Admin or HR person (judged on the role as stored now).
-            if (! EmployeeRoles::mayTouchAccount($by, $account)) {
-                throw new AccountRuleViolation(EmployeeRoles::PRIVILEGED_MESSAGE);
             }
 
             $wasActive = ! in_array($current->status, self::DISABLING, true);

@@ -2,11 +2,13 @@ import { Head, Link, useForm } from '@inertiajs/react';
 import { useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { ChangeStatusButton } from '@/components/employees/change-status-button';
+import { DocumentsPanel } from '@/components/employees/documents-panel';
+import type { EmployeeDocumentItem } from '@/components/employees/documents-panel';
+import { PhotoControl } from '@/components/employees/photo-control';
 import {
     STATUS_LABELS,
     STATUS_TONE,
 } from '@/components/employees/status-dialog';
-import { Avatar } from '@/components/hrm/avatar';
 import { FormTabs } from '@/components/hrm/form-tabs';
 import { ManagerPicker } from '@/components/hrm/manager-picker';
 import type { ManagerOption } from '@/components/hrm/manager-picker';
@@ -40,6 +42,7 @@ type EmployeeRecord = {
     first_name: string;
     last_name: string;
     name: string;
+    photo_url: string | null;
     email: string;
     phone: string | null;
     dob: string | null;
@@ -75,6 +78,9 @@ type Props = {
     statusOptions: string[];
     roleOptions: { value: string; label: string }[];
     roleLocked: boolean;
+    /** The saved employee's documents (empty on the add form). */
+    documents: EmployeeDocumentItem[];
+    documentTypes: string[];
     can: { editCode: boolean; edit: boolean };
 };
 
@@ -107,6 +113,8 @@ function EmployeeFormPage({
     statusOptions,
     roleOptions,
     roleLocked,
+    documents: documentItems,
+    documentTypes,
     can,
 }: Props) {
     const editing = employee !== null;
@@ -206,13 +214,12 @@ function EmployeeFormPage({
 
     const basic = (
         <div className="grid gap-5">
-            <div className="flex items-center gap-4">
-                <Avatar name={fullName} size="xl" />
-                <p className="text-sm text-muted-foreground">
-                    The photo shows the initials until photo upload is added in
-                    a later update.
-                </p>
-            </div>
+            <PhotoControl
+                employeeId={employee?.id ?? null}
+                name={fullName}
+                photoUrl={employee?.photo_url ?? null}
+                canEdit={can.edit}
+            />
             <Grid>
                 <Field
                     id="employee-first_name"
@@ -680,11 +687,16 @@ function EmployeeFormPage({
         </Grid>
     );
 
-    const documents = (
+    const documents = editing ? (
+        <DocumentsPanel
+            employeeId={employee.id}
+            documents={documentItems}
+            types={documentTypes}
+            canManage={can.edit}
+        />
+    ) : (
         <p className="text-sm text-muted-foreground">
-            {editing
-                ? 'Documents are added in the next update.'
-                : 'You can add documents after the employee is saved.'}
+            You can add documents after the employee is saved.
         </p>
     );
 

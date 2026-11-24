@@ -5,7 +5,6 @@ import {
     Building2,
     Cake,
     CalendarDays,
-    FileText,
     Hash,
     Mail,
     Pencil,
@@ -16,6 +15,8 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { ChangeStatusButton } from '@/components/employees/change-status-button';
 import { DeleteEmployeeDialog } from '@/components/employees/delete-employee-dialog';
+import { DocumentsPanel } from '@/components/employees/documents-panel';
+import type { EmployeeDocumentItem } from '@/components/employees/documents-panel';
 import {
     STATUS_LABELS,
     STATUS_TONE,
@@ -28,7 +29,6 @@ import { StatusPill } from '@/components/hrm/status-pill';
 import { Button } from '@/components/ui/button';
 import {
     EMPTY_VALUE,
-    fileSize,
     isEmptyValue,
     visibleTabs,
     wordFor,
@@ -81,21 +81,15 @@ type Profile = {
         account_title: string | null;
         account_number: string | null;
     };
-    documents?: {
-        items: {
-            id: number;
-            type: string;
-            title: string;
-            expiry_date: string | null;
-            size_bytes: number;
-        }[];
-    };
+    documents?: { items: EmployeeDocumentItem[] };
 };
 
 type Props = {
     employee: Profile;
     tabs: string[];
     statusOptions: string[];
+    /** The types the "Add document" dialog offers. */
+    documentTypes: string[];
     can: { edit: boolean; changeStatus: boolean; delete: boolean };
 };
 
@@ -140,6 +134,7 @@ export default function EmployeeProfile({
     employee,
     tabs,
     statusOptions,
+    documentTypes,
     can,
 }: Props) {
     const { props } = usePage();
@@ -326,39 +321,14 @@ export default function EmployeeProfile({
                 ]}
             />
         ),
+        // Read-only unless the viewer may edit this record (same rule as the Edit button).
         documents: documents && (
-            <>
-                {documents.items.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">
-                        No documents yet.
-                    </p>
-                ) : (
-                    <ul role="list" className="divide-y rounded-lg border">
-                        {documents.items.map((item) => (
-                            <li
-                                key={item.id}
-                                className="flex items-center gap-3 px-3 py-2.5"
-                            >
-                                <FileText
-                                    aria-hidden="true"
-                                    className="size-4 shrink-0 text-muted-foreground"
-                                />
-                                <div className="min-w-0 flex-1">
-                                    <div className="truncate text-sm font-medium">
-                                        {item.title}
-                                    </div>
-                                    <div className="truncate text-xs text-muted-foreground">
-                                        {wordFor(item.type)} ·{' '}
-                                        {fileSize(item.size_bytes)}
-                                        {item.expiry_date &&
-                                            ` · Expires ${date(item.expiry_date)}`}
-                                    </div>
-                                </div>
-                            </li>
-                        ))}
-                    </ul>
-                )}
-            </>
+            <DocumentsPanel
+                employeeId={employee.id}
+                documents={documents.items}
+                types={documentTypes}
+                canManage={can.edit}
+            />
         ),
     };
 

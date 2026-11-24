@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Models\Employee;
+use App\Support\EmployeeFiles;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -11,8 +12,8 @@ use Illuminate\Http\Resources\Json\JsonResource;
  * (name, code, work email, department, designation, status, joining date) ever reaches the list, for every role.
  * Never add a field that is not in those groups here, and never return the model itself.
  *
- * Needs `department`, `designation` and `user` (id, employee_id, is_active) loaded, so a page of rows costs no
- * extra queries per row.
+ * Needs `department`, `designation` and `user` (id, employee_id, is_active) loaded, and `photo_path` and `updated_at`
+ * selected, so a page of rows costs no extra queries per row.
  *
  * @property Employee $resource
  */
@@ -35,8 +36,8 @@ class EmployeeListResource extends JsonResource
             'code' => $employee->employee_code,
             'name' => $employee->full_name,
             'email' => $employee->email,
-            // The photo route arrives with the file handling; until then every row shows initials.
-            'photo_url' => null,
+            // The authorised photo route with a version, or null (initials). Needs photo_path and updated_at selected.
+            'photo_url' => EmployeeFiles::photoUrl($employee),
             'department' => $employee->department->name,
             'designation' => $employee->designation->name,
             'status' => $employee->status,

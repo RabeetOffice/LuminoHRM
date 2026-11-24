@@ -5,6 +5,7 @@ use App\Http\Controllers\BrandingMediaController;
 use App\Http\Controllers\DepartmentController;
 use App\Http\Controllers\DesignationController;
 use App\Http\Controllers\EmployeeController;
+use App\Http\Controllers\EmployeeFileController;
 use App\Http\Controllers\Settings\HrmSettingsController;
 use App\Http\Controllers\UserController;
 use App\Support\Branding;
@@ -46,6 +47,25 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // Delete is Admin only (and the controller refuses a record with history).
     Route::delete('employees/{employee}', [EmployeeController::class, 'destroy'])
         ->whereNumber('employee')->middleware('can:employees.delete')->name('employees.destroy');
+
+    // Employee photos and documents. Private disk only; EmployeeFileController asks EmployeeAccess before any file
+    // leaves it (photo: canView; document: the `documents` field group; writes: the edit-record rule). Uploads share
+    // one counter of 30 a minute per user.
+    Route::prefix('employees/{employee}')->name('employees.')->group(function () {
+        Route::get('photo', [EmployeeFileController::class, 'showPhoto'])->whereNumber('employee')->name('photo.show');
+        Route::get('documents/{document}', [EmployeeFileController::class, 'downloadDocument'])
+            ->whereNumber(['employee', 'document'])->name('documents.download');
+
+        Route::middleware('can:employees.manage')->group(function () {
+            Route::post('photo', [EmployeeFileController::class, 'updatePhoto'])
+                ->whereNumber('employee')->middleware('throttle:30,1,employee-uploads')->name('photo.update');
+            Route::delete('photo', [EmployeeFileController::class, 'destroyPhoto'])->whereNumber('employee')->name('photo.destroy');
+            Route::post('documents', [EmployeeFileController::class, 'storeDocument'])
+                ->whereNumber('employee')->middleware('throttle:30,1,employee-uploads')->name('documents.store');
+            Route::delete('documents/{document}', [EmployeeFileController::class, 'destroyDocument'])
+                ->whereNumber(['employee', 'document'])->name('documents.destroy');
+        });
+    });
 
     // The profile page. Any signed-in user may ask; EmployeeAccess::canView decides (403), and a person who only has
     // their own record is sent to My Profile. Registered after every static /employees/... route above.
