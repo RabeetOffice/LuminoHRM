@@ -4,6 +4,8 @@ import type { NavGroup } from '@/config/navigation';
 
 // Pages ship over several phases; the structure is exercised in full here.
 const full = { includeUnready: true };
+// The old behaviour: unbuilt entries hidden.
+const hide = { includeUnready: false };
 
 const allPermissions = [
     'org.manage',
@@ -73,7 +75,7 @@ test('an item with several permissions shows when the user has any one', () => {
 
 describe('ready flag', () => {
     test('only pages that exist are rendered by default', () => {
-        const r = filterNavigation(navigation, allPermissions);
+        const r = filterNavigation(navigation, allPermissions, '', hide);
         expect(r.map((g) => g.label)).toEqual([
             'Overview',
             'Workforce',
@@ -92,7 +94,7 @@ describe('ready flag', () => {
 
     test('Audit Log is for admin only', () => {
         const titles = (perms: string[]) =>
-            filterNavigation(navigation, perms).flatMap((g) =>
+            filterNavigation(navigation, perms, '', hide).flatMap((g) =>
                 g.items.map((i) => i.title),
             );
 
@@ -104,7 +106,7 @@ describe('ready flag', () => {
 
     test('Settings is for admin and hr (either settings permission)', () => {
         const titles = (perms: string[]) =>
-            filterNavigation(navigation, perms).flatMap((g) =>
+            filterNavigation(navigation, perms, '', hide).flatMap((g) =>
                 g.items.map((i) => i.title),
             );
         expect(titles(['settings.manage'])).toContain('Settings');
@@ -115,7 +117,7 @@ describe('ready flag', () => {
 
     test('Users & Roles is for admin only (users.manage)', () => {
         const titles = (perms: string[]) =>
-            filterNavigation(navigation, perms).flatMap((g) =>
+            filterNavigation(navigation, perms, '', hide).flatMap((g) =>
                 g.items.map((i) => i.title),
             );
         expect(titles(['users.manage'])).toContain('Users & Roles');
@@ -127,17 +129,17 @@ describe('ready flag', () => {
 
     test('Departments & Designations is for admin and hr only', () => {
         const titles = (perms: string[]) =>
-            filterNavigation(navigation, perms).flatMap((g) =>
+            filterNavigation(navigation, perms, '', hide).flatMap((g) =>
                 g.items.map((i) => i.title),
             );
         expect(titles(['org.manage'])).toContain('Departments & Designations');
         expect(titles([])).not.toContain('Departments & Designations');
     });
 
-    test('unready items are hidden even when a search matches them', () => {
-        expect(filterNavigation(navigation, allPermissions, 'payslip')).toEqual(
-            [],
-        );
+    test('with includeUnready false, unready items are hidden even when a search matches them', () => {
+        expect(
+            filterNavigation(navigation, allPermissions, 'payslip', hide),
+        ).toEqual([]);
     });
 
     test('a parent whose children are all unready disappears', () => {
@@ -156,7 +158,7 @@ describe('ready flag', () => {
                 ],
             },
         ];
-        const r = filterNavigation(groups, []);
+        const r = filterNavigation(groups, [], '', hide);
         expect(r[0].items.map((i) => i.title)).toEqual(['Visible']);
     });
 
@@ -168,9 +170,9 @@ describe('ready flag', () => {
             },
             { label: 'Shown', items: [{ title: 'Y', href: '/y' }] },
         ];
-        expect(filterNavigation(groups, []).map((g) => g.label)).toEqual([
-            'Shown',
-        ]);
+        expect(
+            filterNavigation(groups, [], '', hide).map((g) => g.label),
+        ).toEqual(['Shown']);
     });
 });
 
@@ -214,5 +216,157 @@ describe('activeHref', () => {
     test('does not match on a partial segment', () => {
         expect(activeHref('/assetsx')).toBeUndefined();
         expect(activeHref('/settings/profile')).toBeUndefined();
+    });
+});
+
+describe('soon entries (default)', () => {
+    const titlesOf = (r: NavGroup[]) =>
+        r.map((g) => [g.label, g.items.map((i) => i.title)]);
+
+    test('an unready entry the user may see comes back flagged soon', () => {
+        const r = filterNavigation(navigation, ['employees.view-all']);
+        const employees = r
+            .flatMap((g) => g.items)
+            .find((i) => i.title === 'Employees');
+        expect(employees?.soon).toBe(true);
+    });
+
+    test('a ready entry is not soon', () => {
+        const r = filterNavigation(navigation, []);
+        expect(r[0].items.find((i) => i.title === 'Dashboard')?.soon).toBe(
+            false,
+        );
+    });
+
+    test('an unready entry the user lacks permission for is not returned', () => {
+        const titles = filterNavigation(navigation, [])
+            .flatMap((g) => g.items)
+            .map((i) => i.title);
+        expect(titles).not.toContain('Employees');
+        expect(titles).not.toContain('Payroll');
+    });
+
+    test('an employee gets Overview and My Space only', () => {
+        const r = filterNavigation(navigation, []);
+        expect(titlesOf(r)).toEqual([
+            ['Overview', ['Dashboard', 'Calendar']],
+            [
+                'My Space',
+                [
+                    'My Profile',
+                    'My Attendance',
+                    'My Leaves',
+                    'My Payslips',
+                    'My Assets',
+                    'My Reviews',
+                ],
+            ],
+        ]);
+        const soon = r.flatMap((g) => g.items).map((i) => i.soon);
+        expect(soon).toEqual([false, true, true, true, true, true, true, true]);
+    });
+
+    test('a manager never sees Payroll, Settings, Users or Audit Log, soon or not', () => {
+        const perms = [
+            'employees.view-team',
+            'attendance.view-team',
+            'leave.approve-team',
+            'performance.review-team',
+            'assets.view-team',
+            'exit.approve-team',
+        ];
+        const titles = JSON.stringify(filterNavigation(navigation, perms));
+        for (const t of ['Payroll', 'Settings', 'Users & Roles', 'Audit Log']) {
+            expect(titles).not.toContain(t);
+        }
+        expect(titles).toContain('Attendance');
+    });
+
+    test('a parent with only unready visible children is one soon row', () => {
+        const r = filterNavigation(navigation, ['payroll.view']);
+        const payroll = r
+            .flatMap((g) => g.items)
+            .find((i) => i.title === 'Payroll');
+        expect(payroll?.soon).toBe(true);
+        expect(payroll?.children).toBeUndefined();
+    });
+
+    test('a parent with mixed children keeps them, each flagged', () => {
+        const groups: NavGroup[] = [
+            {
+                label: 'G',
+                items: [
+                    {
+                        title: 'Parent',
+                        children: [
+                            { title: 'A', href: '/a' },
+                            { title: 'B', href: '/b', ready: false },
+                        ],
+                    },
+                ],
+            },
+        ];
+        const [parent] = filterNavigation(groups, [])[0].items;
+        expect(parent.soon).toBe(false);
+        expect(parent.children?.map((c) => [c.title, c.soon])).toEqual([
+            ['A', false],
+            ['B', true],
+        ]);
+    });
+
+    test('children hidden by search do not decide the parent state', () => {
+        const groups: NavGroup[] = [
+            {
+                label: 'G',
+                items: [
+                    {
+                        title: 'Parent',
+                        children: [
+                            { title: 'Alpha', href: '/a' },
+                            { title: 'Beta', href: '/b', ready: false },
+                        ],
+                    },
+                ],
+            },
+        ];
+        const [parent] = filterNavigation(groups, [], 'beta')[0].items;
+        expect(parent.soon).toBe(true);
+        expect(parent.children).toBeUndefined();
+    });
+
+    test('search matches a soon entry by title', () => {
+        const r = filterNavigation(navigation, [], 'calendar');
+        expect(titlesOf(r)).toEqual([['Overview', ['Calendar']]]);
+        expect(r[0].items[0].soon).toBe(true);
+    });
+
+    test('search with no match returns an empty list', () => {
+        expect(filterNavigation(navigation, allPermissions, 'zzzz')).toEqual(
+            [],
+        );
+    });
+
+    test('group labels stay even when every entry is soon', () => {
+        const r = filterNavigation(navigation, ['exit.clearance']);
+        expect(r.map((g) => g.label)).toContain('Exit');
+    });
+
+    test('order and grouping follow the definition', () => {
+        const r = filterNavigation(navigation, allPermissions);
+        expect(r.map((g) => g.label)).toEqual(navigation.map((g) => g.label));
+    });
+
+    test('the ready entries today are exactly the five built pages', () => {
+        const ready = navigation
+            .flatMap((g) => g.items)
+            .filter((i) => i.children === undefined && i.ready !== false)
+            .map((i) => i.title);
+        expect(ready).toEqual([
+            'Dashboard',
+            'Departments & Designations',
+            'Settings',
+            'Users & Roles',
+            'Audit Log',
+        ]);
     });
 });

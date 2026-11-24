@@ -45,12 +45,23 @@ export type NavItem = {
     permission?: string | string[];
     children?: NavItem[];
     ready?: boolean;
+    /**
+     * Set by `filterNavigation` on every item it returns: true when the entry
+     * is not built yet (or is a parent whose visible children all are), so the
+     * sidebar renders it greyed out with a "Soon" badge and no link.
+     */
+    soon?: boolean;
 };
 
 export type NavGroup = { label: string; items: NavItem[] };
 
 export type FilterOptions = {
-    /** Keep entries flagged `ready: false` (used to test the full structure). */
+    /**
+     * Unready entries are kept and flagged `soon` by default. Pass `true` to
+     * also keep the full structure (a parent whose children are all unready
+     * keeps them instead of collapsing to one soon row), or `false` to hide
+     * unready entries altogether.
+     */
     includeUnready?: boolean;
 };
 
@@ -287,17 +298,19 @@ const permitted = (
     return needed.length === 0 || needed.some((p) => held.has(p));
 };
 
+type UnreadyMode = 'collapse' | 'full' | 'hide';
+
 function filterItems(
     items: NavItem[],
     held: Set<string>,
     needle: string,
-    includeUnready: boolean,
+    mode: UnreadyMode,
     parentMatched: boolean,
 ): NavItem[] {
     const result: NavItem[] = [];
 
     for (const item of items) {
-        if (!includeUnready && item.ready === false) {
+        if (mode === 'hide' && item.ready === false) {
             continue;
         }
 
@@ -310,7 +323,7 @@ function filterItems(
 
         if (!item.children) {
             if (matches || parentMatched) {
-                result.push(item);
+                result.push({ ...item, soon: item.ready === false });
             }
 
             continue;
@@ -322,12 +335,22 @@ function filterItems(
             item.children,
             held,
             needle,
-            includeUnready,
+            mode,
             parentMatched || matches,
         );
 
-        if (children.length > 0) {
-            result.push({ ...item, children });
+        if (children.length === 0) {
+            continue;
+        }
+
+        const allSoon = children.every((c) => c.soon);
+
+        if (allSoon && mode === 'collapse') {
+            // Keep the menu compact: one non-expandable soon row.
+            const { children: _children, ...rest } = item;
+            result.push({ ...rest, soon: true });
+        } else {
+            result.push({ ...item, children, soon: allSoon });
         }
     }
 
@@ -335,9 +358,11 @@ function filterItems(
 }
 
 /**
- * Drops entries flagged `ready: false` (unless `includeUnready`), then entries
- * the user lacks permission for, then entries not matching `query`. Parents
- * left without children and groups left without items are dropped.
+ * Filters by permission (any one of an entry's permissions), then by `query`
+ * (case-insensitive title). Unbuilt entries are kept and flagged `soon: true`;
+ * a parent whose visible children are all unbuilt collapses to one soon item
+ * without children. Parents left without children and groups left without
+ * items are dropped.
  */
 export function filterNavigation(
     groups: NavGroup[],
@@ -347,18 +372,17 @@ export function filterNavigation(
 ): NavGroup[] {
     const held = new Set(permissions);
     const needle = query.trim().toLowerCase();
-    const includeUnready = options.includeUnready ?? false;
+    const mode: UnreadyMode =
+        options.includeUnready === undefined
+            ? 'collapse'
+            : options.includeUnready
+              ? 'full'
+              : 'hide';
 
     return groups
         .map((group) => ({
             ...group,
-            items: filterItems(
-                group.items,
-                held,
-                needle,
-                includeUnready,
-                false,
-            ),
+            items: filterItems(group.items, held, needle, mode, false),
         }))
         .filter((group) => group.items.length > 0);
 }
