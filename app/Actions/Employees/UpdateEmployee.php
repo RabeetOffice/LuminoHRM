@@ -5,6 +5,7 @@ namespace App\Actions\Employees;
 use App\Exceptions\AccountRuleViolation;
 use App\Models\Employee;
 use App\Models\User;
+use App\Support\Attendance\PunchIngestor;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeRoles;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -82,7 +83,13 @@ class UpdateEmployee
                 $new[$key] = $current->getAttribute($key);
             }
 
+            $oldDeviceUserId = $current->getOriginal('device_user_id');
             $current->save();
+
+            // A new or changed machine user ID moves the punches stored under it (and marks their days for a rebuild).
+            if ($current->wasChanged('device_user_id')) {
+                app(PunchIngestor::class)->relink($current, is_string($oldDeviceUserId) ? $oldDeviceUserId : null);
+            }
 
             $satellites = $this->writer->saveSatellites($current, $data);
             $old += $satellites['old'];

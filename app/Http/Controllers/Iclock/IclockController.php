@@ -3,11 +3,17 @@
 namespace App\Http\Controllers\Iclock;
 
 use App\Http\Controllers\Controller;
+use App\Models\Device;
+use App\Models\DeviceCommand;
 use App\Models\DeviceLog;
+use App\Support\Attendance\AttendanceClock;
+use App\Support\Attendance\PunchIngestor;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -27,10 +33,13 @@ class IclockController extends Controller
     /** GET /iclock/cdata: the machine asks for its options. */
     public function handshake(Request $request): Response
     {
-        return $this->handle($request, function (string $sn) {
+        return $this->handle($request, function (Device $device) {
+            $this->touch($device);
+
             $options = [
-                "GET OPTION FROM: {$sn}",
-                'ATTLOGStamp=None',
+                "GET OPTION FROM: {$device->serial_no}",
+                // The machine re-sends punches newer than this stamp; None asks for everything it holds.
+                'ATTLOGStamp='.($device->last_stamp !== null && $device->last_stamp !== '' ? $device->last_stamp : 'None'),
                 'OPERLOGStamp=9999',
                 'ATTPHOTOStamp=None',
                 'ErrorDelay=30',
@@ -38,7 +47,7 @@ class IclockController extends Controller
                 'TransTimes=00:00;14:05',
                 'TransInterval=1',
                 'TransFlag=TransData AttLog OpLog',
-                'TimeZone=5',
+                'TimeZone='.app(AttendanceClock::class)->utcOffsetHours(),
                 'Realtime=1',
                 'Encrypt=None',
             ];
@@ -47,83 +56,119 @@ class IclockController extends Controller
         });
     }
 
-    /** POST /iclock/cdata: the machine uploads a table (ATTLOG, OPERLOG, ...). */
+    /**
+     * POST /iclock/cdata: the machine uploads a table (ATTLOG, OPERLOG, ...). ATTLOG punches are stored before the
+     * reply: "OK: n" only after the commit; a storage failure replies "ERROR: retry" (HTTP 500) so the machine re-sends.
+     */
     public function upload(Request $request): Response
     {
-        return $this->handle($request, function (string $sn) use ($request) {
+        return $this->handle($request, function (Device $device) use ($request) {
             $table = strtoupper($this->queryString($request, 'table'));
 
             if ($table === 'ATTLOG') {
-                $count = count($this->parseAttlog($request->getContent()));
+                $stamp = $this->queryString($request, 'Stamp');
 
-                return ["ATTLOG upload, {$count} punch line(s)", "OK: {$count}\n"];
+                try {
+                    $result = app(PunchIngestor::class)->ingest($device, $request->getContent(), $stamp !== '' ? $stamp : null);
+                } catch (Throwable $e) {
+                    // Class only: a QueryException message embeds the bound punch values.
+                    Log::error('iclock: could not store ATTLOG punches', ['exception' => $e::class]);
+
+                    return ['ATTLOG upload failed: '.$e::class, "ERROR: retry\n", 500];
+                }
+
+                return [$result->summary(), 'OK: '.$result->acknowledged()."\n"];
             }
+
+            $this->touch($device);
 
             return [($table !== '' ? $table : 'unknown table').' upload', "OK\n"];
         });
     }
 
-    /** GET /iclock/getrequest: the machine polls for commands. Nothing queued yet. */
+    /** GET /iclock/getrequest: the machine polls for commands; the oldest queued one is handed out and marked sent. */
     public function getrequest(Request $request): Response
     {
-        return $this->handle($request, fn (string $sn) => ['command poll', "OK\n"]);
+        return $this->handle($request, function (Device $device) {
+            $this->touch($device);
+
+            $command = DB::transaction(function () use ($device): ?DeviceCommand {
+                $command = DeviceCommand::query()
+                    ->where('device_id', $device->id)
+                    ->where('status', 'queued')
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->first();
+
+                $command?->forceFill(['status' => 'sent', 'sent_at' => Date::now()])->save();
+
+                return $command;
+            });
+
+            if ($command === null) {
+                return ['command poll', "OK\n"];
+            }
+
+            // The protocol is line based: a command never spans lines.
+            $text = str_replace(["\r", "\n"], ' ', $command->command);
+
+            return ["command poll: sent command {$command->id}", "C:{$command->id}:{$text}\n"];
+        });
     }
 
-    /** POST /iclock/devicecmd: the machine reports command results. */
+    /** POST /iclock/devicecmd: the machine reports command results ("ID=<id>&Return=<code>&CMD=..." per line). */
     public function devicecmd(Request $request): Response
     {
-        return $this->handle($request, fn (string $sn) => ['command result', "OK\n"]);
+        return $this->handle($request, function (Device $device) use ($request) {
+            $this->touch($device);
+            $updated = [];
+
+            foreach (preg_split('/\r\n|\n|\r/', $request->getContent()) ?: [] as $line) {
+                $line = trim($line);
+                parse_str($line, $fields);
+                $id = $fields['ID'] ?? null;
+                $code = $fields['Return'] ?? null;
+
+                if (! is_string($id) || ! ctype_digit($id) || ! is_string($code) || ! preg_match('/^-?\d+$/', $code)) {
+                    continue;
+                }
+
+                $changed = DeviceCommand::query()
+                    ->whereKey((int) $id)
+                    ->where('device_id', $device->id)
+                    ->whereIn('status', ['queued', 'sent'])
+                    ->update([
+                        'status' => (int) $code === 0 ? 'done' : 'failed',
+                        'result' => $this->utf8(mb_strcut($line, 0, 60000)),
+                        'updated_at' => Date::now(),
+                    ]);
+
+                if ($changed > 0) {
+                    $updated[] = $id;
+                }
+            }
+
+            return [$updated === [] ? 'command result' : 'command result: '.implode(', ', $updated), "OK\n"];
+        });
     }
 
     /**
-     * Parse tab-separated ATTLOG lines: PIN, Y-m-d H:i:s, status, verify, extras ignored.
-     * Lines with an empty PIN or an unparseable date-time are skipped.
+     * The punch lines of an ATTLOG body that would be stored (see PunchIngestor::parse()).
      *
      * @return list<array{pin: string, punched_at: string, status: string, verify: string}>
      */
     public function parseAttlog(string $body): array
     {
-        $rows = [];
-
-        foreach (preg_split('/\r\n|\n|\r/', $body) ?: [] as $line) {
-            if (trim($line) === '') {
-                continue;
-            }
-
-            $fields = explode("\t", $line);
-            $pin = trim($fields[0]);
-            $time = trim($fields[1] ?? '');
-
-            if ($pin === '' || $time === '') {
-                continue;
-            }
-
-            try {
-                $punchedAt = Carbon::createFromFormat('!Y-m-d H:i:s', $time);
-            } catch (Throwable) {
-                continue;
-            }
-
-            // Reject overflow dates such as 2026-02-31 that PHP silently rolls over.
-            if ($punchedAt->format('Y-m-d H:i:s') !== $time) {
-                continue;
-            }
-
-            $rows[] = [
-                'pin' => $pin,
-                'punched_at' => $time,
-                'status' => trim($fields[2] ?? ''),
-                'verify' => trim($fields[3] ?? ''),
-            ];
-        }
-
-        return $rows;
+        return PunchIngestor::parse($body)['rows'];
     }
 
     /**
-     * Shared flow: check the serial number, build the reply, log the request.
+     * Shared flow: find the device by serial number, build the reply, log the request.
      *
-     * @param  callable(string): array{0: string, 1: string}  $respond  returns [summary, body]
+     * A serial is accepted when an active devices row has it. A serial listed in HRM_DEVICE_SERIALS with no row yet
+     * gets one on first contact. Anything else is rejected as an unknown device (an inactive device too).
+     *
+     * @param  callable(Device): array{0: string, 1: string, 2?: int}  $respond  returns [summary, body, status = 200]
      */
     private function handle(Request $request, callable $respond): Response
     {
@@ -135,16 +180,57 @@ class IclockController extends Controller
             return $this->plain("ERROR: missing serial number\n", 400);
         }
 
-        if (! in_array($sn, config('hrm.devices.allowed_serials', []), true)) {
-            $this->record($request, $sn, false, 'rejected: unknown device');
+        try {
+            $device = $this->device($sn);
+        } catch (Throwable $e) {
+            Log::error('iclock: could not look up the device', ['exception' => $e::class]);
+            $this->record($request, $sn, false, 'device lookup failed: '.$e::class);
+
+            return $this->plain("ERROR: retry\n", 500);
+        }
+
+        if ($device === null || ! $device->is_active) {
+            $this->record($request, $sn, false, $device === null ? 'rejected: unknown device' : 'rejected: inactive device');
 
             return $this->plain("ERROR: unknown device\n", 403);
         }
 
-        [$summary, $reply] = $respond($sn);
-        $this->record($request, $sn, true, $summary);
+        $answer = $respond($device);
+        $this->record($request, $sn, true, $answer[0]);
 
-        return $this->plain($reply);
+        return $this->plain($answer[1], $answer[2] ?? 200);
+    }
+
+    /** The devices row for $sn, created for a serial listed in the environment; null when unknown. */
+    private function device(string $sn): ?Device
+    {
+        // Never query with what cannot be a stored serial (over-long, invalid UTF-8): it is simply unknown.
+        if (strlen($sn) > 50 || ! mb_check_encoding($sn, 'UTF-8')) {
+            return null;
+        }
+
+        $device = Device::query()->where('serial_no', $sn)->first();
+
+        if ($device !== null || ! in_array($sn, config('hrm.devices.allowed_serials', []), true)) {
+            return $device;
+        }
+
+        try {
+            return Device::query()->create(['name' => "MB20 ({$sn})", 'serial_no' => $sn, 'is_active' => true]);
+        } catch (UniqueConstraintViolationException) {
+            // A parallel first request created it.
+            return Device::query()->where('serial_no', $sn)->first();
+        }
+    }
+
+    /** Heartbeat: the server heard from the machine. A failure here never changes the reply. */
+    private function touch(Device $device): void
+    {
+        try {
+            $device->forceFill(['last_seen_at' => Date::now()])->save();
+        } catch (Throwable $e) {
+            Log::warning('iclock: could not update last_seen_at', ['exception' => $e::class]);
+        }
     }
 
     /** A query parameter as a string; arrays (?SN[]=x) and absent values count as ''. */

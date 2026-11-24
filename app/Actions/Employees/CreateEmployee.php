@@ -4,6 +4,7 @@ namespace App\Actions\Employees;
 
 use App\Models\Employee;
 use App\Models\User;
+use App\Support\Attendance\PunchIngestor;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeCode;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -110,6 +111,11 @@ class CreateEmployee
         $employee = new Employee($attributes);
         $employee->disableLogging(); // one entry for the whole save, written below
         $employee->save();
+
+        // Punches the machine already sent under this machine user ID now belong to the new employee.
+        if ($employee->device_user_id !== null && $employee->device_user_id !== '') {
+            app(PunchIngestor::class)->relink($employee, null);
+        }
 
         $satellites = $this->writer->saveSatellites($employee, $data);
         $this->writer->provideLogin($employee, $by, $data['role'] ?? null, $passwordHash);
