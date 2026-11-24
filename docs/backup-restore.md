@@ -10,6 +10,9 @@ database as one SQL file, gzip-compressed, using PHP/PDO only (the host disables
 - Structure only, no rows, for the transient tables `cache`, `cache_locks`, `sessions`, `jobs`, `job_batches` and
   `failed_jobs` (queued jobs can hold encrypted password-reset tokens). The list is `hrm.backup.exclude_data`
   in `config/hrm.php`.
+- The file is in UTC: it starts with `SET time_zone='+00:00'`, and TIMESTAMP columns are dumped in UTC and restore to the same instants.
+- It ends with the line `-- Lumino HRM backup complete: N tables`. A backup is read back to that line before it gets its final name, so a file without it is not a finished backup.
+- Views are dumped after the tables, in name order, without their DEFINER. A view built on another view whose name sorts later will fail to create on restore (re-run that statement after the rest). Triggers and routines are NOT dumped: the backup refuses to run (and says so) if the database has any, so none are added silently.
 - 14 days are kept; older `lumino-hrm-YYYY-MM-DD.sql.gz` files are deleted after each successful run. Nothing
   else in the folder is ever touched. A second run on the same day replaces that day's file.
 - The file contains every employee's data and the (encrypted) SMTP password. Treat it like the database itself:
@@ -23,7 +26,7 @@ On the server: `<account>/domains/hrm.luminocrm.online/shared/storage/app/privat
 Locally (development): `storage/app/private/backups/`.
 
 The result of the last run is in `shared/storage/app/private/backup-status/last-backup.json` and is shown as
-`last_backup` / `last_backup_ok` in `deploy/hostinger/status.txt`. To run a backup by hand: `php artisan hrm:backup-database`.
+`last_backup` (last SUCCESSFUL backup) / `last_backup_ok` (latest attempt) in `deploy/hostinger/status.txt`. Check that `last_backup` is from last night. If the 02:00 run is missed (the cron lock was busy), an hourly catch-up (`hrm:backup-database --if-missing`, at :20) makes it later that morning. To run a backup by hand: `php artisan hrm:backup-database`.
 
 ## Download one
 

@@ -677,18 +677,24 @@ it('reports last_backup as empty and last_backup_ok as unknown when no backup ha
 
 it('reports the last backup time and result from last-backup.json', function () {
     mkdir(dirname(backupStatusFile($this->sharedDir)), 0777, true);
-    file_put_contents(backupStatusFile($this->sharedDir), '{"file":"lumino-hrm-2026-11-24.sql.gz","bytes":12345,"finished_at":"2026-11-24T02:00:07+05:00","ok":true}');
+    file_put_contents(backupStatusFile($this->sharedDir), '{"ok":true,"attempted_at":"2026-11-24T02:00:07+05:00","last_success_at":"2026-11-24T02:00:07+05:00","last_success_file":"lumino-hrm-2026-11-24.sql.gz","last_success_bytes":12345,"error":null}');
     $s = runCronOk($this);
     expect($s['last_backup'])->toBe('2026-11-24T02:00:07+05:00')->and($s['last_backup_ok'])->toBe('yes');
 
-    file_put_contents(backupStatusFile($this->sharedDir), "{\n  \"file\": \"\",\n  \"bytes\": 0,\n  \"finished_at\": \"2026-11-25T02:00:03+05:00\",\n  \"ok\": false\n}\n");
+    file_put_contents(backupStatusFile($this->sharedDir), '{
+  "ok": false,
+  "attempted_at": "2026-11-25T02:00:03+05:00",
+  "last_success_at": "2026-11-24T02:00:07+05:00",
+  "error": "x"
+}
+');
     $s = runCronOk($this);
-    expect($s['last_backup'])->toBe('2026-11-25T02:00:03+05:00')->and($s['last_backup_ok'])->toBe('no');
+    expect($s['last_backup'])->toBe('2026-11-24T02:00:07+05:00')->and($s['last_backup_ok'])->toBe('no');
 });
 
 it('never fails or injects anything when last-backup.json is malformed', function () {
     mkdir(dirname(backupStatusFile($this->sharedDir)), 0777, true);
-    foreach (['not json at all', '', '{"finished_at":"2026\nINJECT=1 $(rm -rf x) `x`;<b>","ok":maybe}', "\x00\xFF\xFE"] as $junk) {
+    foreach (['not json at all', '', '{"last_success_at":"2026\nINJECT=1 $(rm -rf x) `x`;<b>","ok":maybe}', "\x00\xFF\xFE"] as $junk) {
         file_put_contents(backupStatusFile($this->sharedDir), $junk);
         $s = runCronOk($this);
         expect($s['state'])->toBe('ok');

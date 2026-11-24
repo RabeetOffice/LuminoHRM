@@ -16,6 +16,10 @@ class TrustConfiguredProxies extends TrustProxies
 
     protected function proxies()
     {
-        return (array) config('hrm.trusted_proxies', []);
+        // Never trust everyone, even if the config was set that way directly.
+        return array_values(array_filter(
+            (array) config('hrm.trusted_proxies', []),
+            fn ($entry) => ! in_array($entry, ['*', '**', 'REMOTE_ADDR', '0.0.0.0/0', '::/0'], true),
+        ));
     }
 }

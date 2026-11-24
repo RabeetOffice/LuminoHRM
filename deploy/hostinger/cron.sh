@@ -220,7 +220,7 @@ write_status() {
     st_bk_ok=unknown
     bk_file="$STORAGE/app/private/backup-status/last-backup.json"
     if [ -f "$bk_file" ]; then
-        st_bk=$(sed -n 's/.*"finished_at"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$bk_file" 2>/dev/null | head -n 1 | tr -cd '0-9A-Za-z:+.-' | cut -c1-40)
+        st_bk=$(sed -n 's/.*"last_success_at"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$bk_file" 2>/dev/null | head -n 1 | tr -cd '0-9A-Za-z:+.-' | cut -c1-40)
         if grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$bk_file" 2>/dev/null; then
             st_bk_ok=yes
         elif grep -q '"ok"[[:space:]]*:[[:space:]]*false' "$bk_file" 2>/dev/null; then

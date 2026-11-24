@@ -35,3 +35,10 @@ Schedule::command('hrm:backup-database')
     ->dailyAt('02:00')
     ->timezone(config('app.timezone'))
     ->withoutOverlapping(60);
+
+// Catch-up: dailyAt(02:00) fires only if schedule:run happens to run in that exact minute, and a long queue run can hold
+// the cron lock past it. Hourly at :20 this does nothing unless it is 02:00 or later and today has no good backup yet.
+Schedule::command('hrm:backup-database', ['--if-missing'])
+    ->hourlyAt(20)
+    ->timezone(config('app.timezone'))
+    ->withoutOverlapping(60);

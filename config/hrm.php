@@ -20,11 +20,12 @@ return [
     /*
     | Addresses (IPs or CIDR ranges) of reverse proxies / CDNs whose X-Forwarded-For and X-Forwarded-Proto are believed.
     | Comma-separated in HRM_TRUSTED_PROXIES. Empty (the default) trusts none, so request()->ip() is the connecting address.
-    | Never use "*": any visitor could then forge the address written to the audit log and device_logs.
+    | "*", "**", "REMOTE_ADDR", 0.0.0.0/0 and ::/0 are ignored: trusting everyone would let any visitor forge the address written to the audit log and device_logs.
     */
     'trusted_proxies' => array_values(array_filter(
         array_map('trim', explode(',', (string) env('HRM_TRUSTED_PROXIES', ''))),
-        fn (string $entry) => $entry !== '',
+        // "trust everything" entries are ignored, whatever the setting says
+        fn (string $entry) => $entry !== '' && ! in_array($entry, ['*', '**', 'REMOTE_ADDR', '0.0.0.0/0', '::/0'], true),
     )),
 
     /*

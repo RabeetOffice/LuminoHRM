@@ -49,3 +49,14 @@ it('does not schedule the audit log cleanup: audit entries are permanent', funct
         expect($e->command)->not->toContain('activitylog:clean');
     }
 });
+
+it('has an hourly catch-up for a missed nightly backup, registered after the 02:00 entry', function () {
+    $backups = collect(app(Schedule::class)->events())->filter(fn ($e) => str_contains($e->command, 'hrm:backup-database'))->values();
+
+    expect($backups)->toHaveCount(2);
+    expect($backups[0]->expression)->toBe('0 2 * * *');
+    expect($backups[1]->command)->toContain('--if-missing');
+    expect($backups[1]->expression)->toBe('20 * * * *');
+    expect((string) $backups[1]->timezone)->toBe(config('app.timezone'));
+    expect($backups[1]->withoutOverlapping)->toBeTrue();
+});

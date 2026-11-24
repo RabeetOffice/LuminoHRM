@@ -52,3 +52,21 @@ it('parses the comma separated environment value into a list', function () {
     }
     expect($parsed)->toBe(['10.0.0.1', '192.168.0.0/16']);
 });
+
+it('never trusts everyone: wildcard entries are ignored in the environment value and in config', function () {
+    $raw = '*, **,REMOTE_ADDR,0.0.0.0/0,::/0, 10.0.0.1';
+    putenv('HRM_TRUSTED_PROXIES='.$raw);
+    $_ENV['HRM_TRUSTED_PROXIES'] = $_SERVER['HRM_TRUSTED_PROXIES'] = $raw;
+    try {
+        $parsed = (require base_path('config/hrm.php'))['trusted_proxies'];
+    } finally {
+        putenv('HRM_TRUSTED_PROXIES');
+        unset($_ENV['HRM_TRUSTED_PROXIES'], $_SERVER['HRM_TRUSTED_PROXIES']);
+    }
+    expect($parsed)->toBe(['10.0.0.1']);
+
+    foreach (['*', '**', 'REMOTE_ADDR', '0.0.0.0/0'] as $all) {
+        config(['hrm.trusted_proxies' => [$all]]);
+        viaProxy($this)->assertJson(['ip' => '10.1.1.5', 'secure' => false]);
+    }
+});
