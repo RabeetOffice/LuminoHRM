@@ -20,7 +20,8 @@ use Spatie\Activitylog\Support\LogOptions;
  * half-day threshold in hours and the weekly off days (lowercase English day names).
  *
  * Exactly one shift is the default; an employee with no shift_id works the default shift (Shift::forEmployee()).
- * Change the default only through Shift::makeDefault(): saving a second row with is_default = true throws.
+ * Change the default only through Shift::makeDefault(): saving a second row with is_default = true throws, and so does
+ * clearing the flag of the only default (there would be none left).
  *
  * Every save is checked here (whoever writes it): valid times with the end after the start, known day names
  * (lower-cased, de-duplicated, Monday first), grace and half-day within range.
@@ -77,10 +78,19 @@ class Shift extends Model
         return $this->name;
     }
 
+    /** True only while makeDefault() moves the flag, the one place the only default may lose it for a moment. */
+    private static bool $movingDefault = false;
+
     protected static function booted(): void
     {
         static::saving(function (Shift $shift): void {
             $shift->assertValid();
+
+            // Clearing the flag of the only default would leave none (and Shift::default() would then invent one).
+            if ($shift->exists && ! $shift->is_default && (bool) $shift->getOriginal('is_default') && ! self::$movingDefault
+                && ! static::query()->where('is_default', true)->whereKeyNot($shift->getKey())->exists()) {
+                throw new LogicException('The default shift cannot stop being the default. Make another shift the default instead.');
+            }
 
             if ($shift->is_default && static::query()->where('is_default', true)->whereKeyNot($shift->getKey() ?? 0)->exists()) {
                 throw new LogicException('Another shift is already the default. Use Shift::makeDefault().');
@@ -129,9 +139,15 @@ class Shift extends Model
             $locked = static::query()->whereKey($shift->getKey())->lockForUpdate()->firstOrFail();
             static::query()->where('is_default', true)->lockForUpdate()->get(['id']);
 
-            foreach (static::query()->where('is_default', true)->whereKeyNot($locked->getKey())->get() as $other) {
-                $other->is_default = false;
-                $other->save();
+            self::$movingDefault = true;
+
+            try {
+                foreach (static::query()->where('is_default', true)->whereKeyNot($locked->getKey())->get() as $other) {
+                    $other->is_default = false;
+                    $other->save();
+                }
+            } finally {
+                self::$movingDefault = false;
             }
 
             if (! $locked->is_default) {

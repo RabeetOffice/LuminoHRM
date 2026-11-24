@@ -16,23 +16,28 @@ use InvalidArgumentException;
  * Unlike Laravel's `date` cast, which writes "Y-m-d 00:00:00" (so on SQLite where('date', '2026-11-24') would miss the
  * row), this always stores the bare date, so queries can compare with a plain "Y-m-d" string on every driver.
  *
- *   - set: "Y-m-d" (a longer "Y-m-d H:i:s" is cut to its date part) or a DateTimeInterface (its own date, no zone shift).
- *   - get: a CarbonImmutable at 00:00 of that date, labelled with the company zone (AttendanceClock::zone()).
- *   - toArray()/JSON: "Y-m-d".
+ *   - set: "Y-m-d" (a longer "Y-m-d H:i:s" is cut to its date part) or a DateTimeInterface, which is first converted to
+ *     the company zone (AttendanceClock::zone()), so now() on a server in another zone gives the company's date. A
+ *     value read from this cast (or from AttendanceClock) is already in that zone: no change.
+ *   - get: a NaiveDateValue (a CarbonImmutable) at 00:00 of that date, labelled with the company zone.
+ *   - toArray(), and JSON of the value itself (only(), Inertia props): "Y-m-d".
  *
- * @implements CastsAttributes<CarbonImmutable|null, DateTimeInterface|string|null>
+ * Query a date column with Model::onDate() / betweenDates() (App\Models\Concerns\HasNaiveDateScopes) or a "Y-m-d"
+ * string, never where('date', $carbon): Laravel binds a Carbon as "Y-m-d H:i:s", which SQLite compares as text.
+ *
+ * @implements CastsAttributes<NaiveDateValue|null, DateTimeInterface|string|null>
  */
 class NaiveDate implements CastsAttributes, SerializesCastableAttributes
 {
-    public function get(Model $model, string $key, mixed $value, array $attributes): ?CarbonImmutable
+    public function get(Model $model, string $key, mixed $value, array $attributes): ?NaiveDateValue
     {
         if ($value === null || $value === '') {
             return null;
         }
 
-        $parsed = CarbonImmutable::createFromFormat('!Y-m-d', substr((string) $value, 0, 10), app(AttendanceClock::class)->zone());
+        $parsed = NaiveDateValue::createFromFormat('!Y-m-d', substr((string) $value, 0, 10), app(AttendanceClock::class)->zone());
 
-        if (! $parsed instanceof CarbonImmutable) {
+        if (! $parsed instanceof NaiveDateValue) {
             throw new InvalidArgumentException("Unreadable date [{$value}].");
         }
 
@@ -60,7 +65,7 @@ class NaiveDate implements CastsAttributes, SerializesCastableAttributes
         }
 
         if ($value instanceof DateTimeInterface) {
-            return $value->format('Y-m-d');
+            return CarbonImmutable::instance($value)->setTimezone(app(AttendanceClock::class)->zone())->format('Y-m-d');
         }
 
         if (is_string($value)) {

@@ -74,6 +74,7 @@ final class DefaultShift
         $half = (is_int($half) || is_float($half)) && $half > 0 && $half < 24 ? (float) $half : (float) ($defaults['half_day_hours'] ?? 4);
 
         $offs = settings('attendance.weekly_offs');
+        $offs = is_array($offs) ? $offs : ($defaults['weekly_offs'] ?? []);
         $days = (array) config('hrm.attendance.weekdays');
         $offs = is_array($offs)
             ? array_values(array_filter($days, fn (string $day) => in_array($day, array_map(fn ($v) => is_string($v) ? strtolower(trim($v)) : $v, $offs), true)))

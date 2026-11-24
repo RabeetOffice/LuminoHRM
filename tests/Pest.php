@@ -120,7 +120,15 @@ function punch(Employee|string $who, string $at, ?Device $device = null): Device
 {
     if ($who instanceof Employee) {
         if ($who->device_user_id === null || $who->device_user_id === '') {
-            $who->forceFill(['device_user_id' => (string) (1000 + $who->id)])->save();
+            // The first number from 1000 + id up that no employee holds and no stored punch uses (collision-free).
+            $candidate = 1000 + $who->id;
+
+            while (Employee::query()->where('device_user_id', (string) $candidate)->exists()
+                || DevicePunch::query()->where('device_user_id', (string) $candidate)->exists()) {
+                $candidate++;
+            }
+
+            $who->forceFill(['device_user_id' => (string) $candidate])->save();
         }
 
         $employee = $who;

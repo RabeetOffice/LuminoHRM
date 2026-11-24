@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Casts\NaiveDate;
+use App\Models\Concerns\HasNaiveDateScopes;
 use Carbon\CarbonImmutable;
 use Database\Factories\HolidayFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -24,6 +25,8 @@ class Holiday extends Model
 {
     /** @use HasFactory<HolidayFactory> */
     use HasFactory, LogsActivity;
+
+    use HasNaiveDateScopes;
 
     protected $fillable = ['name', 'date'];
 

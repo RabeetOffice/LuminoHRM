@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use App\Models\AttendanceCorrection;
 use App\Models\Employee;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
@@ -96,6 +97,11 @@ class EmployeeAccess
 
         if ($employee->attendances()->exists()) {
             $blockers[] = 'This employee has attendance records. Set the status to Inactive, Resigned or Terminated instead.';
+        }
+
+        // The foreign key cascades, so a hard delete would silently remove the request history.
+        if (AttendanceCorrection::query()->where('employee_id', $employee->getKey())->exists()) {
+            $blockers[] = 'This employee has attendance correction requests. Set the status to Inactive, Resigned or Terminated instead.';
         }
 
         return $blockers;

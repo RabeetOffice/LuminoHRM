@@ -284,14 +284,19 @@ it('stores and reads a punch time exactly as written, whatever the app timezone'
     ['America/New_York', 'Pacific/Kiritimati'],
 ]);
 
-it('stores a DateTime by its own wall clock, never converted', function () {
+it('stores a DateTime as its wall clock in the company zone', function () {
     scZone('UTC');
+    // 00:01 in New York is 10:01 the same day in Asia/Karachi (the company zone).
     $at = new DateTimeImmutable('2026-11-25 00:01:00', new DateTimeZone('America/New_York'));
 
     $punch = DevicePunch::factory()->create(['punch_time' => $at]);
 
-    expect($punch->fresh()->punch_time->format('Y-m-d H:i:s'))->toBe('2026-11-25 00:01:00')
+    expect($punch->fresh()->punch_time->format('Y-m-d H:i:s'))->toBe('2026-11-25 10:01:00')
         ->and($punch->fresh()->punch_date)->toBe('2026-11-25');
+
+    // A value already in the company zone (read from the cast, or from AttendanceClock) is stored unchanged.
+    $again = DevicePunch::factory()->create(['punch_time' => $punch->fresh()->punch_time->addSecond()]);
+    expect($again->fresh()->punch_time->format('Y-m-d H:i:s'))->toBe('2026-11-25 10:01:01');
 });
 
 it('labels a read punch with the company zone so it compares with the attendance clock', function () {

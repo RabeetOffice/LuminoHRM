@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Casts\NaiveDate;
 use App\Casts\NaiveDateTime;
+use App\Models\Concerns\HasNaiveDateScopes;
 use Carbon\CarbonImmutable;
 use Database\Factories\AttendanceFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -41,6 +42,8 @@ class Attendance extends Model
 {
     /** @use HasFactory<AttendanceFactory> */
     use HasFactory;
+
+    use HasNaiveDateScopes;
 
     protected $fillable = [
         'employee_id', 'date', 'shift_id', 'clock_in', 'clock_out', 'worked_minutes', 'late_minutes', 'early_minutes',
