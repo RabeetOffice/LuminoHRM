@@ -2,7 +2,6 @@
 
 namespace App\Support;
 
-use App\Http\Requests\EmployeeRequest;
 use App\Models\Department;
 use App\Models\Designation;
 use App\Models\Employee;
@@ -105,7 +104,7 @@ final class EmployeeRules
 
         if ($this->by?->hasRole('admin')) {
             // Blank means "assign" on create; on edit the code can be changed but never emptied.
-            $rules['employee_code'] = [$employee === null ? 'nullable' : 'required', 'string', 'regex:'.EmployeeRequest::CODE_PATTERN, Rule::unique('employees', 'employee_code')->ignore($id)];
+            $rules['employee_code'] = [$employee === null ? 'nullable' : 'required', 'string', 'regex:'.EmployeeCode::PATTERN, Rule::unique('employees', 'employee_code')->ignore($id)];
         }
 
         return $rules;

@@ -7,6 +7,7 @@ use App\Notifications\SetPasswordNotification;
 use App\Support\Audit\Audit;
 use App\Support\Names;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
@@ -51,18 +52,28 @@ class CreateUserAccount
      * Only the database part: the account, its role and its audit entry, in one transaction (it joins the caller's
      * when there is one). No email is sent, so a caller that writes more in the same transaction (the employee
      * form) can send the link once everything has been committed.
+     *
+     * @param  string|null  $passwordHash  ONLY a hash the server itself made from a random secret nobody knows (the
+     *                                     Excel import makes one per run, so 2,000 logins cost one bcrypt instead of
+     *                                     2,000). Never a hash or a password that came from a request or a file. Null
+     *                                     (every other caller): a fresh random password, hashed here.
      */
-    public function create(string $name, string $email, string $role, ?User $actor = null): User
+    public function create(string $name, string $email, string $role, ?User $actor = null, #[\SensitiveParameter] ?string $passwordHash = null): User
     {
         if (! in_array($role, config('hrm.roles'), true)) {
             throw new InvalidArgumentException("Unknown role [{$role}].");
         }
 
-        return DB::transaction(function () use ($name, $email, $role, $actor) {
+        if ($passwordHash !== null && ! Hash::isHashed($passwordHash)) {
+            throw new InvalidArgumentException('The password hash is not a hash.');
+        }
+
+        return DB::transaction(function () use ($name, $email, $role, $actor, $passwordHash) {
             $user = new User;
             $user->name = Names::normalise($name);
             $user->email = Str::lower(trim($email));
-            $user->password = Str::random(64); // hashed by the model cast
+            // The model's "hashed" cast hashes a plain value and keeps an already hashed one as it is.
+            $user->password = $passwordHash ?? Str::random(64);
             $user->email_verified_at = now();
             $user->is_active = true;
             $user->save();

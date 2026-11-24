@@ -60,7 +60,7 @@ final class EmployeeHelpSheet implements FromArray, WithCustomValueBinder, WithE
         $rows[] = [];
         $rows[] = ['Notes'];
         $rows[] = ['Keep the first row of the Employees sheet as it is. Up to 2,000 rows and 5 MB per file, .xlsx only.'];
-        $rows[] = ['A row whose First Name starts with EXAMPLE is skipped. Nothing is saved until every row is ready.'];
+        $rows[] = ['The example row (First Name "'.EmployeeSheet::EXAMPLE_MARKER.'") is skipped. Nothing is saved until every row is ready.'];
         $rows[] = ['No email is sent during the import. Send set-password links from the Employees list afterwards.'];
         $rows[] = [];
         $rows[] = ['Department', 'Designations (as of '.now(settings('company.timezone', config('app.timezone')))->format('Y-m-d').')'];
@@ -69,7 +69,7 @@ final class EmployeeHelpSheet implements FromArray, WithCustomValueBinder, WithE
 
         foreach (Department::query()->orderBy('name')->get(['id', 'name']) as $department) {
             $names = ($designations[$department->id] ?? collect())->pluck('name')->all();
-            $rows[] = [self::safe($department->name), self::safe(implode(', ', $names))];
+            $rows[] = [$department->name, implode(', ', $names)];
         }
 
         return $rows;

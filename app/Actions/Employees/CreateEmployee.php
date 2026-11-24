@@ -44,11 +44,16 @@ class CreateEmployee
     /**
      * @param  array<string, mixed>  $data
      * @param  string|null  $code  a code the caller has already chosen (the Excel import numbers blank codes in file
-     *                             order); it wins over $data['employee_code'] and, like a typed code, is never retried
+     *                             order); it wins over $data['employee_code'] and, like a typed code, is never retried.
+     *                             It must NEVER receive user input directly: it bypasses the "only an Admin may set the
+     *                             code" check (the import validates the file's codes, Admin only, before passing them)
+     * @param  string|null  $passwordHash  for a NEW login only: a hash the server made itself from a random secret
+     *                                     (the Excel import makes one per run). Never anything from a request or a
+     *                                     file. Null (the form): a fresh random password per account
      *
      * @throws UniqueConstraintViolationException a duplicate email, CNIC, machine ID or typed code the validation did not see
      */
-    public function handle(array $data, User $by, bool $sendLink = true, ?string $code = null): Employee
+    public function handle(array $data, User $by, bool $sendLink = true, ?string $code = null, #[\SensitiveParameter] ?string $passwordHash = null): Employee
     {
         $this->linkSent = false;
         $mayEditCode = $by->hasRole('admin');
@@ -65,7 +70,7 @@ class CreateEmployee
             $this->writer->reset();
 
             try {
-                $employee = DB::transaction(fn () => $this->persist($data, $by, $mayEditCode, $explicitCode), attempts: 3);
+                $employee = DB::transaction(fn () => $this->persist($data, $by, $mayEditCode, $explicitCode, $passwordHash), attempts: 3);
 
                 break;
             } catch (UniqueConstraintViolationException $e) {
@@ -87,7 +92,7 @@ class CreateEmployee
     }
 
     /** @param  array<string, mixed>  $data */
-    private function persist(array $data, User $by, bool $mayEditCode, bool $explicitCode): Employee
+    private function persist(array $data, User $by, bool $mayEditCode, bool $explicitCode, #[\SensitiveParameter] ?string $passwordHash): Employee
     {
         $this->writer->reset(); // a deadlock retry runs this again
 
@@ -107,7 +112,7 @@ class CreateEmployee
         $employee->save();
 
         $satellites = $this->writer->saveSatellites($employee, $data);
-        $this->writer->provideLogin($employee, $by, $data['role'] ?? null);
+        $this->writer->provideLogin($employee, $by, $data['role'] ?? null, $passwordHash);
 
         $values = array_filter(
             [...$attributes, ...$satellites['attributes']],

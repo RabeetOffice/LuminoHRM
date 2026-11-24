@@ -37,6 +37,21 @@ class EmployeeImportController extends Controller
 
     public const FAILED = 'The import failed and nothing was saved. Please try again.';
 
+    public const BUSY = 'An import is still finishing or was interrupted. Try again in a few minutes.';
+
+    /**
+     * Seconds PHP may spend on one run: comfortably under the host's 360 s request cap, so PHP stops the run (and the
+     * database rolls it back) before the host kills the request.
+     */
+    public const RUN_SECONDS = 300;
+
+    /**
+     * The run lock lives slightly longer than a run may. If the request is killed, its finally block never releases the
+     * lock; it then expires on its own shortly after the run could have ended, and the upload (kept: a failed run never
+     * consumes it) can be imported again.
+     */
+    public const LOCK_SECONDS = self::RUN_SECONDS + 30;
+
     public function show(Request $request): Response
     {
         $token = $request->query('token');
@@ -106,11 +121,16 @@ class EmployeeImportController extends Controller
         }
 
         // A double click must not import twice: the second request does not wait, it is refused (and once the first
-        // has finished, the token no longer exists).
-        $lock = Cache::lock('employee-import:'.sha1($token), 600);
+        // has finished, the token no longer exists). A run killed mid-way leaves the lock until it expires.
+        $lock = Cache::lock('employee-import:'.sha1($token), self::LOCK_SECONDS);
 
         if (! $lock->get()) {
-            return redirect()->route('employees.import')->with('error', self::REFUSED);
+            return redirect()->route('employees.import', ['token' => $token])->with('error', self::BUSY);
+        }
+
+        // Not in the console (tests, tinker): a limit there would also bound everything that runs after this.
+        if (! app()->runningInConsole()) {
+            set_time_limit(self::RUN_SECONDS);
         }
 
         try {

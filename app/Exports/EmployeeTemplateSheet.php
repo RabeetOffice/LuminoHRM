@@ -15,7 +15,7 @@ final class EmployeeTemplateSheet implements FromArray, WithCustomValueBinder, W
     use TextCells;
 
     private const EXAMPLE = [
-        'first_name' => 'EXAMPLE - replace or delete this row',
+        'first_name' => EmployeeSheet::EXAMPLE_MARKER,
         'last_name' => 'Khan',
         'email' => 'ayesha.khan@example.com',
         'phone' => '0300-1234567',

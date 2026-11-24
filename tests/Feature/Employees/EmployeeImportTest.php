@@ -1,21 +1,28 @@
 <?php
 
+use App\Actions\CreateUserAccount;
 use App\Actions\Employees\CreateEmployee;
 use App\Actions\Employees\EmployeeWriter;
+use App\Http\Controllers\EmployeeImportController;
 use App\Models\Department;
 use App\Models\Designation;
 use App\Models\Employee;
 use App\Models\User;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Testing\TestResponse;
 use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Reader\Xlsx as XlsxReader;
+use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Style\NumberFormat;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx as XlsxWriter;
 use Spatie\Activitylog\Models\Activity;
 
@@ -652,7 +659,7 @@ it('strips leading apostrophes, non-breaking spaces and zero-width characters, a
         'CNIC' => "'4220112345671",
         'Machine User ID' => '\'0042',
         'Address' => ['formula' => '=1+1'],
-        'Phone' => 3001234567,
+        'Phone' => "'03001234567",
     ])]);
 
     expect($preview['totals']['errors'])->toBe(0);
@@ -663,7 +670,7 @@ it('strips leading apostrophes, non-breaking spaces and zero-width characters, a
     expect($employee->last_name)->toBe('Ali');
     expect($employee->cnic)->toBe('4220112345671');
     expect($employee->device_user_id)->toBe('0042');
-    expect($employee->phone)->toBe('3001234567');
+    expect($employee->phone)->toBe('03001234567');
     expect($employee->contact->address)->toBe('=1+1');
 });
 
@@ -886,13 +893,13 @@ it('rolls everything back and keeps the file when a save fails half way', functi
     {
         private int $calls = 0;
 
-        public function handle(array $data, User $by, bool $sendLink = true, ?string $code = null): Employee
+        public function handle(array $data, User $by, bool $sendLink = true, ?string $code = null, ?string $passwordHash = null): Employee
         {
             if (++$this->calls === 3) {
                 throw new RuntimeException('disk full');
             }
 
-            return parent::handle($data, $by, $sendLink, $code);
+            return parent::handle($data, $by, $sendLink, $code, $passwordHash);
         }
     });
 
@@ -904,6 +911,11 @@ it('rolls everything back and keeps the file when a save fails half way', functi
     expect(User::count())->toBe(1);
     expect(Activity::where('description', 'Employees imported')->count())->toBe(0);
     expect(Storage::disk('local')->exists("imports/{$token}.xlsx"))->toBeTrue();
+
+    // The finally block released the run lock: the same upload imports at once.
+    $this->app->forgetInstance(CreateEmployee::class);
+    impRun($admin, $token)->assertRedirect('/employees');
+    expect(Employee::count())->toBe(3);
 });
 
 it('creates resigned, terminated and inactive rows with a disabled login and no last working day', function () {
@@ -979,4 +991,267 @@ it('schedules the import cleanup hourly', function () {
 
     expect($events)->toHaveCount(1);
     expect($events->first()->expression)->toBe('0 * * * *');
+});
+
+// ---------------------------------------------------------------- fix round 1: row limit that cannot be lied about
+
+/** Removes every r="..." from the <row> and <c> elements of the first sheet (r is optional in OOXML). */
+function impStripRowNumbers(UploadedFile $file): UploadedFile
+{
+    $zip = new ZipArchive;
+    $zip->open($file->getPathname());
+    $xml = (string) $zip->getFromName('xl/worksheets/sheet1.xml');
+    $stripped = (string) preg_replace('/(<(?:row|c)\b[^>]*?)\s+r="[^"]*"/', '$1', $xml);
+    expect($stripped)->not->toMatch('/<(?:row|c)\b[^>]*\sr="/');
+    $zip->addFromString('xl/worksheets/sheet1.xml', $stripped);
+    $zip->close();
+
+    return $file;
+}
+
+/** $count minimal data rows (the upload step only reads the file, it does not check rows). */
+function impManyRows(int $count): array
+{
+    $rows = [];
+    for ($i = 1; $i <= $count; $i++) {
+        $rows[] = ['First Name' => 'P', 'Last Name' => (string) $i];
+    }
+
+    return $rows;
+}
+
+it('refuses more than 2,000 rows even when the rows carry no row numbers', function () {
+    $admin = userWithRole('admin');
+    $file = impStripRowNumbers(impXlsx(impManyRows(2001)));
+
+    // The declared size no longer reveals the length: the streaming pre-check alone would let it through.
+    $reader = new XlsxReader;
+    $reader->setReadDataOnly(true);
+    expect((int) $reader->listWorksheetInfo($file->getPathname())[0]['totalRows'])->toBeLessThanOrEqual(2001);
+
+    impPost($admin, $file)->assertSessionHasErrors(['file' => 'The file has more than 2,000 rows. Split it into smaller files.']);
+    expect(Storage::disk('local')->allFiles())->toBe([]);
+});
+
+it('accepts exactly 2,000 rows, with or without row numbers', function (bool $strip) {
+    $admin = userWithRole('admin');
+    $file = impXlsx(impManyRows(2000));
+
+    if ($strip) {
+        impStripRowNumbers($file);
+    }
+
+    $response = impPost($admin, $file);
+    $response->assertSessionHasNoErrors();
+    expect($response->headers->get('Location'))->toContain('/employees/import?token=');
+})->with(['numbered' => false, 'without row numbers' => true]);
+
+it('imports rows without row numbers in their order', function () {
+    $admin = userWithRole('admin');
+    $org = impOrg();
+    Employee::factory()->create(['email' => 'boss@corp.test', 'status' => 'active', 'department_id' => $org['eng']->id, 'designation_id' => $org['engineer']->id]);
+
+    // Without r, a cell's column is its position in the row, so every cell is filled (as such writers do).
+    $dense = fn (int $n, string $first) => impRow($n, ['First Name' => $first, 'Manager Email' => 'boss@corp.test', 'Employee Code' => sprintf('LD-%04d', 100 + $n)]);
+    $file = impStripRowNumbers(impXlsx([$dense(1, 'Alpha'), $dense(2, 'Beta'), $dense(3, 'Gamma')]));
+
+    $response = impPost($admin, $file);
+    $response->assertSessionHasNoErrors();
+    parse_str((string) parse_url((string) $response->headers->get('Location'), PHP_URL_QUERY), $query);
+    $preview = impPage($admin, $query['token']);
+
+    expect($preview['totals'])->toBe(['rows' => 3, 'ready' => 3, 'errors' => 0]);
+    expect(array_column($preview['rows'], 'line'))->toBe([2, 3, 4]);
+    expect(array_column($preview['rows'], 'name'))->toBe(['Alpha Number1', 'Beta Number2', 'Gamma Number3']);
+
+    impRun($admin, $query['token'])->assertRedirect('/employees');
+    expect(Employee::firstWhere('email', 'person2@corp.test')->first_name)->toBe('Beta');
+});
+
+it('reads a sheet that declares a huge size but holds one row', function () {
+    $admin = userWithRole('admin');
+    $file = impXlsx([impRow(1)]);
+    $zip = new ZipArchive;
+    $zip->open($file->getPathname());
+    $xml = (string) $zip->getFromName('xl/worksheets/sheet1.xml');
+    $patched = (string) preg_replace('/<dimension ref="[^"]*"\/>/', '<dimension ref="A1:XFD1048576"/>', $xml);
+    expect($patched)->toContain('<dimension ref="A1:XFD1048576"/>');
+    $zip->addFromString('xl/worksheets/sheet1.xml', $patched);
+    $zip->close();
+
+    $before = memory_get_usage();
+    $response = impPost($admin, $file);
+    $response->assertSessionHasNoErrors();
+    parse_str((string) parse_url((string) $response->headers->get('Location'), PHP_URL_QUERY), $query);
+
+    expect(impPage($admin, $query['token'])['totals'])->toBe(['rows' => 1, 'ready' => 1, 'errors' => 0]);
+    expect(memory_get_usage() - $before)->toBeLessThan(64 * 1024 * 1024);
+});
+
+// ---------------------------------------------------------------- fix round 1: numbers in text columns
+
+it('refuses a number cell where leading zeros or a plus sign could be lost', function (string $column, int|float $value) {
+    $admin = userWithRole('admin');
+
+    [, $preview] = impPreview($admin, [impRow(1, [$column => $value])]);
+
+    expect(impErrors($preview, 2))->toBe([
+        "{$column} was stored as a number in Excel, so leading zeros or '+' may be lost. Format the column as Text and re-enter it.",
+    ]);
+})->with([
+    'phone' => ['Phone', 3001234567],
+    'emergency phone' => ['Emergency Contact Phone', 923001234567],
+    'account number' => ['Account Number', 1234567890123456.0],
+    'account number (short)' => ['Account Number', 12345],
+    'cnic of 12 digits' => ['CNIC', 422011234567],
+    'cnic with a fraction' => ['CNIC', 4220112345671.5],
+    'machine id past 15 digits' => ['Machine User ID', 1.2345678901235E+16],
+    'machine id with a fraction' => ['Machine User ID', 42.5],
+    'employee code' => ['Employee Code', 42],
+]);
+
+it('accepts a 13-digit CNIC and a whole Machine User ID stored as numbers', function () {
+    $admin = userWithRole('admin');
+
+    [$token, $preview] = impPreview($admin, [impRow(1, ['CNIC' => 4220112345671, 'Machine User ID' => 42])]);
+
+    expect($preview['totals']['errors'])->toBe(0);
+    impRun($admin, $token)->assertRedirect('/employees');
+
+    $employee = Employee::firstWhere('email', 'person1@corp.test');
+    expect([$employee->cnic, $employee->device_user_id])->toBe(['4220112345671', '42']);
+});
+
+// ---------------------------------------------------------------- fix round 1: dates
+
+it('refuses a plain year in a date column instead of reading it as a 1905 date', function () {
+    $admin = userWithRole('admin');
+
+    [, $preview] = impPreview($admin, [impRow(1, ['Joining Date' => 2024])]);
+
+    expect(impErrors($preview, 2))->toBe([
+        'Joining Date "2024" is not a valid date. Use YYYY-MM-DD (for example 2024-03-01), DD/MM/YYYY or an Excel date.',
+    ]);
+});
+
+it('accepts a real Excel date cell and a serial in range without a date format', function () {
+    $admin = userWithRole('admin');
+    $serial = ExcelDate::PHPToExcel(new DateTimeImmutable('2024-03-01'));
+
+    $file = impXlsx(
+        [impRow(1, ['Joining Date' => $serial]), impRow(2, ['Joining Date' => (int) $serial])],
+        null,
+        function (Spreadsheet $book) {
+            // Row 2: a real date cell (date number format); row 3: the bare serial, General format.
+            $book->getActiveSheet()->getStyle('K2')->getNumberFormat()->setFormatCode(NumberFormat::FORMAT_DATE_YYYYMMDD);
+        },
+    );
+    $response = impPost($admin, $file);
+    $response->assertSessionHasNoErrors();
+    parse_str((string) parse_url((string) $response->headers->get('Location'), PHP_URL_QUERY), $query);
+
+    expect(impPage($admin, $query['token'])['totals']['errors'])->toBe(0);
+    impRun($admin, $query['token'])->assertRedirect('/employees');
+
+    foreach ([1, 2] as $n) {
+        expect(Employee::firstWhere('email', "person{$n}@corp.test")->joining_date->format('Y-m-d'))->toBe('2024-03-01');
+    }
+});
+
+// ---------------------------------------------------------------- fix round 1: example row
+
+it('skips only the exact example row, not a person whose name starts with Example', function () {
+    $admin = userWithRole('admin');
+
+    [$token, $preview] = impPreview($admin, [
+        impRow(1, ['First Name' => '  EXAMPLE - replace or delete this row ']),
+        impRow(2, ['First Name' => 'Example']),
+        impRow(3, ['First Name' => 'EXAMPLE - replace or delete this row, please']),
+        impRow(4, ['First Name' => 'example - replace or delete this row']),
+    ]);
+
+    expect(array_column($preview['rows'], 'line'))->toBe([3, 4, 5]);
+    expect(implode(' ', $preview['notices']))->toContain('Row 2 is the template');
+    impRun($admin, $token)->assertRedirect('/employees');
+    expect(Employee::firstWhere('email', 'person2@corp.test')->first_name)->toBe('Example');
+});
+
+// ---------------------------------------------------------------- fix round 1: one hash per run, lock
+
+it('gives every login of one import run the same server-made password hash', function () {
+    $admin = userWithRole('admin');
+    [$token] = impPreview($admin, [impRow(1), impRow(2), impRow(3)]);
+
+    impRun($admin, $token)->assertRedirect('/employees');
+
+    $hashes = User::whereIn('email', ['person1@corp.test', 'person2@corp.test', 'person3@corp.test'])->pluck('password');
+    expect($hashes)->toHaveCount(3);
+    expect($hashes->unique())->toHaveCount(1);
+    expect(Hash::isHashed($hashes[0]))->toBeTrue();
+    foreach (['', 'password', 'secret', 'person1@corp.test'] as $known) {
+        expect($hashes[0])->not->toBe($known);
+        expect(Hash::check($known, $hashes[0]))->toBeFalse();
+    }
+
+    // A second run makes a new hash.
+    [$token] = impPreview($admin, [impRow(4)]);
+    impRun($admin, $token)->assertRedirect('/employees');
+    expect(User::firstWhere('email', 'person4@corp.test')->password)->not->toBe($hashes[0]);
+});
+
+it('still gives each login of the employee form its own random password', function () {
+    $admin = userWithRole('admin');
+    $org = impOrg();
+    $create = app(CreateEmployee::class);
+
+    foreach ([1, 2] as $n) {
+        $create->handle([
+            'first_name' => 'Form', 'last_name' => 'Person'.$n, 'email' => "form{$n}@corp.test",
+            'department_id' => $org['eng']->id, 'designation_id' => $org['engineer']->id, 'joining_date' => '2024-03-01',
+        ], $admin, false);
+    }
+
+    $hashes = User::whereIn('email', ['form1@corp.test', 'form2@corp.test'])->pluck('password');
+    expect($hashes)->toHaveCount(2);
+    expect($hashes->unique())->toHaveCount(2);
+});
+
+it('refuses a password hash that is not a hash', function () {
+    userWithRole('admin');
+
+    expect(fn () => app(CreateUserAccount::class)->create('Plain Text', 'plain@corp.test', 'employee', null, 'not-a-hash'))
+        ->toThrow(InvalidArgumentException::class);
+    expect(User::where('email', 'plain@corp.test')->exists())->toBeFalse();
+});
+
+it('refuses a run while the same import is still running, saves nothing, and recovers when the lock expires', function () {
+    $admin = userWithRole('admin');
+    [$token] = impPreview($admin, [impRow(1)]);
+
+    // Another request holds the run lock (or a killed one left it behind).
+    expect(Cache::lock('employee-import:'.sha1($token), EmployeeImportController::LOCK_SECONDS)->get())->toBeTrue();
+
+    impRun($admin, $token)
+        ->assertRedirect('/employees/import?token='.$token)
+        ->assertSessionHas('error', 'An import is still finishing or was interrupted. Try again in a few minutes.');
+    expect(Employee::count())->toBe(0);
+    expect(Storage::disk('local')->exists("imports/{$token}.xlsx"))->toBeTrue();
+
+    // The lock outlives the run's time limit only a little, then the same upload can be imported.
+    expect(EmployeeImportController::LOCK_SECONDS)->toBeGreaterThan(EmployeeImportController::RUN_SECONDS)
+        ->toBeLessThan(EmployeeImportController::RUN_SECONDS + 60);
+    expect(EmployeeImportController::RUN_SECONDS)->toBeLessThan(360);
+    $this->travel(EmployeeImportController::LOCK_SECONDS + 1)->seconds();
+    impRun($admin, $token)->assertRedirect('/employees');
+    expect(Employee::count())->toBe(1);
+});
+
+it('refuses for HR a row whose email is an existing HR account', function () {
+    $hr = userWithRole('hr');
+    $colleague = userWithRole('hr');
+    $colleague->forceFill(['email' => 'people@corp.test'])->save();
+
+    [, $preview] = impPreview($hr, [impRow(1, ['Work Email' => 'people@corp.test'])]);
+
+    expect(impErrorText($preview, 2))->toContain('This login belongs to an Admin or HR account. Ask an Admin to make this change.');
 });

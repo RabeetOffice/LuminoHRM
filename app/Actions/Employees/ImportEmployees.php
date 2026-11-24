@@ -7,13 +7,18 @@ use App\Models\User;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeCode;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 use InvalidArgumentException;
 
 /**
  * Saves the checked rows of an import: all of them or none, in ONE database transaction.
  *
  * - Every row goes through CreateEmployee with $sendLink = false: the login is created with a random password nobody
- *   knows and NO email is sent (HR sends links later with "Send set-password links" on the list).
+ *   knows and NO email is sent (HR sends links later with "Send set-password links" on the list). The run hashes ONE
+ *   random 64-character secret and gives that hash to every login it creates (bcrypt at 12 rounds costs ~0.2 s, so a
+ *   hash per row would make 2,000 rows take minutes); the secret itself is dropped at once, never stored, logged or
+ *   returned, so nobody can sign in with it and each person still sets their own password through the link.
  * - Rows are saved in dependency order: a row whose manager is another row is saved after that row.
  * - Codes: a code from the file (Admin only; the checks refuse it for anyone else) is kept; blank ones are numbered in
  *   FILE order from the next free code, skipping codes the file itself uses.
@@ -41,7 +46,10 @@ class ImportEmployees
             }
         }
 
-        return DB::transaction(function () use ($rows, $by) {
+        // One server-made hash for the whole run; the plain secret only lives inside this expression.
+        $passwordHash = Hash::make(Str::random(64));
+
+        return DB::transaction(function () use ($rows, $by, $passwordHash) {
             $codes = $this->codes($rows);
             $ids = []; // line => employee id
             $disabled = 0;
@@ -56,7 +64,7 @@ class ImportEmployees
 
                 // Resolved from the container each time, so a test can stand in for it.
                 $create = app(CreateEmployee::class);
-                $employee = $create->handle($data, $by, false, $codes[$row['line']]);
+                $employee = $create->handle($data, $by, false, $codes[$row['line']], $passwordHash);
                 $ids[$row['line']] = $employee->getKey();
                 $linked += $create->linkedExistingUser() ? 1 : 0;
 

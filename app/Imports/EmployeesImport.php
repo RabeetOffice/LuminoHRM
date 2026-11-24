@@ -7,7 +7,6 @@ use Maatwebsite\Excel\Concerns\WithMultipleSheets;
 use Maatwebsite\Excel\Concerns\WithReadFilter;
 use Maatwebsite\Excel\Excel as ExcelType;
 use Maatwebsite\Excel\Facades\Excel;
-use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use PhpOffice\PhpSpreadsheet\Reader\IReadFilter;
 use PhpOffice\PhpSpreadsheet\Reader\Xlsx;
 use Throwable;
@@ -18,14 +17,17 @@ use ZipArchive;
  *
  * Before PhpSpreadsheet sees the file: it must be a zip with the workbook content type (no macro-enabled workbook, no
  * VBA project), and no part may unpack to more than the limits below (zip-bomb guard). Then the first worksheet's
- * dimension is read (a streaming scan) and more than 2,000 data rows is refused. Only then is the sheet loaded, through
- * a read filter (the header plus 2,000 rows, 60 columns), as data only: no styles, and formulas are NOT calculated, so a
- * cell holding "=1+1" is read as the text "=1+1". PhpSpreadsheet refuses XML with entity declarations (XXE), and PHP 8
- * does not load external entities; external links and macros are never followed or run.
+ * declared size is read (a streaming scan) and more than 2,000 data rows is refused. Only then is the sheet loaded,
+ * through a read filter (the header plus 2,000 rows, 60 columns), as data only: no styles, and formulas are NOT
+ * calculated, so a cell holding "=1+1" is read as the text "=1+1". The declared size is only a first check (a row's `r`
+ * attribute is optional, and without it the scan under-counts): the read filter notes any cell it is offered beyond the
+ * limit, and the file is then refused too, so a long file is never silently cut short. Nothing is allocated per DECLARED
+ * cell: only cells that exist and pass the filter are kept. PhpSpreadsheet refuses XML with entity declarations (XXE),
+ * and PHP 8 does not load external entities; external links and macros are never followed or run.
  *
  * Cells are cleaned: zero-width characters removed, non-breaking spaces turned into spaces, trimmed, and one leading
  * apostrophe dropped. The first row must be the header (see EmployeeSheet). Blank rows and the template's example row
- * (First Name starting with EXAMPLE) are skipped.
+ * (First Name exactly EmployeeSheet::EXAMPLE_MARKER) are skipped.
  */
 final class EmployeesImport implements ToArray, WithMultipleSheets, WithReadFilter
 {
@@ -49,6 +51,8 @@ final class EmployeesImport implements ToArray, WithMultipleSheets, WithReadFilt
 
     public const NO_ROWS = 'The file has no employee rows below the header.';
 
+    private ?RowLimitFilter $filter = null;
+
     /**
      * @return array{rows: list<array{line: int, cells: array<string, mixed>}>, notices: list<string>}
      *
@@ -59,10 +63,17 @@ final class EmployeesImport implements ToArray, WithMultipleSheets, WithReadFilt
         $this->assertWorkbook($path);
         $this->assertRowCount($path);
 
+        $this->filter = new RowLimitFilter(EmployeeSheet::MAX_ROWS + 1, self::MAX_COLUMNS);
+
         try {
             $sheets = Excel::toArray($this, $path, null, ExcelType::XLSX);
         } catch (Throwable) {
             throw new ImportFileException(self::UNREADABLE);
+        }
+
+        // The declared size can lie (rows without `r`): what the reader actually met decides.
+        if ($this->filter->exceeded()) {
+            throw new ImportFileException(self::TOO_MANY_ROWS);
         }
 
         return $this->rows(array_values($sheets[0] ?? []));
@@ -77,17 +88,10 @@ final class EmployeesImport implements ToArray, WithMultipleSheets, WithReadFilt
         return [0 => $this];
     }
 
+    /** The header plus MAX_ROWS rows, 60 columns; it remembers whether a cell beyond the last row was offered. */
     public function readFilter(): IReadFilter
     {
-        return new class(EmployeeSheet::MAX_ROWS + 2, self::MAX_COLUMNS) implements IReadFilter
-        {
-            public function __construct(private readonly int $rows, private readonly int $columns) {}
-
-            public function readCell(string $columnAddress, int $row, string $worksheetName = ''): bool
-            {
-                return $row <= $this->rows && Coordinate::columnIndexFromString($columnAddress) <= $this->columns;
-            }
-        };
+        return $this->filter ??= new RowLimitFilter(EmployeeSheet::MAX_ROWS + 1, self::MAX_COLUMNS);
     }
 
     /** A real .xlsx container: zip signature, workbook content type, no macros, nothing that unpacks too large. */
@@ -185,7 +189,7 @@ final class EmployeesImport implements ToArray, WithMultipleSheets, WithReadFilt
 
             $first = $cells['first_name'] ?? null;
 
-            if (is_string($first) && str_starts_with(mb_strtoupper($first), EmployeeSheet::EXAMPLE_MARKER)) {
+            if ($first === EmployeeSheet::EXAMPLE_MARKER) {
                 $notices[] = "Row {$line} is the template's example row and was skipped.";
 
                 continue;

@@ -34,6 +34,9 @@ class EmployeeCode
 {
     public const PREFIX = 'LD-';
 
+    /** What a typed code must look like (LD- and at least four digits); the form and the import validate with it. */
+    public const PATTERN = '/^LD-\d{4,}$/';
+
     /** The next free code. Call it inside the transaction that will save the employee (see the class comment). */
     public static function next(): string
     {

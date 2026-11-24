@@ -33,6 +33,18 @@ final class EmployeeImportValidator
 {
     private const SHOWN_LENGTH = 60;
 
+    /**
+     * Text columns where a number cell loses information (a leading 0 or "+", digits past the 15th). A number cell is
+     * refused there, except: a CNIC that is exactly 13 digits, and a Machine User ID (a whole number up to 15 digits).
+     * The Employee Code is refused as a number too (see normalise()).
+     */
+    private const DIGIT_TEXT = ['phone', 'cnic', 'device_user_id', 'emergency_phone', 'account_number'];
+
+    /** Excel serials of 1940-01-01 and 2100-12-31: a plain number in a date column is only a date in this range. */
+    private const FIRST_SERIAL = 14611;
+
+    private const LAST_SERIAL = 73415;
+
     /** Field key => the column it came from (validation messages name the column). */
     private const ATTRIBUTES = [
         'department_id' => 'department',
@@ -119,6 +131,17 @@ final class EmployeeImportValidator
         $data = ['role' => EmployeeRoles::DEFAULT];
 
         foreach (['first_name', 'last_name', 'email', 'phone', 'cnic', 'device_user_id', 'address', 'emergency_name', 'emergency_phone', 'bank_name', 'account_title', 'account_number'] as $key) {
+            if (in_array($key, self::DIGIT_TEXT, true) && (is_int($cells[$key] ?? null) || is_float($cells[$key] ?? null))) {
+                [$data[$key], $error] = self::numberAsText($key, $cells[$key]);
+
+                if ($error !== null) {
+                    $errors[] = $error;
+                    $skip[] = $key;
+                }
+
+                continue;
+            }
+
             $data[$key] = self::text($cells[$key] ?? null);
         }
 
@@ -169,7 +192,9 @@ final class EmployeeImportValidator
 
         $code = self::text($cells['employee_code'] ?? null);
 
-        if ($code !== null && ! $isAdmin) {
+        if (is_int($cells['employee_code'] ?? null) || is_float($cells['employee_code'] ?? null)) {
+            $errors[] = self::numberMessage('employee_code');
+        } elseif ($code !== null && ! $isAdmin) {
             $errors[] = 'Only an Admin can set the Employee Code. Leave it blank and a code is assigned.';
         } elseif ($code !== null) {
             $data['employee_code'] = $code;
@@ -373,7 +398,9 @@ final class EmployeeImportValidator
         }
 
         if (is_int($value) || is_float($value)) {
-            if ($value >= 1 && $value < 2958466) {
+            // Data-only reading does not see number formats, so the value decides: a date between 1940 and 2100.
+            // "2024" typed into a date column is NOT taken as day 2,024 of 1900.
+            if ($value >= self::FIRST_SERIAL && $value < self::LAST_SERIAL + 1) {
                 try {
                     return [ExcelDate::excelToDateTimeObject(floor((float) $value))->format('Y-m-d'), null];
                 } catch (Throwable) {
@@ -391,6 +418,38 @@ final class EmployeeImportValidator
         }
 
         return [null, $label.' "'.self::shown((string) $value).'" is not a valid date. Use YYYY-MM-DD (for example 2024-03-01), DD/MM/YYYY or an Excel date.'];
+    }
+
+    /**
+     * A NUMBER cell in a column that should hold text: [the text, null] when nothing can have been lost, else [null, error].
+     *
+     * @return array{0: string|null, 1: string|null}
+     */
+    private static function numberAsText(string $key, int|float $value): array
+    {
+        // A whole number that round-trips exactly: no fraction, no exponent, at most 15 significant digits.
+        $digits = null;
+
+        if (is_int($value) && $value >= 0 && $value < 10 ** 15) {
+            $digits = (string) $value;
+        } elseif (is_float($value) && $value >= 0 && $value < 1e15 && floor($value) === $value) {
+            $digits = sprintf('%.0f', $value);
+        }
+
+        if ($digits !== null && $key === 'device_user_id') {
+            return [$digits, null];
+        }
+
+        if ($digits !== null && $key === 'cnic' && strlen($digits) === 13) {
+            return [$digits, null];
+        }
+
+        return [null, self::numberMessage($key)];
+    }
+
+    private static function numberMessage(string $key): string
+    {
+        return EmployeeSheet::label($key)." was stored as a number in Excel, so leading zeros or '+' may be lost. Format the column as Text and re-enter it.";
     }
 
     /** A cell as text: numbers without exponent or ".0", empty as null. */

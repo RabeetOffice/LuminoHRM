@@ -20,8 +20,6 @@ use Illuminate\Support\Str;
  */
 class EmployeeRequest extends FormRequest
 {
-    public const CODE_PATTERN = '/^LD-\d{4,}$/';
-
     public function authorize(): bool
     {
         $by = $this->user();

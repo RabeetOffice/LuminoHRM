@@ -65,6 +65,12 @@ function expSheet(TestResponse $response): Worksheet
     return $reader->load(expPath($response))->getSheet(0);
 }
 
+/** The first sheet with its styles (quote prefix, number formats). */
+function expStyledSheet(TestResponse $response): Worksheet
+{
+    return IOFactory::createReader('Xlsx')->load(expPath($response))->getSheet(0);
+}
+
 /** @return list<list<mixed>> data rows (no header) */
 function expRows(TestResponse $response): array
 {
@@ -170,19 +176,28 @@ it('writes the template columns in the template order, and nothing else', functi
     }
 });
 
-it('escapes cells that a spreadsheet would read as a formula', function (string $value) {
+it('keeps formula-looking text exactly as it is, as a text cell with the quote-prefix style', function (string $value) {
     $admin = userWithRole('admin');
     $org = expOrg();
-    expPerson($org, ['first_name' => $value, 'last_name' => 'Zed']);
+    expPerson($org, ['first_name' => $value, 'last_name' => 'Zed', 'phone' => '+923001234567']);
 
     $response = $this->actingAs($admin)->get('/employees/export')->assertOk();
-    $sheet = expSheet($response);
+    $sheet = expStyledSheet($response);
 
-    // XML turns a stored carriage return into a line feed when it is read back; the quote is what matters.
-    expect($sheet->getCell('A2')->getValue())->toBe("'".str_replace("\r", "\n", $value));
+    // XML turns a stored carriage return into a line feed when it is read back; no literal quote is added.
+    expect($sheet->getCell('A2')->getValue())->toBe(str_replace("\r", "\n", $value));
     expect($sheet->getCell('A2')->getDataType())->toBe(DataType::TYPE_STRING);
+    expect($sheet->getStyle('A2')->getQuotePrefix())->toBeTrue();
+
+    expect($sheet->getCell('D2')->getValue())->toBe('+923001234567');
+    expect($sheet->getCell('D2')->getDataType())->toBe(DataType::TYPE_STRING);
+    expect($sheet->getStyle('D2')->getQuotePrefix())->toBeTrue();
+
+    // Plain text is left alone.
+    expect($sheet->getStyle('B2')->getQuotePrefix())->toBeFalse();
 })->with([
     'equals' => ['=HYPERLINK("http://evil.test","x")'],
+    'dde' => ["=cmd|' /C calc'!A0"],
     'plus' => ['+92300'],
     'minus' => ['-2+3'],
     'at' => ['@SUM(A1)'],
@@ -250,7 +265,7 @@ it('re-imports its own export into an empty database as the same people', functi
     Storage::fake('local');
     $admin = userWithRole('admin');
     $org = expOrg();
-    $boss = expPerson($org, ['first_name' => 'Bea', 'last_name' => 'Boss', 'email' => 'bea@corp.test', 'employee_code' => 'LD-0010', 'cnic' => '4220100000011', 'device_user_id' => '0010', 'dob' => '1980-01-02', 'gender' => 'female', 'phone' => '0300-0000010']);
+    $boss = expPerson($org, ['first_name' => 'Bea', 'last_name' => 'Boss', 'email' => 'bea@corp.test', 'employee_code' => 'LD-0010', 'cnic' => '4220100000011', 'device_user_id' => '0010', 'dob' => '1980-01-02', 'gender' => 'female', 'phone' => '+923001234567']);
     $one = expPerson($org, ['first_name' => '=Eve', 'last_name' => 'Ng', 'email' => 'eve@corp.test', 'employee_code' => 'LD-0011', 'manager_id' => $boss->id, 'status' => 'resigned', 'employment_type' => 'contract', 'cnic' => null, 'device_user_id' => null, 'department_id' => $org['sales']->id, 'designation_id' => $org['rep']->id]);
     EmployeeContact::create(['employee_id' => $one->id, 'address' => '-1 Minus Street', 'emergency_name' => 'Kin', 'emergency_phone' => '+92 300 1111111']);
     EmployeeBankAccount::create(['employee_id' => $one->id, 'bank_name' => 'HBL', 'account_title' => 'Eve Ng', 'account_number' => '000123']);
@@ -259,6 +274,13 @@ it('re-imports its own export into an empty database as the same people', functi
         ->map(fn (Employee $e) => expSnapshot($e))->all();
 
     $path = expPath($this->actingAs($admin)->get('/employees/export'));
+
+    // The file holds the phone and the formula-looking name exactly as stored (no literal quote).
+    $exported = IOFactory::createReader('Xlsx')->load($path)->getSheet(0);
+    expect($exported->getCell('D2')->getValue())->toBe('+923001234567');
+    expect($exported->getStyle('D2')->getQuotePrefix())->toBeTrue();
+    expect($exported->getCell('A3')->getValue())->toBe('=Eve');
+    expect($exported->getStyle('A3')->getQuotePrefix())->toBeTrue();
 
     EmployeeContact::query()->delete();
     EmployeeBankAccount::query()->delete();

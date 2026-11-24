@@ -12,30 +12,35 @@ use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
 
 /**
  * Shared by the employee template and the export: every value is written as an explicit TEXT cell (so a CNIC, phone,
- * machine ID or account number never turns into a number, and nothing is ever a formula), and text that a spreadsheet
- * would treat as a formula is prefixed with a single quote.
+ * machine ID or account number never turns into a number, and nothing is ever a formula). Text that a spreadsheet would
+ * treat as a formula also gets the cell style's "quote prefix" flag, which keeps Excel from re-reading it as a formula
+ * when someone edits the cell. The value itself is never changed: no literal "'" is added, so "+92 300 1234567" shows and
+ * re-imports exactly as it was.
  */
 trait TextCells
 {
     /** Characters that make a spreadsheet read a cell as a formula (or a DDE payload). */
     private const FORMULA_STARTS = ['=', '+', '-', '@', "\t", "\r"];
 
-    /** The value with a leading "'" when it begins like a formula; '' for null. */
-    public static function safe(mixed $value): string
+    /** Whether a spreadsheet would read this text as a formula (or a DDE payload) if it were typed in. */
+    public static function looksLikeFormula(string $text): bool
     {
-        $text = $value === null ? '' : (string) $value;
-
-        return $text !== '' && in_array($text[0], self::FORMULA_STARTS, true) ? "'".$text : $text;
+        return $text !== '' && in_array($text[0], self::FORMULA_STARTS, true);
     }
 
-    /** WithCustomValueBinder: strings as strings, always. */
+    /** WithCustomValueBinder: strings as strings, always; formula-looking text also gets the quote-prefix style. */
     public function bindValue(Cell $cell, mixed $value): bool
     {
         if ($value === null || $value === '') {
             return (new DefaultValueBinder)->bindValue($cell, null);
         }
 
-        $cell->setValueExplicit((string) $value, DataType::TYPE_STRING);
+        $text = (string) $value;
+        $cell->setValueExplicit($text, DataType::TYPE_STRING);
+
+        if (self::looksLikeFormula($text)) {
+            $cell->getStyle()->setQuotePrefix(true);
+        }
 
         return true;
     }

@@ -218,9 +218,11 @@ class EmployeeWriter
      * may and did change it), or creates one. Runs in the caller's transaction; the set-password link is NOT sent
      * here (see createdUser()). Returns the account.
      *
+     * $passwordHash: see CreateUserAccount::create() (server-made hash only; null = a fresh random password).
+     *
      * @throws ValidationException when the account belongs to another employee
      */
-    public function provideLogin(Employee $employee, User $by, mixed $postedRole): User
+    public function provideLogin(Employee $employee, User $by, mixed $postedRole, #[\SensitiveParameter] ?string $passwordHash = null): User
     {
         $existing = User::query()
             ->whereRaw('LOWER(email) = ?', [Str::lower($employee->email)])
@@ -229,7 +231,7 @@ class EmployeeWriter
 
         if ($existing === null) {
             $role = EmployeeRoles::resolve($by, null, $postedRole) ?? EmployeeRoles::DEFAULT;
-            $user = $this->createAccount->create($employee->full_name, $employee->email, $role, $by);
+            $user = $this->createAccount->create($employee->full_name, $employee->email, $role, $by, $passwordHash);
             $user->forceFill(['employee_id' => $employee->getKey()])->save();
             // Remembered so DeleteEmployee knows this login was made for this person (and may go with them).
             Audit::record('users', self::CREATED_WITH_EMPLOYEE, $user, ['employee_id' => $employee->getKey()], $by);

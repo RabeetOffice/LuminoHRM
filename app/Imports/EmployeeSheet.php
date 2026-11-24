@@ -44,9 +44,10 @@ final class EmployeeSheet
     public const ENUMS = ['gender' => 'genders', 'employment_type' => 'employment_types', 'status' => 'statuses'];
 
     /**
-     * A row whose First Name starts with this word is the template's example row and is skipped (case-insensitive).
+     * The First Name of the template's example row. A row whose First Name is exactly this text (trimmed, same case) is
+     * skipped; a real person whose name merely starts with "Example" is imported like anyone else.
      */
-    public const EXAMPLE_MARKER = 'EXAMPLE';
+    public const EXAMPLE_MARKER = 'EXAMPLE - replace or delete this row';
 
     public const MAX_ROWS = 2000;
 

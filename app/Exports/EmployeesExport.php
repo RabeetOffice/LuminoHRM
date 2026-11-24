@@ -18,7 +18,8 @@ use Maatwebsite\Excel\Events\AfterSheet;
  * template's columns in the template's order, so an export can be edited and imported again. Only people holding
  * employees.view-all (who see every field group) may export, so every column is included.
  *
- * Every cell is a text cell; text that begins like a formula (=, +, -, @, tab, carriage return) gets a leading "'".
+ * Every cell is a text cell; text that begins like a formula (=, +, -, @, tab, carriage return) keeps its value and gets
+ * the cell style's quote-prefix flag (TextCells).
  * The query is read in chunks (FromQuery), so a few thousand rows stay comfortable.
  */
 final class EmployeesExport implements FromQuery, WithCustomValueBinder, WithEvents, WithHeadings, WithMapping, WithTitle
@@ -79,7 +80,7 @@ final class EmployeesExport implements FromQuery, WithCustomValueBinder, WithEve
             'account_number' => $row->bankAccount?->account_number,
         ];
 
-        return array_map(fn (string $key) => self::safe($values[$key]), array_values(EmployeeSheet::COLUMNS));
+        return array_map(fn (string $key) => (string) $values[$key], array_values(EmployeeSheet::COLUMNS));
     }
 
     public function registerEvents(): array

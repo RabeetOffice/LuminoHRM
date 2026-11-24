@@ -320,7 +320,7 @@ it('rolls everything back when creating the account fails', function () {
     $hr = userWithRole('hr');
     $this->app->bind(CreateUserAccount::class, fn () => new class extends CreateUserAccount
     {
-        public function create(string $name, string $email, string $role, ?User $actor = null): User
+        public function create(string $name, string $email, string $role, ?User $actor = null, ?string $passwordHash = null): User
         {
             throw new RuntimeException('boom');
         }
