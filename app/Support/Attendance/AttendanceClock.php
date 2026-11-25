@@ -112,6 +112,16 @@ class AttendanceClock
         return is_string($cutoff) && preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $cutoff) === 1 ? $cutoff : self::DEFAULT_CUTOFF;
     }
 
+    /**
+     * The attendance day ("Y-m-d") of now: today's date, or yesterday's while the clock is still before the day cutoff
+     * (at 00:30 with the 04:00 cutoff it is still yesterday's attendance day, whose punch window runs to 04:00). This
+     * is the only "today" for open/closed decisions: a day is closed once it is before attendanceToday().
+     */
+    public function attendanceToday(): string
+    {
+        return self::dayOf($this->now()->format('Y-m-d H:i:s'), $this->dayCutoff());
+    }
+
     /** attendanceDateFor() with an explicit cutoff ("H:i"), for callers that read the setting once for many punches. */
     public static function dayOf(string $naiveDateTime, string $cutoff): string
     {

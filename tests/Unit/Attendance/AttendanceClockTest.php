@@ -154,6 +154,31 @@ it('follows the day cutoff setting, and falls back to 04:00 when it is unusable'
     expect(acClock()->dayCutoff())->toBe('04:00');
 });
 
+it('gives the attendance day of now under the day cutoff', function (string $utcNow, string $day) {
+    acServerZone('UTC');
+    $this->travelTo(CarbonImmutable::parse($utcNow, 'UTC'));
+
+    expect(acClock()->attendanceToday())->toBe($day);
+})->with([
+    // Karachi is UTC+5: 19:30 UTC is 00:30 on the 25th there, still before the 04:00 cutoff.
+    'just after local midnight' => ['2026-11-24 19:30:00', '2026-11-24'],
+    'one second before the cutoff' => ['2026-11-24 22:59:59', '2026-11-24'],
+    'at the cutoff' => ['2026-11-24 23:00:00', '2026-11-25'],
+    'midday' => ['2026-11-25 07:00:00', '2026-11-25'],
+]);
+
+it('follows the cutoff setting for the attendance day of now', function () {
+    $this->travelTo(CarbonImmutable::parse('2026-11-25 05:00:00', 'Asia/Karachi'));
+
+    expect(acClock()->attendanceToday())->toBe('2026-11-25');
+
+    Settings::set('attendance', ['day_cutoff_time' => '06:00']);
+    expect(acClock()->attendanceToday())->toBe('2026-11-24');
+
+    Settings::set('attendance', ['day_cutoff_time' => '00:00']);
+    expect(acClock()->attendanceToday())->toBe('2026-11-25');
+});
+
 it('rejects a punch that is not a naive date-time', function () {
     acClock()->attendanceDateFor('2026-11-25');
 })->throws(InvalidArgumentException::class);
