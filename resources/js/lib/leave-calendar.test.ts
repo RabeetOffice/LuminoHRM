@@ -4,10 +4,13 @@ import {
     calendarBlanks,
     calendarDate,
     calendarWeeks,
+    dayButtonLabel,
+    dayEventCount,
     halfLabel,
     halfMark,
     leaveDotClass,
     shapeCalendar,
+    typeInitial,
     visibleChips,
 } from '@/lib/leave';
 import type { CalendarChip, CalendarInput } from '@/lib/leave';
@@ -101,6 +104,20 @@ describe('calendar grid shaping', () => {
         expect(calendarWeeks(nov, 6)[0].slice(0, 6)).toEqual(
             Array(6).fill(null),
         );
+    });
+
+    test('shading follows the weekly offs sent (Monday-first), Sat/Sun when absent', () => {
+        const friday = shapeCalendar({ ...december, weekly_offs: [4] });
+
+        // 1 December 2026 is a Tuesday: the 4th is a Friday, the 5th a Saturday.
+        expect(friday[3]).toMatchObject({ weekday: 'Fri', isWeekend: true });
+        expect(friday[4]).toMatchObject({ weekday: 'Sat', isWeekend: false });
+        expect(
+            shapeCalendar({ ...december, weekly_offs: [] }).some(
+                (d) => d.isWeekend,
+            ),
+        ).toBe(false);
+        expect(shapeCalendar(december)[4].isWeekend).toBe(true);
     });
 
     test('dates are built from text, padded, never through Date', () => {
@@ -201,6 +218,17 @@ describe('chips and the agenda', () => {
 
         expect(days).toHaveLength(31);
         expect(calendarAgenda(days)).toEqual([]);
+    });
+
+    test('day buttons are named with the weekday, day and item count; type initials', () => {
+        const days = shapeCalendar(december);
+
+        expect(dayEventCount(days[13])).toBe(3);
+        expect(dayButtonLabel(days[13])).toBe('Mon 14, 3 items');
+        expect(dayButtonLabel(days[2])).toBe('Thu 3, 1 item');
+        expect(typeInitial('annual')).toBe('A');
+        expect(typeInitial('  Sick ')).toBe('S');
+        expect(typeInitial('')).toBe('');
     });
 
     test('leave colours map to the fixed palette, unknown to slate', () => {

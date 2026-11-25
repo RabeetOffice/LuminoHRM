@@ -3,6 +3,7 @@
 use App\Models\Employee;
 use App\Models\Holiday;
 use App\Models\LeaveDay;
+use App\Models\Shift;
 use App\Models\User;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
@@ -221,6 +222,66 @@ test('the viewer\'s own open requests are listed as pending; colleagues\' are no
         ->and(json_encode($pending))->not->toContain('reason');
 });
 
+test('pending_own shows only the counted days: a Friday-to-Monday request has no Saturday or Sunday', function () {
+    $user = userWithRole('employee');
+    $me = employeeFor($user, ['joining_date' => '2024-01-01']);
+    shiftFor($me, ['weekly_offs' => ['saturday', 'sunday']]);
+    Holiday::factory()->create(['date' => '2026-12-25', 'name' => 'Christmas']);
+
+    leaveRequest($me, ['from_date' => '2026-12-11', 'to_date' => '2026-12-14', 'days' => 2]);          // Fri - Mon
+    leaveRequest($me, ['from_date' => '2026-12-24', 'to_date' => '2026-12-28', 'days' => 2]);          // Thu, (Fri hol), Mon
+    leaveRequest($me, ['from_date' => '2026-12-31', 'to_date' => '2027-01-04', 'days' => 3, 'status' => 'manager_approved']);
+
+    $pending = $this->actingAs($user)->get('/calendar?month=2026-12')->inertiaProps('pending_own');
+    $dates = fn (int $i) => collect($pending[$i]['dates'])->pluck('date')->all();
+
+    expect($pending)->toHaveCount(3)
+        ->and($dates(0))->toBe(['2026-12-11', '2026-12-14'])
+        ->and($dates(1))->toBe(['2026-12-24', '2026-12-28'])
+        ->and($dates(2))->toBe(['2026-12-31']);
+});
+
+test('pending_own falls back to every calendar date when the recount is refused', function () {
+    $user = userWithRole('employee');
+    // Joins after the request's dates: the recount is refused (outside employment), so the stored range shows.
+    $me = employeeFor($user, ['joining_date' => '2026-12-20']);
+    shiftFor($me, ['weekly_offs' => ['saturday', 'sunday']]);
+    leaveRequest($me, ['from_date' => '2026-12-11', 'to_date' => '2026-12-14', 'days' => 2]);
+
+    $pending = $this->actingAs($user)->get('/calendar?month=2026-12')->inertiaProps('pending_own');
+
+    expect(collect($pending[0]['dates'])->pluck('date')->all())->toBe(['2026-12-11', '2026-12-12', '2026-12-13', '2026-12-14']);
+});
+
+test('weekly_offs are the default shift\'s weekly offs as Monday-first indexes', function () {
+    Shift::default()->update(['weekly_offs' => ['friday', 'sunday']]);
+
+    $this->actingAs(userWithRole('employee'))->get('/calendar')
+        ->assertInertia(fn (Assert $page) => $page->where('weekly_offs', [4, 6]));
+});
+
+test('a former report\'s leave disappears after a manager change', function () {
+    $user = userWithRole('manager');
+    $manager = employeeFor($user);
+    $report = calEmployee(['manager_id' => $manager->id]);
+    approvedLeave($report, '2026-12-14');
+
+    expect(calLeaveIds($user))->toContain($report->id);
+
+    $report->forceFill(['manager_id' => calEmployee()->id])->save();
+
+    expect(calLeaveIds($user))->not->toContain($report->id);
+});
+
+test('birthdays exclude staff who have not started yet and active staff past their last working day', function () {
+    calEmployee(['first_name' => 'Starts', 'last_name' => 'Later', 'dob' => '1990-12-05', 'status' => 'active', 'joining_date' => '2027-01-04']);
+    calEmployee(['first_name' => 'Started', 'last_name' => 'Today', 'dob' => '1990-12-06', 'status' => 'probation', 'joining_date' => '2026-12-10']);
+    calEmployee(['first_name' => 'Past', 'last_name' => 'Last', 'dob' => '1990-12-07', 'status' => 'active', 'last_working_day' => '2026-12-01']);
+
+    $this->actingAs(userWithRole('employee'))->get('/calendar?month=2026-12')
+        ->assertInertia(fn (Assert $page) => $page->where('birthdays', [['day' => 6, 'name' => 'Started Today']]));
+});
+
 test('birthdays: day and name of working staff only, never the year or the date of birth', function () {
     calEmployee(['first_name' => 'Active', 'last_name' => 'One', 'dob' => '1987-12-15', 'status' => 'active']);
     calEmployee(['first_name' => 'Probation', 'last_name' => 'Two', 'dob' => '2001-12-03', 'status' => 'probation']);
@@ -317,4 +378,37 @@ test('the number of queries does not grow with the people on leave', function ()
     }
 
     expect($count())->toBe($few);
+});
+
+test('a Manager\'s query count stays fixed with several own open requests and more reports on leave', function () {
+    $user = userWithRole('manager');
+    $manager = employeeFor($user, ['joining_date' => '2024-01-01']);
+    shiftFor($manager, ['weekly_offs' => ['saturday', 'sunday']]);
+
+    // Several own open requests (counted with LeaveDays in one fixed set of queries).
+    leaveRequest($manager, ['from_date' => '2026-12-11', 'to_date' => '2026-12-14', 'days' => 2]);
+    leaveRequest($manager, ['from_date' => '2026-12-17', 'to_date' => '2026-12-17']);
+    leaveRequest($manager, ['from_date' => '2026-12-21', 'to_date' => '2026-12-21', 'is_half_day' => true, 'half' => 'pm']);
+
+    $count = function () use ($user): int {
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $this->actingAs($user)->get('/calendar?month=2026-12')->assertOk();
+        $n = count(DB::getQueryLog());
+        DB::disableQueryLog();
+
+        return $n;
+    };
+
+    approvedLeave(calEmployee(['manager_id' => $manager->id]), '2026-12-14');
+    $count(); // warm the permission cache
+    $few = $count();
+
+    foreach (range(1, 5) as $i) {
+        approvedLeave(calEmployee(['manager_id' => $manager->id, 'dob' => '1990-12-0'.$i]), '2026-12-1'.$i);
+        leaveRequest($manager, ['from_date' => '2026-12-0'.$i, 'to_date' => '2026-12-0'.$i]);
+    }
+
+    expect($count())->toBe($few)
+        ->and($this->actingAs($user)->get('/calendar?month=2026-12')->inertiaProps('pending_own'))->toHaveCount(8);
 });

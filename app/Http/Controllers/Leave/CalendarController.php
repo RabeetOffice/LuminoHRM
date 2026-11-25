@@ -8,9 +8,11 @@ use App\Models\Holiday;
 use App\Models\LeaveDay;
 use App\Models\LeaveRequest;
 use App\Models\LeaveType;
+use App\Models\Shift;
 use App\Models\User;
 use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\Leavers;
+use App\Support\Leave\LeaveDays;
 use App\Support\Leave\LeaveRouting;
 use DateTimeImmutable;
 use Illuminate\Database\Eloquent\Builder;
@@ -35,20 +37,23 @@ use Inertia\Response;
  *               leave.approve-team -> EmployeeAccess::scope (own + direct reports); anyone else -> own only. Each entry
  *               is the person's name, the type's name and colour and each date's half; never the reason, the
  *               attachment or the request itself.
- *   pending_own the viewer's OWN open requests (pending / manager_approved) touching the month, every calendar date
- *               from..to inside the month (days are only counted at approval), shown dashed. Never anybody else's.
+ *   pending_own the viewer's OWN open requests (pending / manager_approved) touching the month, with the dates that
+ *               count (LeaveDays::planMany: no weekly offs or holidays) inside the month; a refused recount falls back
+ *               to every calendar date from..to. Shown dashed. Never anybody else's.
  *   birthdays   everyone: active and probation staff who are still working (not a leaver status, no last working day
- *               before today), name and day number only. The date of birth is never selected: the query filters on the
+ *               before today, joining date on or before today), name and day number only. The date of birth is never selected: the query filters on the
  *               month and selects only the day number, so the year cannot reach the props. Born on 29 February: shown
  *               on the 28th in a year without a 29th.
  *
  * Props: month, label, first_weekday (0 = Monday), days_in_month, today, previous, next, current, leave_scope
  * (company | team | own), holidays [{date, name}], leave [{employee_id, name, first_name, type, colour,
  * dates: [{date, half}]}], pending_own [{type, colour, status, dates: [{date, half}]}], birthdays [{day, name}],
- * types [{name, colour}] (the legend: active types plus any inactive type shown this month).
+ * types [{name, colour}] (the legend: active types plus any inactive type shown this month), weekly_offs [int] (the
+ * default shift's weekly offs, Monday-first indexes, for shading).
  *
- * Queries per page: holidays, leave days, their people, types, own open requests, birthdays — a fixed number, whatever
- * the number of people on leave.
+ * Queries per page: holidays, leave days, their people, types, own open requests, birthdays, the default shift — plus,
+ * only when the viewer has open requests this month, their employee row and LeaveDays::planMany's fixed set (holidays,
+ * closed attendance rows, shifts). A fixed number, whatever the number of people on leave or of the viewer's requests.
  */
 class CalendarController extends Controller
 {
@@ -94,7 +99,22 @@ class CalendarController extends Controller
             'pending_own' => array_map(fn (array $e) => array_diff_key($e, ['type_id' => true]), $pending),
             'birthdays' => $this->birthdays($first, $today),
             'types' => $legend,
+            'weekly_offs' => $this->weeklyOffs(),
         ]);
+    }
+
+    /**
+     * The default shift's weekly offs as Monday-first indexes (0 = Monday … 6 = Sunday), for shading the grid.
+     *
+     * @return list<int>
+     */
+    private function weeklyOffs(): array
+    {
+        $week = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+        $offs = array_map(fn (string $d): string => strtolower(trim($d)), Shift::default()->weekly_offs);
+
+        // array_intersect keeps $week's keys, so the keys are the Monday-first indexes.
+        return array_keys(array_intersect($week, $offs));
     }
 
     /** The asked "YYYY-MM" when it is a real month in range, else the current month. */
@@ -165,7 +185,9 @@ class CalendarController extends Controller
     }
 
     /**
-     * The viewer's own open requests touching the month, each date from..to inside it.
+     * The viewer's own open requests touching the month, with the dates that COUNT (LeaveDays::planMany: weekly offs
+     * and holidays left out) inside the month. A request whose recount is refused (for example dates now outside the
+     * employment) falls back to every calendar date from..to inside the month.
      *
      * @param  array<int, LeaveType>  $types
      * @return list<array{type: string, colour: string, status: string, type_id: int, dates: list<array{date: string, half: string}>}>
@@ -183,24 +205,58 @@ class CalendarController extends Controller
             ->where('to_date', '>=', $from)
             ->orderBy('from_date')
             ->orderBy('id')
-            ->get(['id', 'leave_type_id', 'from_date', 'to_date', 'is_half_day', 'half', 'status']);
+            ->get(['id', 'leave_type_id', 'from_date', 'to_date', 'is_half_day', 'half', 'status'])
+            ->filter(fn (LeaveRequest $open) => isset($types[$open->leave_type_id]))
+            ->values();
+
+        if ($requests->isEmpty()) {
+            return [];
+        }
+
+        // The complete employee model: LeaveDays reads the shift, the employment window and the status.
+        $employee = Employee::query()->find($user->employee_id);
+        $plans = [];
+
+        if ($employee !== null) {
+            $asks = [];
+
+            foreach ($requests as $open) {
+                $asks[] = [
+                    $employee,
+                    $open->from_date->format('Y-m-d'),
+                    $open->to_date->format('Y-m-d'),
+                    $open->is_half_day && $open->half !== null ? $open->half : null,
+                ];
+            }
+
+            $plans = LeaveDays::planMany($asks);
+        }
 
         $entries = [];
 
-        foreach ($requests as $open) {
-            $type = $types[$open->leave_type_id] ?? null;
-
-            if ($type === null) {
-                continue;
-            }
-
-            $start = max($open->from_date->format('Y-m-d'), $from);
-            $end = min($open->to_date->format('Y-m-d'), $to);
-            $half = $open->is_half_day && $open->half !== null ? $open->half : 'full';
+        foreach ($requests as $i => $open) {
+            $type = $types[$open->leave_type_id];
+            $plan = $plans[$i] ?? null;
             $dates = [];
 
-            for ($d = new DateTimeImmutable($start); $d->format('Y-m-d') <= $end; $d = $d->modify('+1 day')) {
-                $dates[] = ['date' => $d->format('Y-m-d'), 'half' => $half];
+            if ($plan !== null && ! $plan->isRefused()) {
+                foreach ($plan->days as $day) {
+                    if ($day['date'] >= $from && $day['date'] <= $to) {
+                        $dates[] = ['date' => $day['date'], 'half' => $day['half']];
+                    }
+                }
+            } else {
+                $start = max($open->from_date->format('Y-m-d'), $from);
+                $end = min($open->to_date->format('Y-m-d'), $to);
+                $half = $open->is_half_day && $open->half !== null ? $open->half : 'full';
+
+                for ($d = new DateTimeImmutable($start); $d->format('Y-m-d') <= $end; $d = $d->modify('+1 day')) {
+                    $dates[] = ['date' => $d->format('Y-m-d'), 'half' => $half];
+                }
+            }
+
+            if ($dates === []) {
+                continue; // only weekly offs or holidays of this request fall in the month
             }
 
             $entries[] = [
@@ -229,6 +285,8 @@ class CalendarController extends Controller
             ->whereIn('status', self::WORKING)
             ->whereNotIn('status', Leavers::STATUSES)
             ->where(fn (Builder $q) => $q->whereNull('last_working_day')->orWhere('last_working_day', '>=', $today))
+            // Not someone who has not started yet. "<" tomorrow, not "<=" today: SQLite may hold "Y-m-d 00:00:00".
+            ->where('joining_date', '<', (new DateTimeImmutable($today))->modify('+1 day')->format('Y-m-d'))
             ->whereNotNull('dob')
             ->whereMonth('dob', $month);
 

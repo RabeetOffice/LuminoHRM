@@ -56,6 +56,8 @@ export type CalendarInput = {
     leave: CalendarLeaveEntry[];
     pending_own: CalendarPendingEntry[];
     birthdays: { day: number; name: string }[];
+    /** The default shift's weekly offs, Monday-first indexes (0 = Monday ... 6 = Sunday). Absent: Saturday and Sunday. */
+    weekly_offs?: number[];
 };
 
 export type CalendarChip = {
@@ -77,6 +79,7 @@ export type CalendarDay = {
     weekdayIndex: number;
     weekday: (typeof CALENDAR_WEEKDAYS)[number];
     isToday: boolean;
+    /** A weekly off of the default shift (shaded). */
     isWeekend: boolean;
     holidays: string[];
     /** The viewer's own pending requests first, then approved leave by name. */
@@ -134,6 +137,7 @@ export function shapeCalendar(input: CalendarInput): CalendarDay[] {
     const blanks = calendarBlanks(input.first_weekday);
     const days: CalendarDay[] = [];
     const byDate = new Map<string, CalendarDay>();
+    const offs = new Set(input.weekly_offs ?? [5, 6]);
 
     for (let day = 1; day <= count; day++) {
         const weekdayIndex = (blanks + day - 1) % 7;
@@ -144,7 +148,7 @@ export function shapeCalendar(input: CalendarInput): CalendarDay[] {
             weekdayIndex,
             weekday: CALENDAR_WEEKDAYS[weekdayIndex],
             isToday: date === input.today,
-            isWeekend: weekdayIndex >= 5,
+            isWeekend: offs.has(weekdayIndex),
             holidays: [],
             chips: [],
             birthdays: [],
@@ -244,6 +248,23 @@ export function dayHasEvents(day: CalendarDay): boolean {
         day.chips.length > 0 ||
         day.birthdays.length > 0
     );
+}
+
+/** How many things fall on a day (holidays, leave chips, birthdays). */
+export function dayEventCount(day: CalendarDay): number {
+    return day.holidays.length + day.chips.length + day.birthdays.length;
+}
+
+/** The accessible name of a day box's button: "Mon 14, 3 items". */
+export function dayButtonLabel(day: CalendarDay): string {
+    const n = dayEventCount(day);
+
+    return `${day.weekday} ${day.day}, ${n} ${n === 1 ? 'item' : 'items'}`;
+}
+
+/** A leave type's first letter, upper case, for a chip ("annual" → "A"); "" for an empty name. */
+export function typeInitial(type: string): string {
+    return type.trim().charAt(0).toUpperCase();
 }
 
 /** The phone agenda: only the days that have something, in date order. */

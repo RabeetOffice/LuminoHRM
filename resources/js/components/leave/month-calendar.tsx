@@ -11,9 +11,12 @@ import {
     CALENDAR_WEEKDAYS,
     calendarAgenda,
     calendarWeeks,
+    dayButtonLabel,
+    dayHasEvents,
     halfLabel,
     halfMark,
     leaveDotClass,
+    typeInitial,
     visibleChips,
 } from '@/lib/leave';
 import type { CalendarChip, CalendarDay } from '@/lib/leave';
@@ -29,7 +32,9 @@ type Props = {
 /**
  * The month: a Monday-first grid from the `sm` breakpoint up, and an agenda list of the days that have something on a
  * phone. Each day box shows the holiday (star), up to three leave chips (colour dot + first name, "½" for a half day,
- * dashed for the viewer's own pending request), "+N more" opening the day's full list, and a cake for birthdays.
+ * the type's initial, dashed for the viewer's own pending request), "+N more" opening the day's full list, and a cake
+ * for birthdays. The day number of a day with something on it is a button opening that list (types written out).
+ * Shading marks the default shift's weekly offs.
  */
 export function MonthCalendar({ days, firstWeekday, label }: Props) {
     const [openDay, setOpenDay] = useState<CalendarDay | null>(null);
@@ -131,16 +136,34 @@ function DayBox({
             )}
         >
             <div className="flex items-center justify-between gap-1">
-                <span
-                    className={cn(
-                        'text-xs text-muted-foreground tabular-nums',
-                        day.isToday && 'font-semibold text-primary',
-                    )}
-                >
-                    <span className="sr-only">{day.weekday} </span>
-                    {day.day}
-                    {day.isToday && <span className="sr-only"> (today)</span>}
-                </span>
+                {dayHasEvents(day) ? (
+                    // The day's full list, with each type written out: one keyboard stop per day that has something.
+                    <button
+                        type="button"
+                        onClick={() => onMore(day)}
+                        aria-label={`${dayButtonLabel(day)}${day.isToday ? ' (today)' : ''}: show details`}
+                        title="Show this day"
+                        className={cn(
+                            '-m-0.5 rounded px-1 text-xs text-muted-foreground tabular-nums hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
+                            day.isToday && 'font-semibold text-primary',
+                        )}
+                    >
+                        {day.day}
+                    </button>
+                ) : (
+                    <span
+                        className={cn(
+                            'text-xs text-muted-foreground tabular-nums',
+                            day.isToday && 'font-semibold text-primary',
+                        )}
+                    >
+                        <span className="sr-only">{day.weekday} </span>
+                        {day.day}
+                        {day.isToday && (
+                            <span className="sr-only"> (today)</span>
+                        )}
+                    </span>
+                )}
                 {day.birthdays.length > 0 && (
                     <span
                         className="inline-flex items-center gap-0.5 text-pink-600 dark:text-pink-400"
@@ -212,6 +235,13 @@ function Chip({ chip }: { chip: CalendarChip }) {
                     {mark}
                 </span>
             )}
+            {/* The type as text, not colour only (the day's dialog writes it out in full). */}
+            <span
+                aria-hidden="true"
+                className="ml-auto shrink-0 text-[10px] font-medium text-muted-foreground"
+            >
+                {typeInitial(chip.type)}
+            </span>
             <span className="sr-only">
                 , {chip.type}, {halfLabel(chip.half)}
             </span>
@@ -223,8 +253,8 @@ function Chip({ chip }: { chip: CalendarChip }) {
 function DayDetails({ day }: { day: CalendarDay }) {
     return (
         <ul role="list" className="grid gap-2 text-sm">
-            {day.holidays.map((name) => (
-                <li key={`h-${name}`} className="flex items-center gap-2">
+            {day.holidays.map((name, i) => (
+                <li key={`h-${i}-${name}`} className="flex items-center gap-2">
                     <Star
                         aria-hidden="true"
                         className="size-4 shrink-0 text-violet-600 dark:text-violet-400"
@@ -233,8 +263,11 @@ function DayDetails({ day }: { day: CalendarDay }) {
                     <span className="text-muted-foreground">Holiday</span>
                 </li>
             ))}
-            {day.chips.map((chip) => (
-                <li key={chip.key} className="flex items-center gap-2">
+            {day.chips.map((chip, i) => (
+                <li
+                    key={`c-${i}-${chip.key}`}
+                    className="flex items-center gap-2"
+                >
                     <span
                         aria-hidden="true"
                         className={cn(
@@ -254,8 +287,8 @@ function DayDetails({ day }: { day: CalendarDay }) {
                     </span>
                 </li>
             ))}
-            {day.birthdays.map((name) => (
-                <li key={`b-${name}`} className="flex items-center gap-2">
+            {day.birthdays.map((name, i) => (
+                <li key={`b-${i}-${name}`} className="flex items-center gap-2">
                     <Cake
                         aria-hidden="true"
                         className="size-4 shrink-0 text-pink-600 dark:text-pink-400"

@@ -28,6 +28,8 @@ type Props = {
     pending_own: CalendarPendingEntry[];
     birthdays: { day: number; name: string }[];
     types: { name: string; colour: string }[];
+    /** The default shift's weekly offs, Monday-first indexes (shaded). */
+    weekly_offs: number[];
 };
 
 const SCOPE_TEXT: Record<Props['leave_scope'], string> = {
