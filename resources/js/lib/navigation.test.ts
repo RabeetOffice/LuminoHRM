@@ -94,6 +94,7 @@ describe('ready flag', () => {
         ]);
         expect(r[1].items[3].children?.map((c) => c.title)).toEqual([
             'Daily',
+            'Monthly',
             'Shifts',
         ]);
         expect(r[1].items[4].children?.map((c) => c.title)).toEqual([
@@ -466,6 +467,23 @@ describe('daily attendance', () => {
 
             expect(entry?.soon).toBe(false);
             expect(toUrl(entry?.href ?? '')).toBe('/attendance/daily');
+        }
+    });
+});
+
+describe('monthly attendance', () => {
+    test('is ready for anyone who may see team or all attendance', () => {
+        for (const permission of [
+            'attendance.view-all',
+            'attendance.view-team',
+        ]) {
+            const entry = filterNavigation(navigation, [permission])
+                .flatMap((g) => g.items)
+                .find((i) => i.title === 'Attendance')
+                ?.children?.find((c) => c.title === 'Monthly');
+
+            expect(entry?.soon).toBe(false);
+            expect(toUrl(entry?.href ?? '')).toBe('/attendance/monthly');
         }
     });
 });

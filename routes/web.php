@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Attendance\DailyController;
+use App\Http\Controllers\Attendance\MonthlyController;
 use App\Http\Controllers\Attendance\ShiftController;
 use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\BrandingMediaController;
@@ -110,6 +111,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::delete('{employee}/{date}', [DailyController::class, 'reset'])
             ->whereNumber('employee')->where('date', '\d{4}-\d{2}-\d{2}')->name('reset');
     });
+
+    // Attendance > Monthly: the grid (view-all or view-team, checked in the controller, scoped by EmployeeAccess) and its
+    // .xlsx (attendance.view-all only).
+    Route::get('attendance/monthly', [MonthlyController::class, 'index'])->name('attendance.monthly');
+    Route::get('attendance/monthly/export', [MonthlyController::class, 'export'])
+        ->middleware('can:attendance.view-all')->name('attendance.monthly.export');
 
     // Attendance > Shifts (Admin, HR). The default shift is changed only through make-default.
     Route::middleware('can:attendance.edit')->prefix('attendance/shifts')->name('attendance.shifts.')->group(function () {

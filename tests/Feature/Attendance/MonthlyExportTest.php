@@ -1,0 +1,217 @@
+<?php
+
+use App\Models\Attendance;
+use App\Models\Department;
+use App\Models\Designation;
+use App\Models\Employee;
+use App\Support\Settings;
+use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
+use Illuminate\Testing\TestResponse;
+use PhpOffice\PhpSpreadsheet\Cell\DataType;
+use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
+use Spatie\Activitylog\Models\Activity;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+
+/* "Now" is 2026-11-25 12:00 in Karachi; attendance started on 2026-01-01. */
+
+beforeEach(function () {
+    $this->withoutVite(); // the page is built once by the coordinator, not by this task
+    $this->travelTo(CarbonImmutable::parse('2026-11-25 12:00:00', 'Asia/Karachi'));
+    Settings::set('attendance', ['start_date' => '2026-01-01']);
+    // The Excel package's temporary files go to a folder removed afterwards.
+    $this->excelTemp = sys_get_temp_dir().'/lumino-excel-'.bin2hex(random_bytes(6));
+    config(['excel.temporary_files.local_path' => $this->excelTemp]);
+});
+
+afterEach(function () {
+    File::deleteDirectory($this->excelTemp);
+});
+
+/** The downloaded workbook's first sheet, with styles. */
+function meSheet(TestResponse $response): Worksheet
+{
+    $directory = (string) config('excel.temporary_files.local_path');
+    File::ensureDirectoryExists($directory);
+    $path = $directory.'/t'.bin2hex(random_bytes(6)).'.xlsx';
+    $base = $response->baseResponse;
+
+    if ($base instanceof BinaryFileResponse) {
+        copy($base->getFile()->getPathname(), $path);
+    } else {
+        file_put_contents($path, $response->streamedContent());
+    }
+
+    return IOFactory::createReader('Xlsx')->load($path)->getSheet(0);
+}
+
+/** @param  array<string, mixed>  $attrs */
+function mePerson(array $attrs = []): Employee
+{
+    return Employee::factory()->create(['joining_date' => '2025-01-01', ...$attrs]);
+}
+
+/** @param  array<string, mixed>  $attrs */
+function meDay(Employee $e, string $date, ?string $status, array $attrs = []): void
+{
+    Attendance::factory()->create(['employee_id' => $e->id, 'date' => $date, 'status' => $status, 'closed' => true, ...$attrs]);
+}
+
+// ---------------------------------------------------------------- access
+
+it('lets only the see-everyone attendance permission export', function (string $role, int $status) {
+    $user = userWithRole($role);
+    employeeFor($user);
+
+    expect($this->actingAs($user)->get('/attendance/monthly/export?month=2026-11')->getStatusCode())->toBe($status);
+})->with([
+    'admin' => ['admin', 200],
+    'hr' => ['hr', 200],
+    'manager' => ['manager', 403],
+    'employee' => ['employee', 403],
+]);
+
+it('refuses a month that has not started', function () {
+    $admin = userWithRole('admin');
+
+    $this->actingAs($admin)->get('/attendance/monthly/export?month=2026-12')
+        ->assertRedirect('/attendance/monthly?month=2026-11');
+    expect(Activity::where('description', 'Monthly attendance exported')->count())->toBe(0);
+});
+
+// ---------------------------------------------------------------- file
+
+it('names the file after the month and writes one row per employee with letters per day and totals', function () {
+    $admin = userWithRole('admin');
+    $dept = Department::factory()->create(['name' => 'Engineering']);
+    $desig = Designation::factory()->create(['department_id' => $dept->id, 'name' => 'Engineer']);
+    $e = mePerson(['first_name' => 'Ayesha', 'last_name' => 'Khan', 'employee_code' => 'LD-0001',
+        'department_id' => $dept->id, 'designation_id' => $desig->id]);
+    meDay($e, '2026-11-02', 'present', ['worked_minutes' => 540, 'overtime_minutes' => 45]);
+    meDay($e, '2026-11-03', 'late', ['worked_minutes' => 510, 'late_minutes' => 30]);
+    meDay($e, '2026-11-04', 'half_day', ['worked_minutes' => 210]);
+    meDay($e, '2026-11-05', 'absent', ['worked_minutes' => 0, 'clock_in' => null, 'clock_out' => null]);
+    meDay($e, '2026-11-06', 'on_leave', ['worked_minutes' => 0, 'clock_in' => null, 'clock_out' => null]);
+    meDay($e, '2026-11-07', 'weekend', ['worked_minutes' => 0, 'clock_in' => null, 'clock_out' => null]);
+    meDay($e, '2026-11-10', 'holiday', ['worked_minutes' => 0, 'clock_in' => null, 'clock_out' => null]);
+    meDay($e, '2026-11-11', null);
+
+    $response = $this->actingAs($admin)->get('/attendance/monthly/export?month=2026-11')->assertOk();
+    expect($response->headers->get('content-disposition'))->toContain('attendance-2026-11.xlsx');
+
+    $sheet = meSheet($response);
+    $rows = $sheet->toArray(null, false, false);
+
+    expect($rows)->toHaveCount(2);
+    expect(array_slice($rows[0], 0, 6))->toBe(['Employee Code', 'Name', 'Department', 'Designation', '01 Sun', '02 Mon'])
+        ->and(array_slice($rows[0], 4 + 30))->toBe([
+            'Present', 'Late', 'Half Day', 'Absent', 'On Leave', 'Weekend/Holiday', 'Present-equivalent', 'Working Days',
+            'Worked Hours', 'Late Minutes', 'Overtime Minutes',
+        ]);
+
+    $line = $rows[1];
+    expect(array_slice($line, 0, 4))->toBe(['LD-0001', 'Ayesha Khan', 'Engineering', 'Engineer'])
+        ->and(array_slice($line, 4, 12))->toBe(['–', 'P', 'L', 'HD', 'A', 'LV', 'W', '–', '–', 'H', '–', '–'])
+        // Days still to come.
+        ->and($line[4 + 25])->toBe('–')
+        ->and(array_slice($line, 4 + 30))->toBe(['1', '1', '1', '1', '1', '2', '2.5', '4', '21.00', '30', '45']);
+
+    // Every cell is a text cell.
+    foreach ($sheet->getRowIterator(2, 2) as $row) {
+        foreach ($row->getCellIterator() as $cell) {
+            expect($cell->getDataType())->toBe(DataType::TYPE_STRING);
+        }
+    }
+});
+
+it('has 28, 29, 30 or 31 day columns', function (string $month, int $days) {
+    $admin = userWithRole('admin');
+    mePerson();
+
+    $rows = meSheet($this->actingAs($admin)->get('/attendance/monthly/export?month='.$month))->toArray(null, false, false);
+
+    expect($rows[0])->toHaveCount(4 + $days + 11)
+        ->and($rows[0][4 + $days - 1])->toStartWith(sprintf('%02d ', $days));
+})->with([
+    ['2026-02', 28],
+    ['2024-02', 29],
+    ['2026-09', 30],
+    ['2026-10', 31],
+]);
+
+it('keeps formula-looking names as text with the quote-prefix style', function () {
+    $admin = userWithRole('admin');
+    mePerson(['first_name' => '=HYPERLINK("http://evil.test")', 'last_name' => 'X', 'employee_code' => '+92300']);
+
+    $sheet = meSheet($this->actingAs($admin)->get('/attendance/monthly/export?month=2026-11'));
+
+    expect($sheet->getCell('B2')->getValue())->toBe('=HYPERLINK("http://evil.test") X')
+        ->and($sheet->getCell('B2')->getDataType())->toBe(DataType::TYPE_STRING)
+        ->and($sheet->getStyle('B2')->getQuotePrefix())->toBeTrue()
+        ->and($sheet->getCell('A2')->getValue())->toBe('+92300')
+        ->and($sheet->getStyle('A2')->getQuotePrefix())->toBeTrue();
+});
+
+it('exports every employee of the month, not one page, and honours search and department', function () {
+    $admin = userWithRole('admin');
+    $sales = Department::factory()->create();
+    for ($i = 1; $i <= 30; $i++) {
+        mePerson(['last_name' => sprintf('Person%02d', $i)]);
+    }
+    mePerson(['last_name' => 'Seller', 'department_id' => $sales->id,
+        'designation_id' => Designation::factory()->create(['department_id' => $sales->id])->id]);
+    mePerson(['last_name' => 'NotYet', 'joining_date' => '2026-12-01']);
+
+    $all = meSheet($this->actingAs($admin)->get('/attendance/monthly/export?month=2026-11&page=2'))->toArray(null, false, false);
+    $sellers = meSheet($this->actingAs($admin)->get('/attendance/monthly/export?month=2026-11&department_id='.$sales->id))->toArray(null, false, false);
+    $search = meSheet($this->actingAs($admin)->get('/attendance/monthly/export?month=2026-11&search=person07'))->toArray(null, false, false);
+
+    expect($all)->toHaveCount(32)
+        ->and(array_column(array_slice($sellers, 1), 1))->toHaveCount(1)
+        ->and($sellers[1][1])->toEndWith('Seller')
+        ->and($search)->toHaveCount(2);
+});
+
+it('writes one audit entry with the month, count and filters and no row data', function () {
+    $admin = userWithRole('admin');
+    mePerson(['first_name' => 'Ada', 'last_name' => 'Lovelace']);
+    mePerson(['first_name' => 'Bob', 'last_name' => 'Stone']);
+
+    $this->actingAs($admin)->get('/attendance/monthly/export?month=2026-10&search=ada')->assertOk();
+
+    $entry = Activity::where('log_name', 'attendance')->where('description', 'Monthly attendance exported')->sole();
+    expect($entry->causer_id)->toBe($admin->id)
+        ->and($entry->properties['month'])->toBe('2026-10')
+        ->and($entry->properties['rows'])->toBe(1)
+        ->and($entry->properties['filters'])->toBe(['search' => 'ada', 'department_id' => null]);
+    expect(json_encode($entry->properties))->not->toContain('Lovelace');
+});
+
+it('runs no query per employee or per day', function () {
+    $admin = userWithRole('admin');
+    $count = function (string $month) use ($admin): int {
+        $queries = 0;
+        DB::listen(function () use (&$queries) {
+            $queries++;
+        });
+        $this->actingAs($admin)->get('/attendance/monthly/export?month='.$month)->assertOk();
+
+        return $queries;
+    };
+
+    $first = mePerson();
+    meDay($first, '2026-02-02', 'present');
+    $count('2026-01'); // warm-up
+    $february = $count('2026-02');
+
+    foreach (Employee::factory()->count(12)->create(['joining_date' => '2025-01-01']) as $e) {
+        for ($d = 1; $d <= 31; $d++) {
+            meDay($e, sprintf('2026-03-%02d', $d), 'late', ['late_minutes' => 5]);
+        }
+    }
+    $march = $count('2026-03');
+
+    expect($march)->toBe($february)->and($march)->toBeLessThanOrEqual(10);
+});
