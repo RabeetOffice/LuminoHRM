@@ -43,7 +43,8 @@ use Symfony\Component\HttpFoundation\BinaryFileResponse;
  * Years: from the earliest balance year (or this year) to next year; anything else means this year.
  *
  * Rows are created (LeaveBalances::ensureRow, only the missing pairs) for the listed people the viewer may administer,
- * only for this leave year and the next. Anyone else's figure for a year without a row is the projection
+ * only for this leave year (next year is projected until an application, the allocation job or an HR edit creates its
+ * rows). Unpaid or inactive types are 404 on the edit route. Anyone else's figure for a year without a row is the projection
  * (BalanceLine::projected), which the page shows as such. Balance rows of unpaid types are never shown: an unpaid
  * type's cell is its used days (BalanceLine::toArray, unlimited). Inactive types are not columns.
  *
@@ -91,7 +92,9 @@ class BalanceController extends Controller
                 $editable[$employee->id] = $routing->mayAdminister($user, $employee);
             }
 
-            if ($year === $current || $year === $current + 1) {
+            // Only this leave year (ruling A): next year is shown as projected lines; its rows are created on demand
+            // (an application, the allocation job, or an HR edit).
+            if ($year === $current) {
                 $this->ensureRows($people->filter(fn (Employee $e) => $editable[$e->id] && ! Leavers::withoutLastDay($e)), $types, $year);
             }
         }
@@ -160,7 +163,8 @@ class BalanceController extends Controller
 
         // Out of scope or not administrable: 403 before anything about the type or year is revealed.
         abort_unless((new EmployeeAccess($user))->canView($employee) && (new LeaveRouting)->mayAdminister($user, $employee), 403);
-        abort_if($type->isUnpaid(), 404);
+        // Unpaid types have no balance; inactive types are not columns of the grid, so not editable by URL either.
+        abort_if($type->isUnpaid() || ! $type->is_active, 404);
 
         $current = $this->currentYear();
         abort_unless(in_array($year, $this->years($current), true), 404);
@@ -181,6 +185,7 @@ class BalanceController extends Controller
                 (string) $request->input('reason'),
                 $request->boolean('confirm_overdrawn'),
                 $user,
+                $request->expected(),
             );
         } catch (AuthorizationException) {
             abort(403);

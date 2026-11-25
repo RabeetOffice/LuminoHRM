@@ -11,11 +11,13 @@ use App\Support\Attendance\PunchIngestor;
 use App\Support\Attendance\RebuildMarks;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeRoles;
+use App\Support\Leave\BalanceLine;
 use App\Support\Leave\LeaveBalances;
 use App\Support\Leave\LeaveDays;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Spatie\Activitylog\Models\Activity;
 
 /**
  * Saves the employee form: the employee row, the contact and bank rows, and the linked account's name, email and role
@@ -30,6 +32,9 @@ use Illuminate\Validation\ValidationException;
 class UpdateEmployee
 {
     private bool $linkSent = false;
+
+    /** @var list<string> */
+    private array $warnings = [];
 
     public function __construct(private readonly EmployeeWriter $writer) {}
 
@@ -61,10 +66,12 @@ class UpdateEmployee
     public function handle(Employee $employee, array $data, User $by, bool $syncAccount = true): Employee
     {
         $this->linkSent = false;
+        $this->warnings = [];
         $this->writer->reset();
 
         $saved = DB::transaction(function () use ($employee, $data, $by, $syncAccount): Employee {
             $this->writer->reset(); // a deadlock retry runs this again
+            $this->warnings = [];
             $current = Employee::query()->whereKey($employee->getKey())->lockForUpdate()->firstOrFail();
 
             // A privileged account (admin or hr, as stored now) is only edited by an Admin: nothing is written otherwise.
@@ -158,38 +165,70 @@ class UpdateEmployee
     }
 
     /**
-     * A new joining date changes the pro-rated allocation of the old and the new joining year. A balance row of either
-     * year whose `allocated` still equals LeaveBalances::allocationFor under the OLD joining date (HR never edited it)
-     * gets allocationFor under the new one; a row HR edited is left alone. Unpaid types have no balance. One entry
-     * "Leave allocation recalculated" per row changed (subject the employee; year, type, old / new allocated).
+     * Messages for the person who saved (shown as a flash): a recalculated allocation that leaves a balance overdrawn,
+     * e.g. "Annual 2026 is now overdrawn by 3 days." The save still happened.
+     *
+     * @return list<string>
+     */
+    public function warnings(): array
+    {
+        return $this->warnings;
+    }
+
+    /**
+     * A new joining date changes the allocation of every year from the earlier to the later joining year (pro-rated in
+     * the joining year, nothing before it, the full quota after it). A balance row of those years is recalculated to
+     * LeaveBalances::allocationFor under the new date when it is untouched:
+     *   - no "Leave balance adjusted" entry ever changed its `allocated` (the audit trail of HR's edits), and
+     *   - its `allocated` equals allocationFor under the OLD joining date (the value it was created with, as far as
+     *     can be told now: the row does not store its creation value, so a row created under another quota or
+     *     pro-rating setting no longer matches and is kept as it is, the safe side).
+     * A recalculated row that ends overdrawn is still saved (ruling C) and adds a warning (warnings()). Unpaid types have
+     * no balance. One entry "Leave allocation recalculated" per row changed (subject the employee; year, type, old / new
+     * allocated).
      */
     private function recalculateAllocations(Employee $before, Employee $after, User $by): void
     {
         $balances = app(LeaveBalances::class);
-        $years = array_values(array_unique([
-            (int) $before->joining_date->format('Y'),
-            (int) $after->joining_date->format('Y'),
-        ]));
+        $oldYear = (int) $before->joining_date->format('Y');
+        $newYear = (int) $after->joining_date->format('Y');
 
         $rows = LeaveBalance::query()
             ->with('type')
             ->where('employee_id', $after->getKey())
-            ->whereIn('year', $years)
+            ->whereBetween('year', [min($oldYear, $newYear), max($oldYear, $newYear)])
             ->orderBy('year')->orderBy('leave_type_id')
             ->lockForUpdate()
             ->get();
 
+        if ($rows->isEmpty()) {
+            return;
+        }
+
+        // "type id:year" of every row whose allocated HR changed at some point.
+        $edited = [];
+        foreach (Activity::query()
+            ->where('log_name', 'leave')->where('description', 'Leave balance adjusted')
+            ->where('subject_type', $after->getMorphClass())->where('subject_id', $after->getKey())
+            ->get(['properties']) as $entry) {
+            $p = $entry->properties;
+
+            if (LeaveDays::halves($p['old']['allocated'] ?? 0) !== LeaveDays::halves($p['attributes']['allocated'] ?? 0)) {
+                $edited[(int) ($p['type_id'] ?? 0).':'.(int) ($p['year'] ?? 0)] = true;
+            }
+        }
+
         foreach ($rows as $row) {
             $type = $row->type;
 
-            if ($type === null || $type->isUnpaid()) {
+            if ($type === null || $type->isUnpaid() || isset($edited[$type->id.':'.(int) $row->year])) {
                 continue;
             }
 
             $oldAllocation = $balances->allocationFor($before, $type, (int) $row->year);
 
             if (LeaveDays::halves($row->allocated) !== LeaveDays::halves($oldAllocation)) {
-                continue; // HR edited this row
+                continue; // edited by other means, or created under another quota / setting: kept
             }
 
             $newAllocation = $balances->allocationFor($after, $type, (int) $row->year);
@@ -207,6 +246,13 @@ class UpdateEmployee
                 'old' => ['allocated' => LeaveDays::fromHalves(LeaveDays::halves($oldAllocation))],
                 'attributes' => ['allocated' => LeaveDays::fromHalves(LeaveDays::halves($newAllocation))],
             ], $by);
+
+            $line = $balances->line($after, $type, (int) $row->year);
+
+            if ($line->remaining < 0) {
+                $days = BalanceLine::format(abs($line->remaining));
+                $this->warnings[] = "{$type->name} {$row->year} is now overdrawn by {$days} ".($days === '1' ? 'day' : 'days').'.';
+            }
         }
     }
 }

@@ -202,13 +202,18 @@ it('lets HR edit neither their own nor another HR person\'s balance; an Admin ma
     expect((float) LeaveBalance::query()->where('employee_id', $otherRecord->id)->where('leave_type_id', leaveType('Annual')->id)->value('allocated'))->toBe(15.0);
 });
 
-it('shows next year as a projection to a Manager and creates next year rows for HR', function () {
+it('shows next year as projected lines and creates no rows for it, even for HR', function () {
     $hr = blUser('hr');
     $e = blPerson();
     blRow($e, 'Annual', 2026, 14);
 
-    expect(blCell(blProps($hr, 'year=2027'), $e, 'Annual')['projected'])->toBeFalse()
-        ->and(LeaveBalance::query()->where('employee_id', $e->id)->where('year', 2027)->count())->toBe(3);
+    expect(blCell(blProps($hr, 'year=2027'), $e, 'Annual')['projected'])->toBeTrue()
+        ->and(blCell(blProps($hr, 'year=2027'), $e, 'Annual')['can_edit'])->toBeTrue()
+        ->and(LeaveBalance::query()->where('year', 2027)->count())->toBe(0);
+
+    // An HR edit of a next-year cell creates its row.
+    blPut($hr, $e, 'Annual', 2027, ['allocated' => 15])->assertSessionHasNoErrors();
+    expect(LeaveBalance::query()->where('employee_id', $e->id)->where('year', 2027)->count())->toBe(1);
 
     // A past year is never written by viewing it.
     blProps($hr, 'year=2025');
@@ -258,6 +263,32 @@ it('reads a fixed number of queries whatever the number of people on the page', 
     expect($count())->toBe($few);
 });
 
+it('reads a fixed number of queries whatever the number of leave types', function () {
+    $admin = blUser('hr');
+    foreach (Employee::factory()->count(3)->create(['joining_date' => '2024-03-01']) as $e) {
+        approvedLeave($e, '2026-11-02');
+    }
+
+    $count = function () use ($admin): int {
+        $this->actingAs($admin)->get('/leave/balances')->assertOk(); // first visit ensures rows
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $this->actingAs($admin)->get('/leave/balances')->assertOk();
+        $n = count(DB::getQueryLog());
+        DB::disableQueryLog();
+
+        return $n;
+    };
+
+    $few = $count();
+
+    foreach (['Study', 'Hajj', 'Paternity', 'Bereavement'] as $i => $name) {
+        leaveType($name, ['is_paid' => true, 'yearly_quota' => 3 + $i, 'carry_forward' => $i % 2 === 0, 'carry_forward_cap' => 2, 'sort_order' => 10 + $i]);
+    }
+
+    expect($count())->toBe($few);
+});
+
 // --- adjustment -----------------------------------------------------------------------------------------------
 
 it('saves an adjustment and audits the old and new figures with the reason', function () {
@@ -282,14 +313,88 @@ it('saves an adjustment and audits the old and new figures with the reason', fun
         ->and($entry->properties['attributes'])->toEqual(['allocated' => 12.5, 'adjustment' => -1.0, 'opening_used' => 2.0]);
 });
 
-it('creates the row when it is missing, and writes nothing when no figure changes', function () {
+it('creates no row when a projected cell is saved unchanged, and creates it when a figure changes', function () {
     $hr = blUser('hr');
     $e = blPerson();
 
-    blPut($hr, $e, 'Annual', 2026, ['allocated' => 14])->assertSessionHas('success', 'Nothing changed.');
+    blPut($hr, $e, 'Annual', 2026, ['allocated' => 14, 'original_allocated' => 14, 'original_adjustment' => 0, 'original_opening_used' => 0])
+        ->assertSessionHasNoErrors()->assertSessionHas('success', 'Nothing changed.');
+
+    expect(LeaveBalance::query()->where('employee_id', $e->id)->count())->toBe(0)
+        ->and(Activity::query()->where('description', 'Leave balance adjusted')->count())->toBe(0);
+
+    blPut($hr, $e, 'Annual', 2026, ['allocated' => 14, 'adjustment' => 1, 'original_allocated' => 14, 'original_adjustment' => 0, 'original_opening_used' => 0])
+        ->assertSessionHasNoErrors()->assertSessionHas('success', 'Balance updated.');
 
     expect(LeaveBalance::query()->where('employee_id', $e->id)->count())->toBe(1)
+        ->and(Activity::query()->where('description', 'Leave balance adjusted')->sole()->properties['old'])
+        ->toEqual(['allocated' => 14.0, 'adjustment' => 0.0, 'opening_used' => 0.0]);
+});
+
+it('refuses a save when the balance changed since the dialog was opened', function () {
+    $hr = blUser('hr');
+    $e = blPerson();
+    blRow($e, 'Annual', 2026, 14, 2);
+
+    // Opened when the row held 14 / 0 / 0; someone has since set the adjustment to 2.
+    blPut($hr, $e, 'Annual', 2026, ['allocated' => 16, 'original_allocated' => 14, 'original_adjustment' => 0, 'original_opening_used' => 0])
+        ->assertSessionHasErrors(['balance' => 'This balance changed since you opened it. Reopen it.']);
+
+    $row = LeaveBalance::query()->where('employee_id', $e->id)->first();
+    expect([(float) $row->allocated, (float) $row->adjustment])->toBe([14.0, 2.0])
         ->and(Activity::query()->where('description', 'Leave balance adjusted')->count())->toBe(0);
+
+    blPut($hr, $e, 'Annual', 2026, ['allocated' => 16, 'adjustment' => 2, 'original_allocated' => 14, 'original_adjustment' => 2, 'original_opening_used' => 0])
+        ->assertSessionHasNoErrors();
+    expect((float) LeaveBalance::query()->where('employee_id', $e->id)->value('allocated'))->toBe(16.0);
+});
+
+it('needs a confirmation when lowering last year overdraws this year through the carry', function () {
+    $hr = blUser('hr');
+    $e = blPerson(['first_name' => 'Sara']);
+    blRow($e, 'Annual', 2025, 14);       // nothing used: 5 (the cap) carries into 2026
+    blRow($e, 'Annual', 2026, 1);
+    approvedLeave($e, '2026-11-02', '2026-11-06'); // 5 used in 2026: remaining 1 + 5 − 5 = 1
+
+    // 2025 down to 1 remaining: 1 carries, so 2026 becomes 1 + 1 − 5 = −3.
+    blPut($hr, $e, 'Annual', 2025, ['allocated' => 10, 'opening_used' => 9])
+        ->assertSessionHasErrors(['confirm_overdrawn' => 'This leaves Sara overdrawn by 3 days in 2026. Tick the box to confirm.']);
+    expect((float) LeaveBalance::query()->where('employee_id', $e->id)->where('year', 2025)->value('allocated'))->toBe(14.0);
+
+    blPut($hr, $e, 'Annual', 2025, ['allocated' => 10, 'opening_used' => 9, 'confirm_overdrawn' => true])->assertSessionHasNoErrors();
+    expect((float) LeaveBalance::query()->where('employee_id', $e->id)->where('year', 2025)->value('allocated'))->toBe(10.0);
+});
+
+it('does not ask about next year for a type without carry-forward, or when next year has nothing taken', function () {
+    $hr = blUser('hr');
+    $e = blPerson();
+    blRow($e, 'Annual', 2025, 14);
+    blRow($e, 'Annual', 2026, 0, -3); // already short, but nothing taken or pending in 2026
+    blRow($e, 'Sick', 2025, 8);
+    blRow($e, 'Sick', 2026, 1);
+    approvedLeave($e, '2026-11-02', '2026-11-03', null, 'Sick');
+
+    blPut($hr, $e, 'Annual', 2025, ['allocated' => 2])->assertSessionHasNoErrors();
+    blPut($hr, $e, 'Sick', 2025, ['allocated' => 0])->assertSessionHasNoErrors();
+});
+
+it('refuses editing an inactive paid type by URL', function () {
+    $e = blPerson();
+    leaveType('Casual', ['is_active' => false]);
+
+    blPut(blUser('hr'), $e, 'Casual', 2026)->assertNotFound();
+
+    expect(LeaveBalance::query()->count())->toBe(0);
+});
+
+it('lets an Admin edit their own balance', function () {
+    $admin = blUser('admin');
+    $own = Employee::query()->find($admin->employee_id);
+
+    expect(blCell(blProps($admin), $own, 'Annual')['can_edit'])->toBeTrue();
+
+    blPut($admin, $own, 'Annual', 2026, ['allocated' => 16])->assertSessionHasNoErrors()->assertSessionHas('success', 'Balance updated.');
+    expect((float) LeaveBalance::query()->where('employee_id', $own->id)->where('leave_type_id', leaveType('Annual')->id)->value('allocated'))->toBe(16.0);
 });
 
 it('needs a confirmation to leave a balance overdrawn, then saves it', function () {

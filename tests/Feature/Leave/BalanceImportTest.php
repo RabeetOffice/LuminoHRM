@@ -1,5 +1,7 @@
 <?php
 
+use App\Http\Controllers\EmployeeImportController;
+use App\Http\Controllers\Leave\BalanceImportController;
 use App\Models\Employee;
 use App\Models\LeaveBalance;
 use App\Models\User;
@@ -261,7 +263,7 @@ it('refuses another user\'s token', function () {
     lbiRun(lbiHr('admin'), $preview['token'])->assertSessionHas('error');
 
     expect(LeaveBalance::query()->count())->toBe(0)
-        ->and(EmployeeImportStore::path($preview['token'], $hr))->not->toBeNull();
+        ->and(EmployeeImportStore::path($preview['token'], $hr, EmployeeImportStore::KIND_LEAVE_OPENING))->not->toBeNull();
 });
 
 it('lets an Admin import an HR person\'s opening balance', function () {
@@ -272,4 +274,88 @@ it('lets an Admin import an HR person\'s opening balance', function () {
     lbiRun($admin, $preview['token'])->assertSessionHas('success');
 
     expect(lbiOpening($hrUser->employee, 'Annual', 2026))->toBe(1.0);
+});
+
+test('Managers and Employees may not upload a file for preview', function (string $role) {
+    $this->actingAs(lbiHr($role))->post('/leave/balances/import/preview', ['file' => lbiXlsx([['LD-0001', 'Annual', 2026, 1]])])
+        ->assertForbidden();
+
+    expect(Storage::disk('local')->files('imports'))->toBe([]);
+})->with(['manager', 'employee']);
+
+it('keeps a separate pending upload per import kind', function () {
+    $hr = lbiHr();
+    $e = lbiPerson();
+
+    $employeeToken = EmployeeImportStore::put(lbiXlsx([[$e->employee_code, 'Annual', 2026, 1]]), $hr);
+    $preview = lbiPreview($hr, lbiXlsx([[$e->employee_code, 'Annual', 2026, 1]]));
+
+    // A leave-opening upload leaves the employee preview alone, and each token works only for its own kind.
+    expect(EmployeeImportStore::path($employeeToken, $hr))->not->toBeNull()
+        ->and(EmployeeImportStore::path($preview['token'], $hr, EmployeeImportStore::KIND_LEAVE_OPENING))->not->toBeNull()
+        ->and(EmployeeImportStore::path($preview['token'], $hr))->toBeNull()
+        ->and(EmployeeImportStore::path($employeeToken, $hr, EmployeeImportStore::KIND_LEAVE_OPENING))->toBeNull();
+
+    // A new employee upload replaces only the previous employee one.
+    $second = EmployeeImportStore::put(lbiXlsx([[$e->employee_code, 'Annual', 2026, 1]]), $hr);
+    expect(EmployeeImportStore::path($employeeToken, $hr))->toBeNull()
+        ->and(EmployeeImportStore::path($second, $hr))->not->toBeNull()
+        ->and(EmployeeImportStore::path($preview['token'], $hr, EmployeeImportStore::KIND_LEAVE_OPENING))->not->toBeNull();
+
+    // A new leave-opening upload replaces only the previous leave-opening one.
+    $again = lbiPreview($hr, lbiXlsx([[$e->employee_code, 'Annual', 2026, 2]]));
+    expect(EmployeeImportStore::path($preview['token'], $hr, EmployeeImportStore::KIND_LEAVE_OPENING))->toBeNull()
+        ->and(EmployeeImportStore::path($again['token'], $hr, EmployeeImportStore::KIND_LEAVE_OPENING))->not->toBeNull()
+        ->and(EmployeeImportStore::path($second, $hr))->not->toBeNull();
+
+    // The employee token cannot be run as an opening import.
+    lbiRun($hr, $second)->assertSessionHas('error');
+    expect(LeaveBalance::query()->count())->toBe(0);
+});
+
+it('warns when a previous-year row overdraws this year through the carry', function () {
+    $hr = lbiHr();
+    $e = lbiPerson(['first_name' => 'Sara']);
+    LeaveBalance::query()->create(['employee_id' => $e->id, 'leave_type_id' => leaveType('Annual')->id, 'year' => 2025, 'allocated' => 14, 'adjustment' => 0, 'opening_used' => 0]);
+    LeaveBalance::query()->create(['employee_id' => $e->id, 'leave_type_id' => leaveType('Annual')->id, 'year' => 2026, 'allocated' => 1, 'adjustment' => 0, 'opening_used' => 0]);
+    approvedLeave($e, '2026-11-02', '2026-11-06'); // 5 used in 2026; 5 carried from 2025 ? remaining 1
+
+    $preview = lbiPreview($hr, lbiXlsx([
+        [$e->employee_code, 'Annual', 2025, 13], // 2025 remaining 1 ? carries 1 ? 2026: 1 + 1 - 5 = -3
+        [$e->employee_code, 'Sick', 2025, 3],    // no carry-forward: no warning
+    ]));
+
+    expect($preview['rows'][0]['errors'])->toBe([])
+        ->and($preview['rows'][0]['warnings'])->toBe(['This leaves Sara overdrawn by 3 days in 2026.'])
+        ->and($preview['rows'][1]['warnings'])->toBe([]);
+});
+
+it('shows "Import failed" instead of an error page when the run fails, and keeps the upload', function () {
+    $hr = lbiHr();
+    $e = lbiPerson();
+    $preview = lbiPreview($hr, lbiXlsx([[$e->employee_code, 'Annual', 2026, 1]]));
+
+    $this->app->bind(BalanceImportController::class, fn () => new class extends BalanceImportController
+    {
+        private bool $failed = false;
+
+        protected function extendTimeLimit(): void
+        {
+            if (! $this->failed) {
+                $this->failed = true;
+
+                throw new RuntimeException('set_time_limit is disabled');
+            }
+        }
+    });
+
+    lbiRun($hr, $preview['token'])
+        ->assertRedirect('/leave/balances/import?token='.$preview['token'])
+        ->assertSessionHas('error', EmployeeImportController::FAILED);
+
+    expect(LeaveBalance::query()->count())->toBe(0);
+
+    // The lock was released and the upload kept: the same token runs at once.
+    lbiRun($hr, $preview['token'])->assertRedirect('/leave/balances')->assertSessionHas('success');
+    expect(lbiOpening($e, 'Annual', 2026))->toBe(1.0);
 });

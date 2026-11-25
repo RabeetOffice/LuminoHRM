@@ -17,7 +17,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
-import { daysLabel, remainingAfter } from '@/lib/leave-balance';
+import { daysLabel, editedFigures, remainingAfter } from '@/lib/leave-balance';
 import type { BalanceCell } from '@/lib/leave-balance';
 import { cn } from '@/lib/utils';
 
@@ -41,12 +41,25 @@ export function BalanceDialog({ employee, cell, onClose }: Props) {
         opening_used: String(cell.opening_used),
         reason: '',
         confirm_overdrawn: false,
+        // The figures the dialog was opened with: the server refuses the save
+        // when the balance changed since (someone else saved in between).
+        original_allocated: cell.allocated,
+        original_adjustment: cell.adjustment,
+        original_opening_used: cell.opening_used,
     });
     const { data, errors } = form;
+    const staleError = (errors as Record<string, string | undefined>).balance;
 
     const remaining = editable
         ? remainingAfter(cell, data)
         : (cell.remaining ?? null);
+    const shown = editable
+        ? editedFigures(cell, data)
+        : {
+              allocated: cell.allocated,
+              adjustment: cell.adjustment,
+              opening_used: cell.opening_used,
+          };
     const overdrawn = remaining !== null && remaining < 0;
 
     const submit = (event: FormEvent) => {
@@ -72,13 +85,13 @@ export function BalanceDialog({ employee, cell, onClose }: Props) {
                       label: cell.projected
                           ? 'Allocated (expected)'
                           : 'Allocated',
-                      value: daysLabel(cell.allocated),
+                      value: daysLabel(shown.allocated),
                   },
                   { label: 'Carried forward', value: daysLabel(cell.carried) },
-                  { label: 'Adjustment', value: daysLabel(cell.adjustment) },
+                  { label: 'Adjustment', value: daysLabel(shown.adjustment) },
                   {
                       label: 'Opening used',
-                      value: daysLabel(cell.opening_used),
+                      value: daysLabel(shown.opening_used),
                   },
                   { label: 'Used', value: daysLabel(cell.used) },
                   { label: 'Pending', value: daysLabel(cell.pending) },
@@ -142,6 +155,15 @@ export function BalanceDialog({ employee, cell, onClose }: Props) {
                             </>
                         )}
                     </dl>
+
+                    {staleError && (
+                        <p
+                            role="alert"
+                            className="rounded-lg border border-red-200 bg-red-50/60 p-3 text-sm text-destructive dark:border-red-500/30 dark:bg-red-500/10"
+                        >
+                            {staleError}
+                        </p>
+                    )}
 
                     {cell.unlimited && (
                         <p className="text-sm text-muted-foreground">

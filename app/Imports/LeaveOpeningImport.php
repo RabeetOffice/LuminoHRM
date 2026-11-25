@@ -42,7 +42,9 @@ use ZipArchive;
  *   - Year: the current leave year or the previous one;
  *   - Days Used: 0 to 365 in steps of 0.5;
  *   - the same person, type and year twice in the file: an error on each of those rows.
- * A row that would leave the person overdrawn is a warning, not an error (the run confirms it). A row equal to what is
+ * A row that would leave the person overdrawn is a warning, not an error (the run confirms it); so is a previous-year
+ * row of a carry-forward type that, through the carry, overdraws this year's row holding leave taken or pending (the
+ * warning names the year). A row equal to what is
  * stored is marked unchanged: importing the same file again changes nothing.
  */
 final class LeaveOpeningImport implements ToArray, WithMultipleSheets, WithReadFilter
@@ -231,13 +233,23 @@ final class LeaveOpeningImport implements ToArray, WithMultipleSheets, WithReadF
             }
         }
 
+        // The current year's lines also cover the people of previous-year rows: a previous-year row of a carry-forward
+        // type changes what carries into this year (ruling B).
         $lines = [];
         foreach ($years as $year) {
             $people = new Collection(array_values(array_filter(array_map(
-                fn (array $r) => $r['errors'] === [] && $r['year'] === $year ? $r['employee'] : null,
+                fn (array $r) => $r['errors'] === [] && ($r['year'] === $year || $year === $current) ? $r['employee'] : null,
                 $checked,
             ))));
             $lines[$year] = $people->isEmpty() ? [] : app(LeaveBalances::class)->forEmployees($people->unique('id')->values(), $year);
+        }
+
+        // Opening used the file sets for this year (halves), by "employee:type": the carry check uses it.
+        $fileCurrent = [];
+        foreach ($checked as $row) {
+            if ($row['errors'] === [] && $row['year'] === $current) {
+                $fileCurrent["{$row['employee']->id}:{$row['type']->id}"] = LeaveDays::halves($row['days']);
+            }
         }
 
         $result = [];
@@ -262,7 +274,16 @@ final class LeaveOpeningImport implements ToArray, WithMultipleSheets, WithReadF
                     $unchanged = ! $line->projected && LeaveDays::halves($line->openingUsed) === LeaveDays::halves($days);
 
                     if ($remaining < 0) {
-                        $warnings[] = rtrim(str_replace(' Tick the box to confirm.', '', AdjustBalance::overdrawnMessage($employee, $remaining)));
+                        $warnings[] = self::warning(AdjustBalance::overdrawnMessage($employee, $remaining));
+                    }
+
+                    if ($row['year'] === $current - 1 && $type->carry_forward) {
+                        $next = $lines[$current][$employee->id][$type->id] ?? null;
+                        $after = $next === null ? null : self::nextAvailableAfter($next, $remaining, $type, $fileCurrent["{$employee->id}:{$type->id}"] ?? null);
+
+                        if ($after !== null && $after < 0 && $after < $next->available) {
+                            $warnings[] = self::warning(AdjustBalance::overdrawnMessage($employee, $after, $current));
+                        }
                     }
                 }
 
@@ -280,6 +301,32 @@ final class LeaveOpeningImport implements ToArray, WithMultipleSheets, WithReadF
         }
 
         return $result;
+    }
+
+    /** AdjustBalance's overdrawn message without the "tick the box" part (the run confirms every row). */
+    private static function warning(string $message): string
+    {
+        return rtrim(str_replace(' Tick the box to confirm.', '', $message));
+    }
+
+    /**
+     * This year's available days once a previous-year row sets that year's remaining to $previousRemaining (and, when the
+     * file also has this year's row, its opening used to $currentOpeningHalves): the carry is
+     * min(max(0, remaining), cap), as in LeaveBalances. Null when this year has no row, or no leave taken or pending.
+     */
+    private static function nextAvailableAfter(BalanceLine $next, float $previousRemaining, LeaveType $type, ?int $currentOpeningHalves): ?float
+    {
+        if ($next->projected || ($next->used <= 0 && $next->pending <= 0)) {
+            return null;
+        }
+
+        $carried = min(max(0, LeaveDays::halves($previousRemaining)), LeaveDays::halves($type->carry_forward_cap));
+        $opening = $currentOpeningHalves ?? LeaveDays::halves($next->openingUsed);
+
+        return LeaveDays::fromHalves(
+            LeaveDays::halves($next->available) - LeaveDays::halves($next->carried) + $carried
+            + LeaveDays::halves($next->openingUsed) - $opening,
+        );
     }
 
     /** A cell as trimmed text: 2026.0 → "2026", 1.5 → "1.5", null → "". */

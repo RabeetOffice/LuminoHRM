@@ -198,8 +198,17 @@ class EmployeeImportController extends Controller
         ];
     }
 
-    /** Gives a long import room to finish. Never fatal: a host may disable set_time_limit(), and the lock must still be released. */
+    /** Gives a long import room to finish (overridable in tests; see extendRunTimeLimit). */
     protected function extendTimeLimit(): void
+    {
+        self::extendRunTimeLimit();
+    }
+
+    /**
+     * Shared by every import run (employees, leave opening balances): raises PHP's time limit to RUN_SECONDS. Never
+     * fatal: a host may disable set_time_limit(), and the run lock must still be released.
+     */
+    public static function extendRunTimeLimit(): void
     {
         // Not in the console (tests, tinker): a limit there would also bound everything that runs after this.
         if (app()->runningInConsole() || ! function_exists('set_time_limit')) {
@@ -208,7 +217,7 @@ class EmployeeImportController extends Controller
 
         try {
             @set_time_limit(self::RUN_SECONDS);
-        } catch (\Throwable) {
+        } catch (Throwable) {
             // Ignored: the import runs under the host's own limit.
         }
     }

@@ -87,6 +87,28 @@ export function remainingAfter(
     return halves / 2;
 }
 
+/**
+ * The three editable figures as the breakdown shows them while the form is
+ * edited: each typed value when it is a valid whole or half day, else the
+ * stored figure (so the breakdown never shows a half-typed number).
+ */
+export function editedFigures(
+    cell: Pick<BalanceCell, 'allocated' | 'adjustment' | 'opening_used'>,
+    typed: { allocated: string; adjustment: string; opening_used: string },
+): { allocated: number; adjustment: number; opening_used: number } {
+    const pick = (value: string, stored: number): number => {
+        const halves = parseHalves(value);
+
+        return halves === null ? stored : halves / 2;
+    };
+
+    return {
+        allocated: pick(typed.allocated, cell.allocated),
+        adjustment: pick(typed.adjustment, cell.adjustment),
+        opening_used: pick(typed.opening_used, cell.opening_used),
+    };
+}
+
 /** What a grid cell shows: "9.5 / 14" for a paid type, "3 used" for an unpaid one. */
 export function cellText(cell: BalanceCell): string {
     if (cell.unlimited || cell.remaining === null) {

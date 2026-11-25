@@ -31,8 +31,9 @@ use Throwable;
  * every row -> run. The go-live figures: per employee, paid type and year, the days used so far that year.
  *
  * Same pattern as the employee import: the upload is checked as a file (LeaveOpeningImport::read) and stored under a
- * random 60-minute token for its uploader (EmployeeImportStore, pruned by hrm:prune-imports; a user has one pending
- * import at a time, of either kind). The preview re-reads it and checks every row (LeaveOpeningImport::check), and so
+ * random 60-minute token for its uploader (EmployeeImportStore, kind "leave-opening", pruned by hrm:prune-imports; its
+ * own slot, so a pending employee-import preview is kept). The run raises the time limit like the employee run, and any
+ * unexpected failure shows "The import failed" rather than an error page. The preview re-reads it and checks every row (LeaveOpeningImport::check), and so
  * does the run, which saves all rows or none in ONE transaction: each row sets opening_used through
  * AdjustBalance::setOpeningUsed (reason "Opening balance import", overdrawn confirmed: the preview flagged those rows),
  * which writes a "Leave balance adjusted" entry per row it changes. One more entry "Leave opening balances imported"
@@ -48,7 +49,7 @@ class BalanceImportController extends Controller
         $expired = false;
 
         if ($token !== null) {
-            $path = EmployeeImportStore::path($token, $request->user());
+            $path = EmployeeImportStore::path($token, $request->user(), EmployeeImportStore::KIND_LEAVE_OPENING);
 
             try {
                 $preview = $path === null ? null : $this->preview((string) $token, $path, $request->user());
@@ -95,7 +96,7 @@ class BalanceImportController extends Controller
             return back()->withErrors(['file' => $e->getMessage()]);
         }
 
-        $token = EmployeeImportStore::put($file, $request->user());
+        $token = EmployeeImportStore::put($file, $request->user(), EmployeeImportStore::KIND_LEAVE_OPENING);
 
         return redirect()->route('leave.balances.import', ['token' => $token]);
     }
@@ -117,31 +118,37 @@ class BalanceImportController extends Controller
         }
 
         try {
-            $path = EmployeeImportStore::path($token, $user);
-
-            if ($path === null) {
-                return redirect()->route('leave.balances.import')->with('error', EmployeeImportController::REFUSED);
-            }
-
-            $import = new LeaveOpeningImport;
-
             try {
-                $rows = $import->check($import->read($path)['rows'], $user);
-            } catch (ImportFileException) {
-                EmployeeImportStore::forget($token);
+                $this->extendTimeLimit();
 
-                return redirect()->route('leave.balances.import')->with('error', EmployeeImportController::REFUSED);
-            }
+                $path = EmployeeImportStore::path($token, $user, EmployeeImportStore::KIND_LEAVE_OPENING);
 
-            if (array_filter($rows, fn (array $row) => $row['errors'] !== []) !== []) {
-                return redirect()->route('leave.balances.import', ['token' => $token])->with('error', EmployeeImportController::CHANGED);
-            }
+                if ($path === null) {
+                    return redirect()->route('leave.balances.import')->with('error', EmployeeImportController::REFUSED);
+                }
 
-            try {
-                $counts = $this->save($rows, $adjust, $user);
-            } catch (AuthorizationException) {
-                return redirect()->route('leave.balances.import', ['token' => $token])->with('error', EmployeeImportController::CHANGED);
+                $import = new LeaveOpeningImport;
+
+                try {
+                    $rows = $import->check($import->read($path)['rows'], $user);
+                } catch (ImportFileException) {
+                    EmployeeImportStore::forget($token);
+
+                    return redirect()->route('leave.balances.import')->with('error', EmployeeImportController::REFUSED);
+                }
+
+                if (array_filter($rows, fn (array $row) => $row['errors'] !== []) !== []) {
+                    return redirect()->route('leave.balances.import', ['token' => $token])->with('error', EmployeeImportController::CHANGED);
+                }
+
+                try {
+                    $counts = $this->save($rows, $adjust, $user);
+                } catch (AuthorizationException) {
+                    return redirect()->route('leave.balances.import', ['token' => $token])->with('error', EmployeeImportController::CHANGED);
+                }
             } catch (Throwable $e) {
+                // Anything unexpected (the time-limit call, a re-check, the save): "Import failed", never a 500. The
+                // upload is kept (a failed run never consumes it), so the same file can be run again.
                 report($e);
 
                 return redirect()->route('leave.balances.import', ['token' => $token])->with('error', EmployeeImportController::FAILED);
@@ -158,6 +165,12 @@ class BalanceImportController extends Controller
             'success',
             "Imported {$counts['rows']} rows: {$counts['changed']} {$noun} updated, {$counts['unchanged']} already up to date.",
         );
+    }
+
+    /** Gives a long run room to finish, like the employee import (overridable in tests). */
+    protected function extendTimeLimit(): void
+    {
+        EmployeeImportController::extendRunTimeLimit();
     }
 
     /**

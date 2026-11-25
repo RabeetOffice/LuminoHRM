@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
     cellText,
     daysLabel,
+    editedFigures,
     formatDays,
     parseHalves,
     remainingAfter,
@@ -121,5 +122,27 @@ describe('cellText', () => {
                 }),
             ),
         ).toBe('2 used');
+    });
+});
+
+describe('editedFigures', () => {
+    test('follows the typed values', () => {
+        expect(
+            editedFigures(cell(), {
+                allocated: '12.5',
+                adjustment: '-1',
+                opening_used: '2',
+            }),
+        ).toEqual({ allocated: 12.5, adjustment: -1, opening_used: 2 });
+    });
+
+    test('keeps the stored figure while a typed value is not valid', () => {
+        expect(
+            editedFigures(cell({ adjustment: 1.5 }), {
+                allocated: '',
+                adjustment: '1.25',
+                opening_used: '3',
+            }),
+        ).toEqual({ allocated: 14, adjustment: 1.5, opening_used: 3 });
     });
 });

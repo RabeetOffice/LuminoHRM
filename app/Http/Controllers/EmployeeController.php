@@ -198,7 +198,10 @@ class EmployeeController extends Controller
             default => ['success', 'Employee updated.'],
         };
 
-        return redirect()->route('employees.show', $employee)->with(...$flash);
+        $redirect = redirect()->route('employees.show', $employee)->with(...$flash);
+
+        // A joining-date change that left a recalculated leave balance overdrawn (saved anyway; HR is told).
+        return $update->warnings() === [] ? $redirect : $redirect->with('info', implode(' ', $update->warnings()));
     }
 
     public function status(EmployeeStatusRequest $request, Employee $employee, ChangeEmployeeStatus $change): RedirectResponse

@@ -39,6 +39,28 @@ class LeaveBalanceRequest extends FormRequest
             'opening_used' => $this->daysRule(0),
             'reason' => ['bail', 'required', 'string', 'min:5', 'max:255'],
             'confirm_overdrawn' => ['sometimes', 'boolean'],
+            // The figures the dialog was opened with (the stale-edit guard in AdjustBalance). Optional: all three or none.
+            'original_allocated' => ['nullable', 'numeric', 'required_with:original_adjustment,original_opening_used'],
+            'original_adjustment' => ['nullable', 'numeric', 'required_with:original_allocated,original_opening_used'],
+            'original_opening_used' => ['nullable', 'numeric', 'required_with:original_allocated,original_adjustment'],
+        ];
+    }
+
+    /**
+     * The figures the form was opened with, or null when the client did not send them.
+     *
+     * @return array{allocated: float, adjustment: float, opening_used: float}|null
+     */
+    public function expected(): ?array
+    {
+        if (! $this->filled('original_allocated')) {
+            return null;
+        }
+
+        return [
+            'allocated' => (float) $this->input('original_allocated'),
+            'adjustment' => (float) $this->input('original_adjustment'),
+            'opening_used' => (float) $this->input('original_opening_used'),
         ];
     }
 
