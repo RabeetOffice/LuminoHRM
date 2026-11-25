@@ -289,9 +289,10 @@ class LeaveRouting
             ->all();
 
         $earliest = null;
+        $locked = array_flip(PayrollLock::lockedMonths(array_values(array_unique(array_map(fn (string $d) => substr($d, 0, 7), $dates)))));
 
         foreach ($dates as $date) {
-            if (PayrollLock::isLocked(substr($date, 0, 7))) {
+            if (isset($locked[substr($date, 0, 7)])) {
                 $earliest = null;
 
                 continue;

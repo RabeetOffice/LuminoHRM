@@ -6,6 +6,9 @@ use App\Models\Employee;
 use App\Models\LeaveDay;
 use App\Models\LeaveRequest;
 use App\Models\LeaveType;
+use App\Models\Loan;
+use App\Models\PayrollRun;
+use App\Models\SalaryProfile;
 use App\Models\Shift;
 use App\Models\User;
 use Database\Seeders\RolePermissionSeeder;
@@ -237,5 +240,76 @@ function punch(Employee|string $who, string $at, ?Device $device = null): Device
         'verify_type' => '1',
         'status_code' => '0',
         'source' => 'device',
+    ]);
+}
+
+/**
+ * A salary profile of $employee in force from $from, written directly (no action, no audit). Amounts are whole rupees,
+ * stored in paisa. $allowances: [name, rupees, taxable]; $deductions: [name, rupees]. $taxValue is stored as given:
+ * basis points for percentage (500 = 5%), paisa for fixed. Defaults: the plan's profile P (basic 60,000, House rent
+ * 24,000 taxable, Medical 6,000 not taxable, Provident fund 3,000, tax 5.00% of gross taxable).
+ *
+ * @param  list<array{0: string, 1: int, 2: bool}>  $allowances
+ * @param  list<array{0: string, 1: int}>  $deductions
+ */
+function salaryProfile(
+    Employee $e,
+    int $basicRupees = 60000,
+    array $allowances = [['House rent', 24000, true], ['Medical', 6000, false]],
+    array $deductions = [['Provident fund', 3000]],
+    string $from = '2026-01-01',
+    string $taxMode = 'percentage',
+    int $taxValue = 500,
+    ?string $taxBase = 'gross_taxable',
+): SalaryProfile {
+    $profile = SalaryProfile::query()->create([
+        'employee_id' => $e->id,
+        'effective_from' => $from,
+        'basic' => $basicRupees * 100,
+        'tax_mode' => $taxMode,
+        'tax_value' => $taxValue,
+        'tax_base' => $taxMode === 'percentage' ? $taxBase : null,
+    ]);
+
+    $order = 0;
+    foreach ($allowances as [$name, $rupees, $taxable]) {
+        $profile->components()->create(['name' => $name, 'type' => 'allowance', 'amount' => $rupees * 100, 'is_taxable' => $taxable, 'sort_order' => $order++]);
+    }
+    foreach ($deductions as [$name, $rupees]) {
+        $profile->components()->create(['name' => $name, 'type' => 'deduction', 'amount' => $rupees * 100, 'is_taxable' => false, 'sort_order' => $order++]);
+    }
+
+    return $profile->load('components');
+}
+
+/**
+ * A payroll run of $month ("Y-m") in $status (draft | approved | paid) with no lines, written directly. An approved or
+ * paid run locks the month (App\Support\PayrollLock).
+ */
+function payrollRun(string $month, string $status = 'draft'): PayrollRun
+{
+    return PayrollRun::query()->create([
+        'month' => $month,
+        'status' => $status,
+        'generated_at' => now(),
+        'approved_at' => $status === 'draft' ? null : now(),
+        'paid_at' => $status === 'paid' ? now() : null,
+    ]);
+}
+
+/**
+ * An active loan (or advance with $type 'advance') of $employee, written directly. Amounts in whole rupees, stored in
+ * paisa; $openingRepaidRupees = repaid before go-live.
+ */
+function loanFor(Employee $e, int $amountRupees, int $installmentRupees, string $startMonth, int $openingRepaidRupees = 0, string $type = 'loan'): Loan
+{
+    return Loan::query()->create([
+        'employee_id' => $e->id,
+        'type' => $type,
+        'amount' => $amountRupees * 100,
+        'installment' => $installmentRupees * 100,
+        'start_month' => $startMonth,
+        'opening_repaid' => $openingRepaidRupees * 100,
+        'status' => 'active',
     ]);
 }

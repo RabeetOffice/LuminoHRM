@@ -28,6 +28,7 @@ class Audit
         'employees' => 'Employees',
         'attendance' => 'Attendance',
         'leave' => 'Leave',
+        'payroll' => 'Payroll',
     ];
 
     /** Text from outside (typed email, user agent) made safe to store: valid UTF-8, no control characters, at most $max characters. */

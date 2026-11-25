@@ -22,13 +22,19 @@ trait HasNaiveDateScopes
     /** @param  Builder<static>  $query */
     public function scopeOnDate(Builder $query, DateTimeInterface|string $date): void
     {
-        $query->where($query->qualifyColumn('date'), self::naiveDate($date));
+        $query->where($query->qualifyColumn($this->naiveDateColumn()), self::naiveDate($date));
     }
 
     /** @param  Builder<static>  $query */
     public function scopeBetweenDates(Builder $query, DateTimeInterface|string $from, DateTimeInterface|string $to): void
     {
-        $query->whereBetween($query->qualifyColumn('date'), [self::naiveDate($from), self::naiveDate($to)]);
+        $query->whereBetween($query->qualifyColumn($this->naiveDateColumn()), [self::naiveDate($from), self::naiveDate($to)]);
+    }
+
+    /** The NaiveDate column these scopes read: `date`, unless the model overrides this (SalaryProfile: effective_from). */
+    protected function naiveDateColumn(): string
+    {
+        return 'date';
     }
 
     private static function naiveDate(DateTimeInterface|string $value): string

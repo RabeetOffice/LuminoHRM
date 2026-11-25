@@ -134,6 +134,24 @@ return [
         'colours' => ['emerald', 'sky', 'amber', 'rose', 'violet', 'teal', 'orange', 'slate'],
     ],
 
+    // Allowed values for the Payroll module (stored as plain strings). Rules: see the Phase 5 plan and design.
+    'payroll' => [
+        // draft -> approved (= locked) -> paid. An approved or paid month is frozen (App\Support\PayrollLock).
+        'run_statuses' => ['draft', 'approved', 'paid'],
+        'locked_statuses' => ['approved', 'paid'],
+        // salary_profiles.tax_value: 0 (none), paisa a month (fixed), basis points (percentage, 500 = 5.00%).
+        'tax_modes' => ['none', 'fixed', 'percentage'],
+        // What a percentage tax is taken of.
+        'tax_bases' => ['gross_taxable', 'basic'],
+        'component_types' => ['allowance', 'deduction'],
+        'loan_types' => ['loan', 'advance'],
+        // "Cleared" is not a status: an active loan with nothing remaining (remaining is derived, never stored).
+        'loan_statuses' => ['active', 'cancelled'],
+        'adjustment_types' => ['addition', 'deduction'],
+        // Allowances plus fixed deductions on one salary profile.
+        'max_components' => 20,
+    ],
+
     // Date formats offered in Settings > Company (PHP date() syntax). The stored value must be one of these.
     'date_formats' => ['d M Y', 'd/m/Y', 'm/d/Y', 'Y-m-d', 'd-m-Y', 'M d, Y'],
 
@@ -171,6 +189,12 @@ return [
             'duplicate_punch_minutes' => 5,
             // "H:i": a punch before this time belongs to the previous day (its clock-out after a late night).
             'day_cutoff_time' => '04:00',
+            // Overtime pay (payroll, only while overtime_enabled). multiple: hourly pay (monthly gross / basis days /
+            // overtime_hours_per_day) x overtime_multiplier_percent / 100; fixed: overtime_fixed_rate rupees an hour.
+            'overtime_rate_mode' => 'multiple', // multiple | fixed
+            'overtime_multiplier_percent' => 150,
+            'overtime_fixed_rate' => 0, // whole rupees an hour
+            'overtime_hours_per_day' => 8,
         ],
         'leave' => [
             'hr_step_enabled' => true,
@@ -182,6 +206,8 @@ return [
             'leave_encashment' => false,
             'notice_period_days' => 30,
             'payslip_footer' => '',
+            // First month of the tax year (7 = July to June); a tax year is named by its start year ("2026-27").
+            'tax_year_start_month' => 7,
         ],
         'email' => [
             // An empty host means "use the mailer from .env".

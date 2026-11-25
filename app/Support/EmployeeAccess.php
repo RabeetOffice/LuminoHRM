@@ -34,6 +34,8 @@ class EmployeeAccess
 
     public const LEAVE_ADJUSTMENTS_MESSAGE = 'This employee has leave balance adjustments. Set the status to Inactive, Resigned or Terminated instead.';
 
+    public const PAYROLL_MESSAGE = 'This employee has payroll history. Set the status to Inactive, Resigned or Terminated instead.';
+
     private ?int $ownId = null;
 
     private bool $ownLoaded = false;
@@ -120,6 +122,12 @@ class EmployeeAccess
         // Plain balance rows go with the record (DeleteEmployee); hand-entered figures are kept.
         if (self::hasLeaveBalanceAdjustments((int) $employee->getKey())) {
             $blockers[] = self::LEAVE_ADJUSTMENTS_MESSAGE;
+        }
+
+        // Payroll rows restrict the delete at the database; salary history is kept.
+        if ($employee->salaryProfiles()->exists() || $employee->loans()->exists()
+            || $employee->openingBalances()->exists() || $employee->payrollItems()->exists()) {
+            $blockers[] = self::PAYROLL_MESSAGE;
         }
 
         return $blockers;

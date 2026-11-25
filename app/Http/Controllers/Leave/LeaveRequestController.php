@@ -428,12 +428,14 @@ class LeaveRequestController extends Controller
             ->get();
 
         $windows = [];
+        // One query for every month these days touch.
+        $locked = array_flip(PayrollLock::lockedMonths($rows->map(fn ($row) => (string) $row->month)->unique()->values()->all()));
 
         foreach ($rows as $row) {
             $id = (int) $row->leave_request_id;
             $window = $windows[$id] ?? ['min' => null, 'max' => ''];
 
-            if (PayrollLock::isLocked((string) $row->month)) {
+            if (isset($locked[(string) $row->month])) {
                 $window['min'] = null;
             } else {
                 $window['min'] ??= substr((string) $row->first_day, 0, 10);

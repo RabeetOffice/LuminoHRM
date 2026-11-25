@@ -1,6 +1,8 @@
 <?php
 
 use App\Models\Employee;
+use App\Models\OpeningBalance;
+use App\Models\PayrollItem;
 use App\Models\User;
 use App\Support\EmployeeAccess;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -150,6 +152,25 @@ describe('delete rules', function () {
 
         expect($access->deleteBlockers($target))->toBe([])->and($access->canDelete($target))->toBeFalse();
     });
+
+    it('refuses while the employee has payroll history of any kind', function (Closure $history) {
+        $admin = userWithRole('admin');
+        $target = Employee::factory()->create();
+        $history($target);
+        $access = new EmployeeAccess($admin);
+
+        expect($access->deleteBlockers($target))->toBe([EmployeeAccess::PAYROLL_MESSAGE])
+            ->and(EmployeeAccess::PAYROLL_MESSAGE)->toBe('This employee has payroll history. Set the status to Inactive, Resigned or Terminated instead.')
+            ->and($access->canDelete($target))->toBeFalse();
+
+        $this->actingAs($admin)->delete("/employees/{$target->id}")->assertSessionHas('error', EmployeeAccess::PAYROLL_MESSAGE);
+        expect(Employee::query()->find($target->id))->not->toBeNull();
+    })->with([
+        'a salary profile' => [fn (Employee $e) => salaryProfile($e)],
+        'a loan' => [fn (Employee $e) => loanFor($e, 10000, 5000, '2026-11')],
+        'opening tax figures' => [fn (Employee $e) => OpeningBalance::factory()->create(['employee_id' => $e->id])],
+        'a payroll line' => [fn (Employee $e) => PayrollItem::factory()->create(['employee_id' => $e->id])],
+    ]);
 
     it('lists every blocker, so later phases can add more', function () {
         $admin = userWithRole('admin');

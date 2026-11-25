@@ -166,6 +166,34 @@ class Employee extends Model
         return $this->hasMany(LeaveDay::class);
     }
 
+    /**
+     * Salary profiles, any order (salary data: payroll.view only).
+     *
+     * @return HasMany<SalaryProfile, $this>
+     */
+    public function salaryProfiles(): HasMany
+    {
+        return $this->hasMany(SalaryProfile::class);
+    }
+
+    /** @return HasMany<Loan, $this> */
+    public function loans(): HasMany
+    {
+        return $this->hasMany(Loan::class);
+    }
+
+    /** @return HasMany<PayrollItem, $this> */
+    public function payrollItems(): HasMany
+    {
+        return $this->hasMany(PayrollItem::class);
+    }
+
+    /** @return HasMany<OpeningBalance, $this> */
+    public function openingBalances(): HasMany
+    {
+        return $this->hasMany(OpeningBalance::class);
+    }
+
     /** @return HasOne<EmployeeContact, $this> */
     public function contact(): HasOne
     {

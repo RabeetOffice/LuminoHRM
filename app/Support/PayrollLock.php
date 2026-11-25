@@ -2,16 +2,30 @@
 
 namespace App\Support;
 
+use App\Models\PayrollRun;
+use DateTimeImmutable;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
 /**
- * Whether a payroll month is locked (its payroll has been run and approved), so nothing may add or remove leave days
- * (or other pay-affecting records) dated in it. Payroll arrives in Phase 5: until then no month is locked, but every
- * place that adds or removes leave days on dates already calls this hook (applying for a past date, final approval,
- * cancelling, holiday refunds, exit trimming), so Phase 5 only has to fill in isLocked().
+ * Whether a payroll month is locked: it has an approved or paid run (config('hrm.payroll.locked_statuses')). A locked
+ * month is frozen: nothing may add or remove leave days, attendance, holidays, employment dates or salary records that
+ * touch it. Every write that does calls this (leave since Phase 4; attendance, holidays, employees and salary in
+ * Phase 5).
  *
- *   PayrollLock::isLocked('2026-11');                              // false (this phase)
- *   PayrollLock::firstLocked(['2026-11-24', '2026-12-01']);        // the first locked "Y-m", or null
+ *   PayrollLock::isLocked('2026-11');                              // true once November 2026 is approved
+ *   PayrollLock::firstLocked(['2026-11-24', '2026-12-01']);        // "2026-11", or null when neither month is locked
+ *   PayrollLock::lockedMonths(['2026-10', '2026-11']);             // ["2026-11"] (one query)
+ *   PayrollLock::latestLocked();                                   // "2026-11", or null when nothing is locked yet
+ *   PayrollLock::rangeTouchesLocked('2026-10-15', '2026-12-02');   // "2026-11" (either order, both days included)
+ *   PayrollLock::message('2026-11');                               // "Payroll for November 2026 is approved, so ..."
+ *
+ * Races: inside a transaction (DB::transactionLevel() > 0) the read takes a shared lock on the run rows it reads, so a
+ * write racing an approval (which locks the run row for update first) waits for the approval to commit and then sees
+ * the month locked. Outside a transaction it is a plain read (a check before the real write, which checks again).
+ *
+ * Tests lock a month by creating the run: payrollRun('2026-11', 'approved') (tests/Pest.php).
  */
 final class PayrollLock
 {
@@ -22,15 +36,14 @@ final class PayrollLock
      */
     public static function isLocked(string $month): bool
     {
-        if (preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month) !== 1) {
-            throw new InvalidArgumentException("Not a payroll month [{$month}].");
-        }
+        self::assertMonth($month);
 
-        return false;
+        return self::query()->where('month', $month)->exists();
     }
 
     /**
      * The first "Y-m" (in the order given) among these dates whose payroll month is locked, or null when none is.
+     * Every date is checked for form first; then one query.
      *
      * @param  iterable<string>  $dates  "Y-m-d"
      *
@@ -38,28 +51,130 @@ final class PayrollLock
      */
     public static function firstLocked(iterable $dates): ?string
     {
-        $seen = [];
+        $months = [];
 
         foreach ($dates as $date) {
-            $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+            self::assertDate($date);
+            $months[substr($date, 0, 7)] = true;
+        }
 
-            if ($parsed === false || $parsed->format('Y-m-d') !== $date) {
-                throw new InvalidArgumentException("Not a date [{$date}].");
-            }
+        if ($months === []) {
+            return null;
+        }
 
-            $month = substr($date, 0, 7);
+        $locked = array_flip(self::lockedMonths(array_keys($months)));
 
-            if (isset($seen[$month])) {
-                continue;
-            }
-
-            $seen[$month] = true;
-
-            if (self::isLocked($month)) {
+        foreach (array_keys($months) as $month) {
+            if (isset($locked[$month])) {
                 return $month;
             }
         }
 
         return null;
+    }
+
+    /**
+     * The locked months among these, ascending, each once. One query (none for an empty list).
+     *
+     * @param  array<int|string, string>  $months  "Y-m"
+     * @return list<string>
+     *
+     * @throws InvalidArgumentException a malformed month
+     */
+    public static function lockedMonths(array $months): array
+    {
+        $months = array_values(array_unique($months));
+
+        foreach ($months as $month) {
+            self::assertMonth($month);
+        }
+
+        if ($months === []) {
+            return [];
+        }
+
+        /** @var list<string> $locked */
+        $locked = self::query()->whereIn('month', $months)->orderBy('month')->pluck('month')->map(fn ($m) => (string) $m)->all();
+
+        return $locked;
+    }
+
+    /** The latest locked month ("Y-m"), or null when no month is locked. */
+    public static function latestLocked(): ?string
+    {
+        $month = self::query()->orderByDesc('month')->value('month');
+
+        return $month === null ? null : (string) $month;
+    }
+
+    /**
+     * The first (earliest) locked "Y-m" whose month lies between the months of two dates, both included, in either
+     * order; null when none does. One query. Used for a range such as an employment date change (old to new).
+     *
+     * @param  string  $from  "Y-m-d"
+     * @param  string  $to  "Y-m-d"
+     *
+     * @throws InvalidArgumentException a malformed date
+     */
+    public static function rangeTouchesLocked(string $from, string $to): ?string
+    {
+        self::assertDate($from);
+        self::assertDate($to);
+
+        [$low, $high] = $from <= $to ? [$from, $to] : [$to, $from];
+
+        $month = self::query()
+            ->whereBetween('month', [substr($low, 0, 7), substr($high, 0, 7)])
+            ->orderBy('month')
+            ->value('month');
+
+        return $month === null ? null : (string) $month;
+    }
+
+    /** "Payroll for November 2026 is approved, so this can no longer change." */
+    public static function message(string $month): string
+    {
+        self::assertMonth($month);
+
+        return 'Payroll for '.PayrollRun::monthLabel($month).' is approved, so this can no longer change.';
+    }
+
+    /**
+     * Runs in a locked status; with a shared lock (SELECT ... LOCK IN SHARE MODE / FOR SHARE) inside a transaction.
+     * Public for tests only.
+     *
+     * @internal
+     *
+     * @return Builder<PayrollRun>
+     */
+    public static function query(): Builder
+    {
+        $query = PayrollRun::query()->whereIn('status', (array) config('hrm.payroll.locked_statuses'));
+
+        if (DB::transactionLevel() > 0) {
+            $query->sharedLock();
+        }
+
+        return $query;
+    }
+
+    private static function assertMonth(mixed $month): void
+    {
+        if (! is_string($month) || preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month) !== 1) {
+            $shown = is_scalar($month) ? (string) $month : get_debug_type($month);
+
+            throw new InvalidArgumentException("Not a payroll month [{$shown}].");
+        }
+    }
+
+    private static function assertDate(mixed $date): void
+    {
+        $parsed = is_string($date) ? DateTimeImmutable::createFromFormat('!Y-m-d', $date) : false;
+
+        if ($parsed === false || $parsed->format('Y-m-d') !== $date) {
+            $shown = is_scalar($date) ? (string) $date : get_debug_type($date);
+
+            throw new InvalidArgumentException("Not a date [{$shown}].");
+        }
     }
 }

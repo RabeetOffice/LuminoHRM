@@ -62,11 +62,15 @@ final class LeaveDayRemoval
         $removed = [];
         $kept = [];
         $halves = 0;
+        // One read for every month these days touch.
+        $lockedMonths = array_flip(PayrollLock::lockedMonths(
+            $rows->map(fn ($row) => substr((string) $row->date, 0, 7))->unique()->values()->all(),
+        ));
 
         foreach ($rows as $row) {
             $date = substr((string) $row->date, 0, 10);
 
-            if (PayrollLock::isLocked(substr($date, 0, 7))) {
+            if (isset($lockedMonths[substr($date, 0, 7)])) {
                 $kept[$date] = true;
 
                 continue;
