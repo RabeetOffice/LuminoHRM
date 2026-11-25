@@ -40,6 +40,8 @@ use Illuminate\Support\Carbon;
  * @property int $early_minutes
  * @property int $overtime_minutes
  * @property string|null $status config('hrm.attendance.statuses'); null = pending calculation (not yet rebuilt)
+ * @property string|null $leave_half am | pm: the half of the day on approved half-day leave (status then describes the
+ *                                   worked half); null = no half-day leave
  * @property bool $is_manual
  * @property bool $status_overridden see above
  * @property bool $needs_attention
@@ -58,7 +60,7 @@ class Attendance extends Model
 
     protected $fillable = [
         'employee_id', 'date', 'shift_id', 'shift_rules', 'clock_in', 'clock_out', 'worked_minutes', 'late_minutes', 'early_minutes',
-        'overtime_minutes', 'status', 'is_manual', 'status_overridden', 'needs_attention', 'needs_rebuild', 'closed', 'note',
+        'overtime_minutes', 'status', 'leave_half', 'is_manual', 'status_overridden', 'needs_attention', 'needs_rebuild', 'closed', 'note',
     ];
 
     protected $attributes = [
@@ -99,6 +101,10 @@ class Attendance extends Model
             // Null is allowed: the day is pending calculation (AttendanceRebuilder sets the status).
             if ($attendance->status !== null && ! in_array($attendance->status, (array) config('hrm.attendance.statuses'), true)) {
                 throw new \InvalidArgumentException("Unknown attendance status [{$attendance->status}].");
+            }
+
+            if ($attendance->leave_half !== null && ! in_array($attendance->leave_half, (array) config('hrm.leave.halves'), true)) {
+                throw new \InvalidArgumentException("Unknown leave half [{$attendance->leave_half}].");
             }
         });
     }

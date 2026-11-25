@@ -144,6 +144,28 @@ class Employee extends Model
         return $this->hasMany(Attendance::class);
     }
 
+    /** @return HasMany<LeaveRequest, $this> */
+    public function leaveRequests(): HasMany
+    {
+        return $this->hasMany(LeaveRequest::class);
+    }
+
+    /** @return HasMany<LeaveBalance, $this> */
+    public function leaveBalances(): HasMany
+    {
+        return $this->hasMany(LeaveBalance::class);
+    }
+
+    /**
+     * The counted days of approved leave (the ledger).
+     *
+     * @return HasMany<LeaveDay, $this>
+     */
+    public function leaveDays(): HasMany
+    {
+        return $this->hasMany(LeaveDay::class);
+    }
+
     /** @return HasOne<EmployeeContact, $this> */
     public function contact(): HasOne
     {

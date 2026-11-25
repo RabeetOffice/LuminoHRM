@@ -121,6 +121,19 @@ return [
         'weekdays' => ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
     ],
 
+    // Allowed values for the Leave module (stored as plain strings). Rules: see the Phase 4 plan.
+    'leave' => [
+        // pending = waiting for the manager, manager_approved = waiting for HR.
+        'statuses' => ['pending', 'manager_approved', 'approved', 'rejected', 'cancelled'],
+        'open_statuses' => ['pending', 'manager_approved'],
+        // A half-day request: am = first half, pm = second half (leave_requests.half, attendances.leave_half).
+        'halves' => ['am', 'pm'],
+        // leave_days.half: a whole day or one half.
+        'day_halves' => ['full', 'am', 'pm'],
+        // A leave type's calendar colour: palette names the frontend maps to colours.
+        'colours' => ['emerald', 'sky', 'amber', 'rose', 'violet', 'teal', 'orange', 'slate'],
+    ],
+
     // Date formats offered in Settings > Company (PHP date() syntax). The stored value must be one of these.
     'date_formats' => ['d M Y', 'd/m/Y', 'm/d/Y', 'Y-m-d', 'd-m-Y', 'M d, Y'],
 

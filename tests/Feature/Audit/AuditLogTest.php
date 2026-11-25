@@ -564,7 +564,7 @@ it('adds the activity_log indexes the viewer filters on', function () {
 })->skip(fn () => DB::getDriverName() !== 'sqlite');
 
 it('keeps the area list in one place', function () {
-    expect(array_keys(Audit::AREAS))->toBe(['organization', 'users', 'settings', 'auth', 'employees', 'attendance']);
+    expect(array_keys(Audit::AREAS))->toBe(['organization', 'users', 'settings', 'auth', 'employees', 'attendance', 'leave']);
 });
 
 it('has a clock-independent order check', function () {

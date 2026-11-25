@@ -9,8 +9,9 @@ use Illuminate\Database\Eloquent\Builder;
 
 /**
  * Flags stored attendance days as needing a rebuild after a change to the rules they were worked out with (a shift, a
- * holiday, or a person's employment window). Only the needs_rebuild column is written; the scheduled rebuild does the work. A manual day is never
- * flagged (a rebuild would skip it anyway).
+ * holiday, a person's employment window, or their approved leave). Only the needs_rebuild column is written (forLeaveDays
+ * may also create bare pending rows); the scheduled rebuild does the work. A manual day is never flagged (a rebuild
+ * would skip it anyway).
  */
 class RebuildMarks
 {
@@ -97,6 +98,80 @@ class RebuildMarks
                 }
             })
             ->update(['needs_rebuild' => true]);
+    }
+
+    /**
+     * Leave days were added to or removed from these dates of one employee (approval, cancellation, holiday refund,
+     * exit trimming): each date up to AttendanceClock::attendanceToday() is marked so the rebuild decides it again with
+     * the leave ledger. An existing non-manual row gets needs_rebuild = true, closed or not; a date with no row gets a
+     * bare pending row (status null, needs_rebuild = true, is_manual = false) via insert-or-ignore, exactly as punch
+     * ingestion does. Skipped: future dates (no row exists for a day not yet reached), manual rows (manual attendance
+     * wins; the caller lists them as needing attention), and, for the bare rows only, dates before the attendance start
+     * date or any date while attendance has not started (the rebuild would only remove a punch-less row there; an
+     * existing row there, which has punches, is still flagged).
+     *
+     * @param  list<string>  $dates  "Y-m-d", any order, duplicates allowed
+     * @return int the rows flagged plus the rows created
+     *
+     * @throws \InvalidArgumentException a malformed date
+     */
+    public static function forLeaveDays(int $employeeId, array $dates): int
+    {
+        $today = app(AttendanceClock::class)->attendanceToday();
+        $start = AttendanceClock::startDate();
+        $wanted = [];
+
+        foreach ($dates as $date) {
+            $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+
+            if ($parsed === false || $parsed->format('Y-m-d') !== $date) {
+                throw new \InvalidArgumentException("Not a date [{$date}].");
+            }
+
+            if ($date <= $today) {
+                $wanted[$date] = true;
+            }
+        }
+
+        if ($wanted === []) {
+            return 0;
+        }
+
+        $wanted = array_keys($wanted);
+        sort($wanted);
+
+        $existing = Attendance::query()->toBase()
+            ->where('employee_id', $employeeId)
+            ->whereIn('date', $wanted)
+            ->pluck('date')
+            ->map(fn ($d) => substr((string) $d, 0, 10))
+            ->all();
+
+        $missing = array_values(array_filter(
+            array_diff($wanted, $existing),
+            fn (string $date) => $start !== null && $date >= $start,
+        ));
+
+        $now = (new Attendance)->freshTimestampString();
+
+        $flagged = Attendance::query()
+            ->where('employee_id', $employeeId)
+            ->whereIn('date', $wanted)
+            ->where('is_manual', false)
+            ->where('needs_rebuild', false)
+            ->update(['needs_rebuild' => true, 'updated_at' => $now]);
+
+        $created = $missing === [] ? 0 : Attendance::query()->insertOrIgnore(array_map(fn (string $date) => [
+            'employee_id' => $employeeId,
+            'date' => $date,
+            'status' => null, // pending calculation
+            'is_manual' => false,
+            'needs_rebuild' => true,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], $missing));
+
+        return $flagged + $created;
     }
 
     /** @param  Builder<Employee>  $employees  a query selecting employee ids */

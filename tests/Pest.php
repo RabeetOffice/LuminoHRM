@@ -3,6 +3,9 @@
 use App\Models\Device;
 use App\Models\DevicePunch;
 use App\Models\Employee;
+use App\Models\LeaveDay;
+use App\Models\LeaveRequest;
+use App\Models\LeaveType;
 use App\Models\Shift;
 use App\Models\User;
 use Database\Seeders\RolePermissionSeeder;
@@ -112,6 +115,89 @@ function shiftFor(?Employee $employee = null, array $attrs = []): Shift
     }
 
     return $shift;
+}
+
+/**
+ * A leave type by name: one of the four seeded defaults (Annual, Sick, Casual, Unpaid) when it exists, else a new
+ * paid type with that name. $attrs are applied in both cases (an existing type is updated).
+ *
+ * @param  array<string, mixed>  $attrs
+ */
+function leaveType(string $name = 'Annual', array $attrs = []): LeaveType
+{
+    $type = LeaveType::query()->where('name', $name)->first();
+
+    if ($type === null) {
+        return LeaveType::factory()->create(['name' => $name, ...$attrs]);
+    }
+
+    if ($attrs !== []) {
+        $type->update($attrs);
+    }
+
+    return $type;
+}
+
+/**
+ * A request of $employee written directly (no routing, no leave days): by default a pending one-day Annual request
+ * for 2026-12-01. A half day defaults to 0.5 days.
+ *
+ * @param  array<string, mixed>  $attrs
+ */
+function leaveRequest(Employee $employee, array $attrs = []): LeaveRequest
+{
+    $halfDay = (bool) ($attrs['is_half_day'] ?? false);
+
+    return LeaveRequest::factory()->create([
+        'employee_id' => $employee->id,
+        'leave_type_id' => leaveType()->id,
+        'days' => $halfDay ? 0.5 : 1,
+        ...$attrs,
+    ]);
+}
+
+/**
+ * An approved request of $employee and its leave days, written directly (no routing, no day counting, no balance
+ * check, no rebuild marks): for attendance and balance tests. One full leave day for EVERY calendar date from $from to
+ * $to (default $from) inclusive, weekends included, so pass the dates that should count; with $half ("am" / "pm")
+ * a single half day on $from. $type is a leave type name (see leaveType()).
+ */
+function approvedLeave(Employee $employee, string $from, ?string $to = null, ?string $half = null, string $type = 'Annual'): LeaveRequest
+{
+    $leaveType = leaveType($type);
+    $to = $half !== null ? $from : ($to ?? $from);
+
+    $dates = [];
+    for ($d = new DateTimeImmutable($from); $d->format('Y-m-d') <= $to; $d = $d->modify('+1 day')) {
+        $dates[] = $d->format('Y-m-d');
+    }
+
+    $amount = $half !== null ? 0.5 : 1.0;
+
+    $request = LeaveRequest::factory()->create([
+        'employee_id' => $employee->id,
+        'leave_type_id' => $leaveType->id,
+        'from_date' => $from,
+        'to_date' => $to,
+        'is_half_day' => $half !== null,
+        'half' => $half,
+        'days' => $amount * count($dates),
+        'status' => 'approved',
+        'hr_decided_at' => now(),
+    ]);
+
+    foreach ($dates as $date) {
+        LeaveDay::query()->create([
+            'leave_request_id' => $request->id,
+            'employee_id' => $employee->id,
+            'leave_type_id' => $leaveType->id,
+            'date' => $date,
+            'amount' => $amount,
+            'half' => $half ?? 'full',
+        ]);
+    }
+
+    return $request;
 }
 
 /**
