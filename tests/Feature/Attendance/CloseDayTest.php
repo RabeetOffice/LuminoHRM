@@ -8,6 +8,7 @@ use App\Models\Holiday;
 use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\AttendanceRebuilder;
 use App\Support\Attendance\DayCalculator;
+use App\Support\Attendance\RebuildMarks;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
@@ -16,12 +17,13 @@ use Illuminate\Support\Facades\Log;
 
 /*
 | Default shift 09:00-18:00, Saturday and Sunday off. 2026-11-23 is a Monday, 2026-11-21/22 the weekend before.
-| "Now" is 2026-11-24 00:30 in Karachi (the nightly run) unless a test says otherwise. Attendance started on 2026-01-01
+| "Now" is 2026-11-24 04:30 in Karachi (the first hourly run after the 04:00 day cutoff, which closes the 23rd) unless a
+| test says otherwise. Attendance started on 2026-01-01
 | (settings('attendance.start_date')) unless a test says otherwise.
 */
 
 beforeEach(function () {
-    $this->travelTo(CarbonImmutable::parse('2026-11-24 00:30:00', 'Asia/Karachi'));
+    $this->travelTo(CarbonImmutable::parse('2026-11-24 04:30:00', 'Asia/Karachi'));
     Settings::set('attendance', ['start_date' => '2026-01-01']);
 });
 
@@ -94,7 +96,7 @@ it('flags a single-punch day and closes the rows ingestion left open', function 
     expect(cdRow($single, '2026-11-23')->only(['status', 'needs_attention', 'closed']))
         ->toBe(['status' => 'late', 'needs_attention' => false, 'closed' => false]);
 
-    $this->travelTo(CarbonImmutable::parse('2026-11-24 00:30:00', 'Asia/Karachi'));
+    $this->travelTo(CarbonImmutable::parse('2026-11-24 04:30:00', 'Asia/Karachi'));
     $this->artisan('hrm:attendance-close', ['date' => '2026-11-23'])->assertSuccessful();
 
     expect(cdRow($single, '2026-11-23')->only(['status', 'late_minutes', 'needs_attention', 'closed']))
@@ -142,8 +144,13 @@ it('picks the company date with the server clock in UTC', function () {
     expect(cdRow($e, '2026-11-23'))->not->toBeNull()
         ->and(cdRow($e, '2026-11-24'))->toBeNull();
 
-    // 19:30 UTC is 00:30 on the 25th in Karachi (UTC would still say the 24th): the 24th is closed now.
+    // 19:30 UTC is 00:30 on the 25th in Karachi: before the 04:00 cutoff the 24th is still open.
     $this->travelTo(CarbonImmutable::parse('2026-11-24 19:30:00', 'UTC'));
+    $this->artisan('hrm:attendance-close')->assertSuccessful();
+    expect(cdRow($e, '2026-11-24'))->toBeNull();
+
+    // 23:30 UTC is 04:30 on the 25th in Karachi (UTC would still say the 24th): the 24th is closed now.
+    $this->travelTo(CarbonImmutable::parse('2026-11-24 23:30:00', 'UTC'));
     $this->artisan('hrm:attendance-close')->assertSuccessful();
     expect(cdRow($e, '2026-11-24')?->status)->toBe('absent')
         ->and(cdRow($e, '2026-11-25'))->toBeNull();
@@ -182,7 +189,7 @@ it('closes 55 employees x 31 days with a query count that does not grow with the
         'joining_date' => '2026-01-01', 'department_id' => $department->id, 'designation_id' => $designation->id,
     ]);
 
-    $this->travelTo(CarbonImmutable::parse('2026-12-01 00:30:00', 'Asia/Karachi'));
+    $this->travelTo(CarbonImmutable::parse('2026-12-01 04:30:00', 'Asia/Karachi'));
     $rebuilder = app(AttendanceRebuilder::class);
 
     $counter = new ArrayObject(['n' => 0]);
@@ -328,7 +335,7 @@ it('closes the later days when one day of the catch-up fails', function () {
 // pending ones (the updates are one bulk upsert per 200 rows, not one UPDATE per row).
 it('closes a day whose rows ingestion already created with the same queries as one it creates', function () {
     $staff = cdStaff(55);
-    $this->travelTo(CarbonImmutable::parse('2026-12-01 00:30:00', 'Asia/Karachi'));
+    $this->travelTo(CarbonImmutable::parse('2026-12-01 04:30:00', 'Asia/Karachi'));
     $rebuilder = app(AttendanceRebuilder::class);
 
     $counter = new ArrayObject(['n' => 0]);
@@ -360,4 +367,43 @@ it('closes a day whose rows ingestion already created with the same queries as o
         ->and(Attendance::query()->where('date', '2026-10-05')->where('closed', true)->count())->toBe(55)
         ->and(Attendance::query()->where('date', '2026-10-05')->where('status', 'present')->count())->toBe(20);
 
+});
+
+it('keeps a day open until the day cutoff: a 02:00 clock-out arriving before the close is in the closed result', function () {
+    $e = cdEmployee();
+    punch($e, '2026-11-23 09:00:00');
+
+    // 00:30 on the 24th: the 23rd's punch window runs to 04:00, so it is still open and nothing closes it.
+    $this->travelTo(CarbonImmutable::parse('2026-11-24 00:30:00', 'Asia/Karachi'));
+    expect(app(AttendanceClock::class)->attendanceToday())->toBe('2026-11-23');
+    app(AttendanceRebuilder::class)->rebuild($e, '2026-11-23');
+    $this->artisan('hrm:attendance-close')->expectsOutput('attendance_close date=2026-11-22 written=1')->assertSuccessful();
+    $this->artisan('hrm:attendance-close', ['date' => '2026-11-23'])->assertFailed();
+    expect(cdRow($e, '2026-11-23')->only(['status', 'closed', 'needs_attention']))
+        ->toBe(['status' => 'present', 'closed' => false, 'needs_attention' => false]);
+
+    // The late clock-out arrives at 02:00 (the 23rd's attendance day) and the every-minute rebuild runs.
+    $this->travelTo(CarbonImmutable::parse('2026-11-24 02:00:30', 'Asia/Karachi'));
+    $out = punch($e, '2026-11-24 02:00:00');
+    expect($out->punch_date)->toBe('2026-11-23');
+    app(AttendanceRebuilder::class)->rebuild($e, '2026-11-23');
+    expect(cdRow($e, '2026-11-23')->closed)->toBeFalse();
+
+    // 04:30: the first hourly run after the cutoff closes the 23rd with its clock-out.
+    $this->travelTo(CarbonImmutable::parse('2026-11-24 04:30:00', 'Asia/Karachi'));
+    $this->artisan('hrm:attendance-close')->expectsOutput('attendance_close date=2026-11-23 written=1')->assertSuccessful();
+
+    expect(cdRow($e, '2026-11-23')->getRawOriginal('clock_out'))->toBe('2026-11-24 02:00:00')
+        ->and(cdRow($e, '2026-11-23')->only(['status', 'worked_minutes', 'closed', 'needs_attention']))
+        ->toBe(['status' => 'present', 'worked_minutes' => 1020, 'closed' => true, 'needs_attention' => false]);
+});
+
+it('flags open days from the attendance day of now when a shift changes after midnight', function () {
+    $e = cdEmployee();
+    punch($e, '2026-11-23 09:00:00');
+    $this->travelTo(CarbonImmutable::parse('2026-11-24 00:30:00', 'Asia/Karachi'));
+    app(AttendanceRebuilder::class)->rebuild($e, '2026-11-23');
+
+    expect(RebuildMarks::forEmployee($e->id))->toBe(1)
+        ->and(cdRow($e, '2026-11-23')->needs_rebuild)->toBeTrue();
 });

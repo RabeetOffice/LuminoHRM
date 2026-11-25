@@ -7,10 +7,12 @@ use App\Models\DevicePunch;
 use App\Models\Employee;
 use App\Models\Holiday;
 use App\Models\Shift;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
+use PDOException;
 use Throwable;
 
 /**
@@ -25,26 +27,32 @@ use Throwable;
  * Rules kept here (the day rules themselves are in DayCalculator):
  *   - A manual row (is_manual) is never written, deleted or marked: not even its needs_rebuild flag is cleared. Pending
  *     selection leaves manual rows out, so a manual day marked by a new punch waits until the manual flag is cleared.
- *   - Attendance start (settings('attendance.start_date'), "Y-m-d" or null): while it is null attendance has not
- *     started, and no day WITHOUT punches (absent / weekend / holiday / exempt present) is recorded at all: an existing
- *     non-manual punch-less row is removed. Days with punches are still decided. Once set, the employment window starts
- *     at max(joining date, start date).
- *   - No row outside the employment window (before its start or after the last working day): a non-manual row there
- *     is deleted.
+ *   - Attendance start (settings('attendance.start_date'), "Y-m-d" or null): no day WITHOUT punches (absent / weekend /
+ *     holiday / exempt present) is recorded before it, or at all while it is null: an existing non-manual punch-less
+ *     row there is removed. Days WITH punches are decided and kept whatever the start date (also before it, or when it
+ *     is in the future): they are days before attendance officially started, and screens / totals / payroll count from
+ *     the start date. So moving the start date never deletes a day that has punches.
+ *   - No row outside the employment window (before the joining date or after the last working day): a non-manual row
+ *     there is deleted.
  *   - A day with no punches is recorded for an employee whose status is inactive, resigned or terminated only when a
  *     last working day is set (the date is then inside it); an existing row is kept up to date, a missing one is not
  *     created. Nor is such a row created for a date after today.
  *   - The shift rules: every decided row stores the rules it was decided with in shift_rules (a JSON snapshot of the
- *     shift's start, end, grace, half-day hours and weekly offs). A row that is already closed is decided again with
- *     that snapshot (falling back to its shift_id's current values, then the employee's shift), so editing a shift
- *     never silently changes past days; the explicit range rebuild applies the rules in force now and refreshes the
- *     snapshot. Open rows always use the employee's shift in force (Shift::forEmployee semantics).
- *   - closed = the date is before AttendanceClock::today().
+ *     shift's start, end, grace, half-day hours and weekly offs, plus the overtime minimum, the double-tap window and
+ *     the employee's attendance-exempt flag at the time). A row that is already closed is decided again with that
+ *     snapshot (falling back to its shift_id's current values, then the employee's shift; a snapshot written before the
+ *     last three keys existed takes their current values), so editing a shift or a setting never silently changes past
+ *     days; the explicit range rebuild applies the rules in force now and refreshes the snapshot. Open rows always use
+ *     the employee's shift and the settings in force (Shift::forEmployee semantics).
+ *   - closed = the date is before AttendanceClock::attendanceToday() (the attendance day of now under the day cutoff:
+ *     at 00:30 with a 04:00 cutoff yesterday is still open, its late clock-out may still come).
  *   - status null = pending calculation (a bare row made by punch ingestion). A pending row is always decided (or
  *     removed); the close never leaves one behind except a day that cannot be decided, which is flagged.
  *   - One employee-day that cannot be decided (bad data) never blocks the others: it is logged (class and ids only),
- *     its row (if any) gets needs_attention = true and needs_rebuild = false (so it cannot stay at the head of the
- *     pending queue), and the rest of the batch is written.
+ *     its row (if any) gets needs_attention = true and needs_rebuild = false inside the same locked transaction (so it
+ *     cannot stay at the head of the pending queue, and a punch stored afterwards re-marks it), and the rest of the
+ *     batch is written. A database error (QueryException / PDOException) is not bad data: the row gets
+ *     needs_attention = true but keeps needs_rebuild = true, so the next minute retries it.
  *
  * Every batch reads its inputs with a fixed number of queries (rows, employees, default shift, stored shifts,
  * holidays, punches) and writes with a fixed number of statements per 200 rows (bulk insert, bulk upsert, one
@@ -109,7 +117,7 @@ class AttendanceRebuilder
     {
         $from = $this->date($from);
         $to = $this->date($to);
-        $today = $this->clock->today()->format('Y-m-d');
+        $today = $this->clock->attendanceToday();
 
         if ($from > $to || $to > $today) {
             throw new InvalidArgumentException('The range must run forwards and end no later than today.');
@@ -158,7 +166,7 @@ class AttendanceRebuilder
     {
         $date = $this->date($date);
 
-        if ($date >= $this->clock->today()->format('Y-m-d')) {
+        if ($date >= $this->clock->attendanceToday()) {
             throw new InvalidArgumentException("Only a past day can be closed [{$date}].");
         }
 
@@ -184,7 +192,9 @@ class AttendanceRebuilder
         }
 
         if (! $createMissing) {
-            // Attendance not started (or not yet on this date): only days with punches are decided.
+            // Before the attendance start date (or while it is unset) no punch-less day is recorded, so only the
+            // employees with punches that day are added; their rows are decided and kept (process() keeps punch days
+            // before the start date, it removes punch-less automatic rows there).
             $punched = DevicePunch::query()->toBase()->where('punch_date', $date)->whereNotNull('employee_id')
                 ->distinct()->pluck('employee_id');
 
@@ -227,6 +237,7 @@ class AttendanceRebuilder
         try {
             return $this->process($pairs, $currentRules, $employees, true);
         } catch (Throwable) {
+            // The batch failed as a whole (a database error, or something outside the per-day isolation): one by one.
             $written = 0;
 
             foreach ($pairs as $pair) {
@@ -263,15 +274,17 @@ class AttendanceRebuilder
 
         $employeeIds = array_values(array_unique(array_column($unique, 0)));
         $dates = array_values(array_unique(array_column($unique, 1)));
-        $today = $this->clock->today()->format('Y-m-d');
+        $today = $this->clock->attendanceToday();
         $start = $this->startDate();
         $duplicateMinutes = $this->duplicateMinutes();
+        $overtimeMin = $this->overtimeMinMinutes();
         $cutoff = $this->clock->dayCutoff();
 
         $failed = [];
 
         $written = DB::transaction(function () use (
-            $unique, $employeeIds, $dates, $today, $start, $duplicateMinutes, $cutoff, $currentRules, $employees, $isolate, &$failed,
+            $unique, $employeeIds, $dates, $today, $start, $duplicateMinutes, $overtimeMin, $cutoff, $currentRules, $employees,
+            $isolate, &$failed,
         ): int {
             // Lock first, then read the punches: a punch committed meanwhile is either seen here or re-marks the row
             // (needs_rebuild) after this transaction commits.
@@ -318,12 +331,10 @@ class AttendanceRebuilder
                     $punches[$p->employee_id.'|'.substr((string) $p->punch_date, 0, 10)][] = substr((string) $p->punch_time, 0, 19);
                 });
 
-            $overtimeMin = settings('attendance.overtime_min_minutes');
-            $overtimeMin = is_int($overtimeMin) && $overtimeMin >= 0 ? $overtimeMin : 0;
-
             $inserts = [];
             $updates = [];
             $deletes = [];
+            $failedRows = [];
 
             foreach ($unique as $key => [$id, $date]) {
                 $employee = $byId[$id] ?? null;
@@ -336,7 +347,7 @@ class AttendanceRebuilder
                 try {
                     $dayPunches = $punches[$key] ?? [];
 
-                    if (! $this->employedOn($employee, $date, $start)) {
+                    if (! $this->employedOn($employee, $date)) {
                         if ($row !== null) {
                             $deletes[] = $row->id;
                         }
@@ -344,8 +355,9 @@ class AttendanceRebuilder
                         continue;
                     }
 
-                    // Attendance has not started: no punch-less day is recorded.
-                    if ($dayPunches === [] && $start === null) {
+                    // Attendance has not started (no start date, or a date before it): no punch-less day is recorded.
+                    // A day with punches is still decided and kept.
+                    if ($dayPunches === [] && ($start === null || $date < $start)) {
                         if ($row !== null) {
                             $deletes[] = $row->id;
                         }
@@ -363,10 +375,22 @@ class AttendanceRebuilder
                         $snapshot = $this->snapshotOf($row);
                     }
 
-                    $rules = $snapshot ?? $this->rulesOf(
+                    $current = [
+                        'overtime_min_minutes' => $overtimeMin,
+                        'duplicate_punch_minutes' => $duplicateMinutes,
+                        'attendance_exempt' => (bool) $employee->attendance_exempt,
+                    ];
+
+                    // A snapshot written before these keys existed takes the current values for them.
+                    $rules = $snapshot !== null ? [...$snapshot, ...array_filter(
+                        $current,
+                        fn (string $key): bool => $snapshot[$key] === null,
+                        ARRAY_FILTER_USE_KEY,
+                    )] : $this->rulesOf(
                         (! $currentRules && $row !== null && $row->closed && $row->shift_id !== null)
                             ? ($storedShifts->get($row->shift_id) ?? $this->shiftOf($employee, $default))
                             : $this->shiftOf($employee, $default),
+                        $current,
                     );
 
                     $closed = $date < $today;
@@ -379,20 +403,26 @@ class AttendanceRebuilder
                         halfDayHours: $rules['half_day_hours'],
                         weeklyOffs: $rules['weekly_offs'],
                         isHoliday: isset($holidays[$date]),
-                        isExempt: (bool) $employee->attendance_exempt,
+                        isExempt: (bool) $rules['attendance_exempt'],
                         punches: $dayPunches,
                         closed: $closed,
-                        overtimeMinMinutes: $overtimeMin,
+                        overtimeMinMinutes: (int) $rules['overtime_min_minutes'],
                         onLeave: false, // the Leave phase supplies approved leave
-                        duplicatePunchMinutes: $duplicateMinutes,
+                        duplicatePunchMinutes: (int) $rules['duplicate_punch_minutes'],
                         dayCutoff: $cutoff,
                     ));
+
+                    $rulesJson = json_encode($rules, JSON_THROW_ON_ERROR);
                 } catch (Throwable $e) {
                     if (! $isolate) {
                         throw $e;
                     }
 
                     $failed[] = [$id, $date, $e];
+
+                    if ($row !== null) {
+                        $failedRows[] = $row->id;
+                    }
 
                     continue;
                 }
@@ -408,7 +438,7 @@ class AttendanceRebuilder
                 $values = [
                     // A snapshot keeps the row's own shift_id (the shift itself may have been deleted since).
                     'shift_id' => $snapshot !== null ? $row?->shift_id : $rules['shift_id'],
-                    'shift_rules' => json_encode($rules, JSON_THROW_ON_ERROR),
+                    'shift_rules' => $rulesJson,
                     'clock_in' => $result->clockIn,
                     'clock_out' => $result->clockOut,
                     'worked_minutes' => $result->workedMinutes,
@@ -449,39 +479,79 @@ class AttendanceRebuilder
                 Attendance::query()->whereIn('id', $deletes)->where('is_manual', false)->delete();
             }
 
+            // Days that could not be decided (bad data), flagged under the same row locks: they leave the pending queue,
+            // and a punch stored after this commit re-marks them (ingestion sets needs_rebuild where it is false).
+            if ($failedRows !== []) {
+                Attendance::query()->whereIn('id', $failedRows)->where('is_manual', false)
+                    ->update(['needs_attention' => true, 'needs_rebuild' => false]);
+            }
+
             return count($inserts) + count($updates) + count($deletes);
         });
 
         foreach ($failed as [$id, $date, $e]) {
-            $this->flagFailed($id, $date, $e);
+            $this->logFailed($id, $date, $e);
         }
 
         return $written;
     }
 
-    /**
-     * An employee-day that could not be decided: logged (exception class and ids only, never data), and its row, if
-     * any and not manual, gets needs_attention = true and needs_rebuild = false so it cannot block the pending queue.
-     * HR fixing the cause (for example the shift) marks it for a rebuild again.
-     */
-    private function flagFailed(int $employeeId, string $date, Throwable $e): void
+    /** Logs an employee-day that could not be decided (exception class and ids only, never data). */
+    private function logFailed(int $employeeId, string $date, Throwable $e): void
     {
         Log::warning('Attendance day could not be decided', [
             'exception' => $e::class,
             'employee_id' => $employeeId,
             'date' => $date,
         ]);
-
-        Attendance::query()->where('employee_id', $employeeId)->where('date', $date)->where('is_manual', false)
-            ->update(['needs_attention' => true, 'needs_rebuild' => false]);
     }
 
     /**
-     * The shift rules a day is decided with, as stored in attendances.shift_rules.
-     *
-     * @return array{shift_id: int|null, name: string, start_time: string, end_time: string, grace_minutes: int, half_day_hours: float, weekly_offs: list<string>}
+     * An employee-day whose processing failed outside the per-day isolation (processSafely's one-by-one retry): logged,
+     * and its row, if any and not manual, gets needs_attention = true.
+     *   - A database error (QueryException / PDOException) is transient: needs_rebuild stays (is set) true, so the
+     *     next minute's rebuild retries it.
+     *   - Anything else is treated as bad data: needs_rebuild = false so it cannot block the pending queue, written
+     *     under a row lock. HR fixing the cause (for example the shift) marks it for a rebuild again.
      */
-    private function rulesOf(Shift $shift): array
+    private function flagFailed(int $employeeId, string $date, Throwable $e): void
+    {
+        $this->logFailed($employeeId, $date, $e);
+        $transient = self::isDatabaseError($e);
+
+        try {
+            DB::transaction(function () use ($employeeId, $date, $transient): void {
+                $row = Attendance::query()->where('employee_id', $employeeId)->where('date', $date)
+                    ->where('is_manual', false)->lockForUpdate()->first(['id']);
+
+                $row?->newQuery()->whereKey($row->id)->where('is_manual', false)
+                    ->update(['needs_attention' => true, 'needs_rebuild' => $transient]);
+            });
+        } catch (Throwable $flagError) {
+            // The database may still be down: the row keeps its marker and is retried; nothing more can be done here.
+            Log::warning('Attendance day could not be flagged', ['exception' => $flagError::class, 'employee_id' => $employeeId, 'date' => $date]);
+        }
+    }
+
+    private static function isDatabaseError(Throwable $e): bool
+    {
+        for ($cause = $e; $cause !== null; $cause = $cause->getPrevious()) {
+            if ($cause instanceof QueryException || $cause instanceof PDOException) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The rules a day is decided with, as stored in attendances.shift_rules: the shift's, plus the overtime minimum,
+     * the double-tap window and the employee's exempt flag in force when it was decided.
+     *
+     * @param  array{overtime_min_minutes: int, duplicate_punch_minutes: int, attendance_exempt: bool}  $current
+     * @return array{shift_id: int|null, name: string, start_time: string, end_time: string, grace_minutes: int, half_day_hours: float, weekly_offs: list<string>, overtime_min_minutes: int|null, duplicate_punch_minutes: int|null, attendance_exempt: bool|null}
+     */
+    private function rulesOf(Shift $shift, array $current): array
     {
         return [
             'shift_id' => (int) $shift->id,
@@ -491,13 +561,15 @@ class AttendanceRebuilder
             'grace_minutes' => (int) $shift->grace_minutes,
             'half_day_hours' => (float) $shift->half_day_hours,
             'weekly_offs' => $shift->weekly_offs, // a list of day names: the Shift model normalises it on every save
+            ...$current,
         ];
     }
 
     /**
-     * The row's stored shift-rule snapshot, or null when it has none or it is unusable.
+     * The row's stored shift-rule snapshot, or null when it has none or it is unusable. The overtime minimum, double-tap
+     * window and exempt flag are null when the snapshot predates them (the caller then uses the current values).
      *
-     * @return array{shift_id: int|null, name: string, start_time: string, end_time: string, grace_minutes: int, half_day_hours: float, weekly_offs: list<string>}|null
+     * @return array{shift_id: int|null, name: string, start_time: string, end_time: string, grace_minutes: int, half_day_hours: float, weekly_offs: list<string>, overtime_min_minutes: int|null, duplicate_punch_minutes: int|null, attendance_exempt: bool|null}|null
      */
     private function snapshotOf(Attendance $row): ?array
     {
@@ -511,6 +583,10 @@ class AttendanceRebuilder
             return null;
         }
 
+        $overtime = $rules['overtime_min_minutes'] ?? null;
+        $duplicate = $rules['duplicate_punch_minutes'] ?? null;
+        $exempt = $rules['attendance_exempt'] ?? null;
+
         return [
             'shift_id' => is_int($rules['shift_id'] ?? null) ? $rules['shift_id'] : null,
             'name' => is_string($rules['name'] ?? null) ? $rules['name'] : '',
@@ -519,6 +595,9 @@ class AttendanceRebuilder
             'grace_minutes' => $rules['grace_minutes'],
             'half_day_hours' => (float) $rules['half_day_hours'],
             'weekly_offs' => array_values(array_map(fn (mixed $d): string => is_scalar($d) ? (string) $d : '', $rules['weekly_offs'])),
+            'overtime_min_minutes' => is_int($overtime) && $overtime >= 0 ? $overtime : null,
+            'duplicate_punch_minutes' => is_int($duplicate) && $duplicate >= 0 && $duplicate <= 60 ? $duplicate : null,
+            'attendance_exempt' => is_bool($exempt) ? $exempt : null,
         ];
     }
 
@@ -545,16 +624,25 @@ class AttendanceRebuilder
         return is_int($value) && $value >= 0 && $value <= 60 ? $value : self::DEFAULT_DUPLICATE_MINUTES;
     }
 
+    private function overtimeMinMinutes(): int
+    {
+        $value = settings('attendance.overtime_min_minutes');
+
+        return is_int($value) && $value >= 0 ? $value : 0;
+    }
+
     private function shiftOf(Employee $employee, Shift $default): Shift
     {
         return $employee->shift_id !== null && $employee->shift !== null ? $employee->shift : $default;
     }
 
-    /** Inside the employment window: from max(joining date, attendance start date) to the last working day. */
-    private function employedOn(Employee $employee, string $date, ?string $start): bool
+    /**
+     * Inside the employment window: from the joining date to the last working day. (The attendance start date is not
+     * part of it: before the start date only punch-less days are left out, see process().)
+     */
+    private function employedOn(Employee $employee, string $date): bool
     {
         $from = $employee->joining_date->format('Y-m-d');
-        $from = $start !== null && $start > $from ? $start : $from;
         $last = $employee->last_working_day?->format('Y-m-d');
 
         return $date >= $from && ($last === null || $date <= $last);

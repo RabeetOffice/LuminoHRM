@@ -14,11 +14,16 @@ use InvalidArgumentException;
  * (A manual day never reaches the calculator: the rebuild skips it.)
  *
  * The day's punches:
- *   - the day runs from dayCutoff on `date` to dayCutoff on the next calendar day (04:00 by default), so a punch at
- *     00:05 after a late night is this day's clock-out; punches outside that window are ignored;
- *   - equal punches count once; then, in time order, a punch less than duplicatePunchMinutes after the previously
- *     KEPT punch is a double tap and is dropped (09:00, 09:04, 09:08 with 5 minutes keeps 09:00 and 09:08);
+ *   - the punches given ARE the day's (the rebuild groups them by punch_date, which the day cutoff decided when each
+ *     punch was stored); they are not filtered again, so a later cutoff change never makes stored punches vanish. A
+ *     punch at 00:05 after a late night is this day's clock-out, with worked minutes counted across midnight;
+ *   - equal punches count once; then, in time order, punches form a cluster while each is less than
+ *     duplicatePunchMinutes after the previous RAW punch (09:00, 09:03, 09:06 with 5 minutes is one cluster). Each
+ *     cluster counts as one punch: its first, except that with two or more clusters the last cluster gives its LAST
+ *     punch, so the clock-in is the first tap of the first cluster and the clock-out the final tap of the last one;
  *   - two or more kept punches: clock-in = first, clock-out = last, the ones between are ignored;
+ *   - exactly two kept punches less than 60 minutes apart on a working day: no real clock-out; decided by the
+ *     single-punch rule on the first punch (never a half day);
  *   - one kept punch: before the shift midpoint it is the clock-in (the late rule applies); at or after the midpoint it
  *     is the clock-out (never late). Either way the status is present / late and, once closed, needs attention.
  *
@@ -30,10 +35,10 @@ use InvalidArgumentException;
  *   - worked     whole minutes from clock-in to clock-out, 0 with one punch (computed across midnight when the
  *                clock-out is after it);
  *   - half day   closed day, two or more kept punches and worked minutes below half-day hours x 60;
- *   - overtime   whole minutes from shift end to clock-out (on a weekend or holiday: all worked minutes), kept only
+ *   - overtime   whole minutes from max(shift end, clock-in) to clock-out, so never more than worked (on a weekend or
+ *                holiday: all worked minutes), kept only
  *                when at least overtimeMinMinutes, otherwise 0;
- *   - attention  closed working day with exactly one kept punch, or exactly two kept punches less than 60 minutes
- *                apart (a double tap the window did not catch, or a forgotten punch);
+ *   - attention  closed working day with one kept punch (including the close pair above);
  *   - no punches absent once the day is closed; null (nothing to record yet) while it is open.
  *
  * An open day (not closed yet) is never a half day and has no early minutes: its status is present or late from the
@@ -74,15 +79,29 @@ final class DayCalculator
             throw new InvalidArgumentException('Half-day hours must be more than 0.');
         }
 
-        $windowStart = $this->at($in->date, $in->dayCutoff, $zone);
-        $windowEnd = $windowStart->modify('+1 day');
+        // The cutoff is still validated (a caller passing garbage is a bug), but it no longer filters: the punches given
+        // are this day's, decided by punch_date at ingestion. A later cutoff change must not make stored punches vanish.
+        $this->at($in->date, $in->dayCutoff, $zone);
 
-        $kept = $this->reduce($this->punches($in, $windowStart, $windowEnd, $zone), $in->duplicatePunchMinutes);
+        $kept = $this->reduce($this->punches($in, $zone), $in->duplicatePunchMinutes);
+
+        // Weekly off or holiday (holiday wins the status when both apply).
+        $weekday = strtolower($day->format('l'));
+        $offDay = in_array($weekday, array_map(fn (string $d) => strtolower(trim($d)), $in->weeklyOffs), true);
+        $workingDay = ! $in->isHoliday && ! $offDay && ! $in->onLeave && ! $in->isExempt;
+
+        // Exactly two kept punches less than an hour apart on a working day: no real clock-out (a slow double tap or a
+        // forgotten punch). The day is decided by the single-punch rule on the first punch, never as a half day.
+        $closePair = $workingDay && count($kept) === 2
+            && $kept[1]->getTimestamp() - $kept[0]->getTimestamp() < self::CLOSE_PAIR_SECONDS;
+
+        if ($closePair) {
+            $kept = [$kept[0]];
+        }
+
         $first = $kept[0] ?? null;
         $last = count($kept) > 1 ? $kept[count($kept) - 1] : null;
         $onePunch = $first !== null && $last === null;
-        $closePair = isset($kept[1]) && count($kept) === 2
-            && $kept[1]->getTimestamp() - $kept[0]->getTimestamp() < self::CLOSE_PAIR_SECONDS;
 
         // One punch at or after the shift midpoint is a clock-out (the clock-in is missing).
         $midpoint = $start->modify('+'.intdiv($end->getTimestamp() - $start->getTimestamp(), 2).' seconds');
@@ -91,10 +110,6 @@ final class DayCalculator
         $clockIn = $onlyOut ? null : $first?->format(self::PUNCH_FORMAT);
         $clockOut = $onlyOut ? $first->format(self::PUNCH_FORMAT) : $last?->format(self::PUNCH_FORMAT);
         $worked = $first !== null && $last !== null ? $this->minutes($first, $last) : 0;
-
-        // Weekly off or holiday (holiday wins the status when both apply).
-        $weekday = strtolower($day->format('l'));
-        $offDay = in_array($weekday, array_map(fn (string $d) => strtolower(trim($d)), $in->weeklyOffs), true);
 
         if ($in->isHoliday || $offDay) {
             return new DayResult(
@@ -145,7 +160,9 @@ final class DayCalculator
 
         if ($last !== null) {
             $early = $in->closed && $last < $end ? $this->minutes($last, $end) : 0;
-            $after = $last > $end ? $this->minutes($end, $last) : 0;
+            // Overtime runs from the shift end, or from the clock-in when that is later: never more than worked.
+            $overtimeFrom = $first > $end ? $first : $end;
+            $after = $last > $overtimeFrom ? $this->minutes($overtimeFrom, $last) : 0;
             $overtime = $after >= $in->overtimeMinMinutes ? $after : 0;
         }
 
@@ -163,16 +180,16 @@ final class DayCalculator
             lateMinutes: $halfDay ? 0 : $late,
             earlyMinutes: $early,
             overtimeMinutes: $overtime,
-            needsAttention: $in->closed && ($onePunch || $closePair),
+            needsAttention: $in->closed && $onePunch,
         );
     }
 
     /**
-     * The input's punches inside [$from, $to), parsed, de-duplicated and sorted.
+     * The input's punches, parsed, de-duplicated and sorted. All of them: the caller grouped them by attendance day.
      *
      * @return list<DateTimeImmutable>
      */
-    private function punches(DayInput $in, DateTimeImmutable $from, DateTimeImmutable $to, DateTimeZone $zone): array
+    private function punches(DayInput $in, DateTimeZone $zone): array
     {
         $byValue = [];
 
@@ -184,9 +201,7 @@ final class DayCalculator
                 throw new InvalidArgumentException("Not a punch time [{$raw}].");
             }
 
-            if ($parsed >= $from && $parsed < $to) {
-                $byValue[$value] = $parsed;
-            }
+            $byValue[$value] = $parsed;
         }
 
         ksort($byValue, SORT_STRING); // "Y-m-d H:i:s" strings sort in time order
@@ -195,23 +210,34 @@ final class DayCalculator
     }
 
     /**
-     * Drops double taps: a punch less than $minutes after the previously kept punch.
+     * Collapses double taps. Punches form a cluster while each is less than $minutes after the previous RAW punch (so
+     * a chain of taps is one cluster). One punch is kept per cluster: its first, except that the last cluster keeps its
+     * LAST punch when there are two or more clusters (the clock-out is the final tap: 17:58 + 18:01 gives 18:01).
      *
      * @param  list<DateTimeImmutable>  $sorted
      * @return list<DateTimeImmutable>
      */
     private function reduce(array $sorted, int $minutes): array
     {
-        $kept = [];
+        /** @var list<list<DateTimeImmutable>> $clusters */
+        $clusters = [];
+        $previous = null;
 
         foreach ($sorted as $punch) {
-            $previous = $kept === [] ? null : $kept[count($kept) - 1];
-
             if ($previous !== null && $punch->getTimestamp() - $previous->getTimestamp() < $minutes * 60) {
-                continue;
+                $clusters[count($clusters) - 1][] = $punch;
+            } else {
+                $clusters[] = [$punch];
             }
 
-            $kept[] = $punch;
+            $previous = $punch;
+        }
+
+        $kept = [];
+        $lastIndex = count($clusters) - 1;
+
+        foreach ($clusters as $i => $cluster) {
+            $kept[] = $i === $lastIndex && $i > 0 ? $cluster[count($cluster) - 1] : $cluster[0];
         }
 
         return $kept;

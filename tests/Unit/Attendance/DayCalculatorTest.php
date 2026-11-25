@@ -78,12 +78,18 @@ it('decides a day', function (array $punches, array $overrides, array $expected)
     'half day: worked below the threshold' => [['09:00', '12:59'], [], ['half_day', '09:00:00', '12:59:00', 239, 0, 301, 0, false]],
     'exactly the half-day threshold is not a half day' => [['09:00', '13:00'], [], ['present', '09:00:00', '13:00:00', 240, 0, 300, 0, false]],
     'half day beats late and stores no late minutes' => [['11:00', '14:00'], [], ['half_day', '11:00:00', '14:00:00', 180, 0, 240, 0, false]],
-    'two punches less than an hour apart: half day, flagged' => [['09:00', '09:30'], [], ['half_day', '09:00:00', '09:30:00', 30, 0, 510, 0, true]],
+    'two punches less than an hour apart: the single-punch rule on the first, flagged' => [['09:00', '09:30'], [], ['present', '09:00:00', null, 0, 0, 0, 0, true]],
+    'two punches 40 minutes apart (no real clock-out): present and flagged, not half day' => [['09:00', '09:40'], [], ['present', '09:00:00', null, 0, 0, 0, 0, true]],
+    'two punches less than an hour apart, late first: late and flagged' => [['09:45', '10:30'], [], ['late', '09:45:00', null, 0, 45, 0, 0, true]],
+    'two punches 59:59 apart: still the single-punch rule' => [['09:00', '09:59:59'], [], ['present', '09:00:00', null, 0, 0, 0, 0, true]],
     'two punches exactly an hour apart: not flagged' => [['09:00', '10:00'], [], ['half_day', '09:00:00', '10:00:00', 60, 0, 480, 0, false]],
     'three punches close together: only exactly two are flagged' => [['09:00', '09:10', '09:20'], [], ['half_day', '09:00:00', '09:20:00', 20, 0, 520, 0, false]],
     'punches between first and last are ignored' => [['09:00', '13:00', '14:00', '18:00'], [], ['present', '09:00:00', '18:00:00', 540, 0, 0, 0, false]],
     'punches out of order are sorted' => [['18:00', '13:00', '09:05'], [], ['present', '09:05:00', '18:00:00', 535, 0, 0, 0, false]],
     'duplicate punches count once' => [['09:00', '09:00', '18:00', '18:00'], [], ['present', '09:00:00', '18:00:00', 540, 0, 0, 0, false]],
+    'clock-in after the shift end: overtime counted from the clock-in' => [['19:00', '21:00'], [], ['half_day', '19:00:00', '21:00:00', 120, 0, 0, 120, false]],
+    'clock-in after the shift end, worked below the overtime minimum' => [['23:58', '2026-11-25 00:05:00', '2026-11-25 00:15:00'], [], ['half_day', '23:58:00', '00:15:00', 17, 0, 0, 0, false]],
+    'clock-in 23:58, punch 00:03: one late-night punch, no overtime' => [['23:58', '2026-11-25 00:03:00'], [], ['present', null, '23:58:00', 0, 0, 0, 0, true]],
     'overtime after shift end' => [['09:00', '18:45'], [], ['present', '09:00:00', '18:45:00', 585, 0, 0, 45, false]],
     'overtime below the minimum is not recorded' => [['09:00', '18:29:59'], [], ['present', '09:00:00', '18:29:59', 569, 0, 0, 0, false]],
     'overtime exactly at the minimum is recorded' => [['09:00', '18:30'], [], ['present', '09:00:00', '18:30:00', 570, 0, 0, 30, false]],
@@ -93,7 +99,7 @@ it('decides a day', function (array $punches, array $overrides, array $expected)
     'fractional half-day hours' => [['09:00', '13:29'], ['halfDayHours' => 4.5], ['half_day', '09:00:00', '13:29:00', 269, 0, 271, 0, false]],
     // Open day (not closed yet): never half day, never early minutes; present or late from the first punch only
     'open day, two punches: late by the first punch, no half day, no early' => [['09:20', '12:00'], ['closed' => false], ['late', '09:20:00', '12:00:00', 160, 20, 0, 0, false]],
-    'open day, short on-time day: present' => [['09:00', '09:30'], ['closed' => false], ['present', '09:00:00', '09:30:00', 30, 0, 0, 0, false]],
+    'open day, two punches under an hour: single-punch rule, not flagged yet' => [['09:00', '09:30'], ['closed' => false], ['present', '09:00:00', null, 0, 0, 0, 0, false]],
     'open day, overtime is still recorded' => [['09:00', '18:45'], ['closed' => false], ['present', '09:00:00', '18:45:00', 585, 0, 0, 45, false]],
 
     // Working day, one punch (after double-tap reduction)
@@ -109,11 +115,14 @@ it('decides a day', function (array $punches, array $overrides, array $expected)
 
     // Double tap: a punch within the duplicate window of the previously kept punch is dropped
     'double tap at clock-in is dropped' => [['09:00', '09:04:59', '18:00'], [], ['present', '09:00:00', '18:00:00', 540, 0, 0, 0, false]],
-    'double tap at clock-out is dropped' => [['09:00', '18:00', '18:02'], [], ['present', '09:00:00', '18:00:00', 540, 0, 0, 0, false]],
+    'double tap at clock-out keeps the last tap as the clock-out' => [['09:00', '18:00', '18:02'], [], ['present', '09:00:00', '18:02:00', 542, 0, 0, 0, false]],
+    'a clock-out cluster ending after the shift end: no early minutes' => [['09:00', '17:58', '18:01'], [], ['present', '09:00:00', '18:01:00', 541, 0, 0, 0, false]],
+    'a chain of taps collapses to its first punch' => [['09:00', '09:03', '09:06'], [], ['present', '09:00:00', null, 0, 0, 0, 0, true]],
+    'a chain of taps at clock-in, then a real clock-out' => [['09:00', '09:03', '09:06', '18:00'], [], ['present', '09:00:00', '18:00:00', 540, 0, 0, 0, false]],
     'a double tap alone is one punch' => [['09:00', '09:01'], [], ['present', '09:00:00', null, 0, 0, 0, 0, true]],
-    'a punch exactly the window later is kept' => [['09:00', '09:05'], [], ['half_day', '09:00:00', '09:05:00', 5, 0, 535, 0, true]],
-    'double taps are measured from the kept punch' => [['09:00', '09:04', '09:08'], [], ['half_day', '09:00:00', '09:08:00', 8, 0, 532, 0, true]],
-    'window 0 keeps every distinct punch' => [['09:00', '09:01'], ['duplicatePunchMinutes' => 0], ['half_day', '09:00:00', '09:01:00', 1, 0, 539, 0, true]],
+    'a punch exactly the window later is kept' => [['09:00', '09:05', '13:30'], [], ['present', '09:00:00', '13:30:00', 270, 0, 270, 0, false]],
+    'double taps are measured from the previous raw punch' => [['09:00', '09:04', '09:08', '18:00'], [], ['present', '09:00:00', '18:00:00', 540, 0, 0, 0, false]],
+    'window 0 keeps every distinct punch' => [['09:00', '09:01', '09:02'], ['duplicatePunchMinutes' => 0], ['half_day', '09:00:00', '09:02:00', 2, 0, 538, 0, false]],
     'double tap on a weekend: one punch, not flagged' => [['10:00', '10:02'], ['date' => DC_SATURDAY], ['weekend', '10:00:00', null, 0, 0, 0, 0, false]],
 
     // Working day, no punches
@@ -152,10 +161,9 @@ it('decides a day', function (array $punches, array $overrides, array $expected)
     // Day boundaries: the day runs from the cutoff (04:00) to the cutoff of the next calendar day
     'a punch at 00:05 the next day is this day\'s clock-out' => [['09:00', '2026-11-25 00:05:00'], [], ['present', '09:00:00', '00:05:00', 905, 0, 0, 365, false]],
     'a punch just before the next cutoff is this day\'s clock-out' => [['09:00', '2026-11-25 03:59:59'], [], ['present', '09:00:00', '03:59:59', 1139, 0, 0, 599, false]],
-    'a punch at the next cutoff belongs to the next day' => [['09:00', '18:00', '2026-11-25 04:00:00'], [], ['present', '09:00:00', '18:00:00', 540, 0, 0, 0, false]],
-    'a punch before the cutoff on the day itself belongs to the day before' => [['2026-11-24 00:05:00', '09:30', '18:00'], [], ['late', '09:30:00', '18:00:00', 510, 30, 0, 0, false]],
-    'cutoff at midnight: an after-midnight punch is the next day' => [['21:00', '2026-11-25 00:01:00'], ['dayCutoff' => '00:00'], ['present', null, '21:00:00', 0, 0, 0, 0, true]],
-    'a punch at 23:59 the day before is ignored' => [['2026-11-23 23:59:00', '09:00', '18:00'], [], ['present', '09:00:00', '18:00:00', 540, 0, 0, 0, false]],
+    // The punches given are trusted: their day was decided at ingestion, the cutoff no longer filters them here
+    'a punch after the next cutoff is still used when given for this day' => [['09:00', '2026-11-25 05:00:00'], [], ['present', '09:00:00', '05:00:00', 1200, 0, 0, 660, false]],
+    'the cutoff given does not filter: cutoff 06:00 with a 05:00 clock-out' => [['09:00', '2026-11-25 05:00:00'], ['dayCutoff' => '06:00'], ['present', '09:00:00', '05:00:00', 1200, 0, 0, 660, false]],
     'a punch at 23:59:59 is still this day' => [['09:00', '23:59:59'], [], ['present', '09:00:00', '23:59:59', 899, 0, 0, 359, false]],
 ]);
 
@@ -164,7 +172,6 @@ it('returns null for an open working day with no punches (nothing to record yet)
 })->with([
     'ordinary employee' => [[]],
     'exempt employee' => [['isExempt' => true]],
-    'only punches on other days' => [['punches' => ['2026-11-23 09:00:00', '2026-11-25 09:00:00']]],
 ]);
 
 it('keeps the punch strings exactly as given', function () {
@@ -203,16 +210,42 @@ it('keeps lateness in whole minutes: 09:15:59 is on time with 15 minutes grace, 
 
 it('does not let a late night hide the next day\'s lateness', function () {
     $calc = new DayCalculator;
-    // As the rebuild groups them: 00:05 on the 25th belongs to the 24th (before the 04:00 cutoff).
-    $all = ['2026-11-24 09:00:00', '2026-11-25 00:05:00', '2026-11-25 09:40:00', '2026-11-25 18:00:00'];
-
-    $late = $calc->calculate(dcInput($all));
-    $next = $calc->calculate(dcInput($all, ['date' => '2026-11-25']));
+    // As the rebuild groups them by punch_date: 00:05 on the 25th belongs to the 24th (before the 04:00 cutoff).
+    $late = $calc->calculate(dcInput(['2026-11-24 09:00:00', '2026-11-25 00:05:00']));
+    $next = $calc->calculate(dcInput(['2026-11-25 09:40:00', '2026-11-25 18:00:00'], ['date' => '2026-11-25']));
 
     expect($late?->clockOut)->toBe('2026-11-25 00:05:00')
         ->and($next?->clockIn)->toBe('2026-11-25 09:40:00')
         ->and($next?->status)->toBe('late')
         ->and($next?->lateMinutes)->toBe(40);
+});
+
+it('pins the single-punch midpoint deliberately: 13:29:59 is a late clock-in, 13:30:00 a clock-out', function () {
+    $calc = new DayCalculator;
+    $before = $calc->calculate(dcInput(['13:29:59']));
+    $at = $calc->calculate(dcInput(['13:30:00']));
+
+    expect(dcRow($before))->toBe(['late', '13:29:59', null, 0, 269, 0, 0, true])
+        ->and(dcRow($at))->toBe(['present', null, '13:30:00', 0, 0, 0, 0, true]);
+});
+
+it('never lets overtime exceed the worked time', function (array $punches) {
+    $result = (new DayCalculator)->calculate(dcInput($punches, ['overtimeMinMinutes' => 0]));
+
+    expect($result?->overtimeMinutes)->toBeLessThanOrEqual($result?->workedMinutes ?? 0);
+})->with([
+    'in and out after the end' => [['19:00', '21:00']],
+    'late night across midnight' => [['23:58', '2026-11-25 00:30:00', '2026-11-25 01:00:00']],
+    'normal day with overtime' => [['09:00', '20:00']],
+    'weekend-like hours on a working day' => [['18:30', '22:00']],
+]);
+
+it('trusts the punches it is given for the day, whatever the cutoff', function () {
+    // Stored under an earlier 06:00 cutoff: 05:30 belongs to the 24th. A later cutoff of 04:00 must not drop it.
+    $result = (new DayCalculator)->calculate(dcInput(['09:00', '2026-11-25 05:30:00'], ['dayCutoff' => '04:00']));
+
+    expect($result?->clockOut)->toBe('2026-11-25 05:30:00')
+        ->and($result?->workedMinutes)->toBe(1230);
 });
 
 it('never reads the clock or the database', function () {

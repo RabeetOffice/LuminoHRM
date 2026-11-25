@@ -19,7 +19,8 @@ use LogicException;
  * punch_time is the machine's local wall-clock time, stored and read back exactly as received (App\Casts\NaiveDateTime:
  * no zone conversion by Eloquent; the DATETIME column is not converted by the database session either).
  * punch_date is the attendance day of punch_time (AttendanceClock::attendanceDateFor: its date, or the day before when it is
- * before the day cutoff): it is set here on every save from the stored punch_time string and cannot be written on its own.
+ * before the day cutoff): it is set here when the punch is first saved, from the stored punch_time string, and cannot be
+ * written on its own. Later saves keep it, so changing the cutoff setting affects new punches only.
  * It is kept as the plain "Y-m-d" string.
  *
  * employee_id is the employee whose device_user_id matched when the punch was stored (null for an unknown user).
@@ -69,8 +70,14 @@ class DevicePunch extends Model
             }
 
             // Derived, never set on its own: the attendance day of exactly the stored string (its date, or the day
-            // before when it is before the day cutoff).
-            $punch->attributes['punch_date'] = app(AttendanceClock::class)->attendanceDateFor($raw);
+            // before when it is before the day cutoff). Only when the punch is new (or its time changes, which the
+            // updating guard refuses anyway): a later save, such as relinking employee_id, keeps the day it was
+            // stored with even after the cutoff setting changed.
+            if (! $punch->exists || $punch->isDirty('punch_time')) {
+                $punch->attributes['punch_date'] = app(AttendanceClock::class)->attendanceDateFor($raw);
+            } elseif ($punch->isDirty('punch_date')) {
+                $punch->attributes['punch_date'] = $punch->getOriginal('punch_date');
+            }
         });
 
         static::updating(function (DevicePunch $punch): void {

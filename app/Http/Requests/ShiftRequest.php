@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Models\Shift;
+use App\Support\Attendance\AttendanceClock;
 use App\Support\Names;
 use Closure;
 use Illuminate\Foundation\Http\FormRequest;
@@ -11,11 +12,15 @@ use Illuminate\Validation\Validator;
 
 /**
  * Add or edit a shift. Same-day shifts only (the end must be after the start); grace 0 to 120 minutes; half day 1 to
- * 12 hours and no longer than the shift; weekly offs a subset of the lowercase day names. Which shift is the default is not set here
+ * 12 hours and no longer than the shift; the start at least 2 hours after the attendance day cutoff; weekly offs a
+ * subset of the lowercase day names. Which shift is the default is not set here
  * (ShiftController::makeDefault).
  */
 class ShiftRequest extends FormRequest
 {
+    /** A shift must start at least this long after the day cutoff (settings('attendance.day_cutoff_time')). */
+    public const CUTOFF_MARGIN_MINUTES = 120;
+
     /** Access is enforced by the can:attendance.edit route middleware. */
     public function authorize(): bool
     {
@@ -78,6 +83,18 @@ class ShiftRequest extends FormRequest
 
                 $minutes = fn (string $time): int => (int) substr($time, 0, 2) * 60 + (int) substr($time, 3, 2);
                 $length = $minutes((string) $this->input('end_time')) - $minutes((string) $this->input('start_time'));
+
+                // A punch before the day cutoff belongs to the previous day, so a shift starting too close after the
+                // cutoff would lose its early clock-ins to yesterday. Keep a 2-hour margin.
+                $cutoff = app(AttendanceClock::class)->dayCutoff();
+                $earliest = $minutes($cutoff) + self::CUTOFF_MARGIN_MINUTES;
+
+                if ($minutes((string) $this->input('start_time')) < $earliest) {
+                    $errors->add('start_time', sprintf(
+                        'The shift must start at %02d:%02d or later: at least 2 hours after the attendance day cutoff (%s), so early clock-ins are not counted on the previous day.',
+                        intdiv($earliest, 60), $earliest % 60, $cutoff,
+                    ));
+                }
 
                 if ((float) $this->input('half_day_hours') * 60 > $length) {
                     $hours = rtrim(rtrim(number_format($length / 60, 2, '.', ''), '0'), '.');

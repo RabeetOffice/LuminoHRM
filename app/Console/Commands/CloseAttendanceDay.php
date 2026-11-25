@@ -4,14 +4,17 @@ namespace App\Console\Commands;
 
 use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\AttendanceRebuilder;
+use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
- * The nightly close (routes/console.php). Without a date it closes each of the previous 7 days in the company zone
- * (AttendanceClock), oldest first: yesterday on a normal night, and any day a missed run left open. With a date it
- * closes just that past day. Every run is idempotent: a day already closed is left as it is. A day whose close fails is
+ * The close (routes/console.php, hourly at :30). Without a date it closes each of the 7 days before the attendance day of
+ * now (AttendanceClock::attendanceToday(): today, or yesterday while the clock is still before the day cutoff), oldest
+ * first. So a day is closed by the first run after the NEXT morning's cutoff (04:30 with the 04:00 cutoff), once its
+ * late-night punches can no longer arrive; a day a missed run left open is caught up. With a date it closes just that
+ * day, which must be before attendanceToday(). Every run is idempotent: a day already closed is left as it is. A day whose close fails is
  * logged and reported, the later days are still closed, and the command then exits with failure (the next run retries).
  */
 class CloseAttendanceDay extends Command
@@ -24,7 +27,7 @@ class CloseAttendanceDay extends Command
 
     public function handle(AttendanceRebuilder $rebuilder, AttendanceClock $clock): int
     {
-        $today = $clock->today();
+        $today = CarbonImmutable::createFromFormat('!Y-m-d', $clock->attendanceToday(), $clock->zone());
         $date = $this->argument('date');
 
         if (is_string($date) && $date !== '') {
@@ -37,7 +40,7 @@ class CloseAttendanceDay extends Command
             }
 
             if ($date >= $today->format('Y-m-d')) {
-                $this->error("Only a past day can be closed (today is {$today->format('Y-m-d')}).");
+                $this->error("Only a day before the current attendance day can be closed (the current attendance day is {$today->format('Y-m-d')}).");
 
                 return self::FAILURE;
             }

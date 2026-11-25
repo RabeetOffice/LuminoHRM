@@ -64,10 +64,11 @@ class RebuildAttendance extends Command
             return self::FAILURE;
         }
 
-        $today = $clock->today()->format('Y-m-d');
+        // The current attendance day (yesterday until the day cutoff), as AttendanceRebuilder::rebuildRange checks it.
+        $today = $clock->attendanceToday();
 
         if ($from > $to || $to > $today) {
-            $this->error("The range must run forwards and end no later than today ({$today}).");
+            $this->error("The range must run forwards and end no later than the current attendance day ({$today}).");
 
             return self::FAILURE;
         }

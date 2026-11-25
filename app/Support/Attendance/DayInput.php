@@ -13,17 +13,16 @@ namespace App\Support\Attendance;
  *   weeklyOffs            lowercase English day names ("saturday", "sunday")
  *   isHoliday             the date is in the holiday calendar
  *   isExempt              the employee is attendance-exempt
- *   punches               naive "Y-m-d H:i:s" machine times belonging to that day (the calculator sorts, de-duplicates
- *                         and ignores any value outside the day's window, see dayCutoff)
+ *   punches               naive "Y-m-d H:i:s" machine times belonging to that day (grouped by punch_date); the calculator
+ *                         sorts, de-duplicates and collapses double taps, and trusts every value given
  *   closed                the day is over (only then is a missing working day Absent, a half day decided, early
  *                         minutes counted and a single punch flagged)
  *   overtimeMinMinutes    overtime shorter than this is not recorded
  *   onLeave               approved leave covers the day; always false until the Leave phase supplies it
- *   duplicatePunchMinutes a punch less than this many minutes after the previously kept punch is a double tap and is
- *                         dropped (settings('attendance.duplicate_punch_minutes'); 0 = keep every distinct punch)
- *   dayCutoff             "H:i": the day runs from this time on `date` to this time on the next calendar day, so a
- *                         punch after midnight but before the cutoff is this day's possible clock-out
- *                         (settings('attendance.day_cutoff_time'); "00:00" = plain calendar day)
+ *   duplicatePunchMinutes punches less than this many minutes after the previous punch form one cluster (a double tap) (settings('attendance.duplicate_punch_minutes'); 0 = keep every distinct punch)
+ *   dayCutoff             "H:i" (settings('attendance.day_cutoff_time')): validated only. It decided each punch's day
+ *                         when the punch was stored; the calculator no longer filters by it, so changing the cutoff
+ *                         later affects new punches only
  */
 final readonly class DayInput
 {

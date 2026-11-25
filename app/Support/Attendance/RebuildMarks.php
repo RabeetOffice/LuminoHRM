@@ -15,8 +15,9 @@ use Illuminate\Database\Eloquent\Builder;
 class RebuildMarks
 {
     /**
-     * A shift's rules changed: today's and later days of the people who work it that are not closed yet. Closed days
-     * are not flagged here. People with no shift of their own work the default shift.
+     * A shift's rules changed: the days from the attendance day of now (AttendanceClock::attendanceToday(), so at 00:30
+     * yesterday is still included while its punch window runs) of the people who work it that are not closed yet.
+     * Closed days are not flagged here. People with no shift of their own work the default shift.
      *
      * @return int the number of days flagged
      */
@@ -69,7 +70,7 @@ class RebuildMarks
     {
         return Attendance::query()
             ->whereIn('employee_id', $employees)
-            ->where('date', '>=', app(AttendanceClock::class)->today()->toDateString())
+            ->where('date', '>=', app(AttendanceClock::class)->attendanceToday())
             ->where('closed', false)
             ->where('is_manual', false)
             ->where('needs_rebuild', false)

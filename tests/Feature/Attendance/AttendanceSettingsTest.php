@@ -1,5 +1,8 @@
 <?php
 
+use App\Support\Settings;
+use Illuminate\Support\Facades\DB;
+
 /*
 | The attendance-rule settings added by the Task 3 fix round: attendance.start_date (null), attendance.duplicate_punch_minutes
 | (5) and attendance.day_cutoff_time ("04:00"). Backend defaults and validation only; the Settings screen inputs come later.
@@ -52,3 +55,28 @@ it('validates the attendance rules', function (string $field, mixed $bad, mixed 
     'cutoff with seconds' => ['day_cutoff_time', '04:00:00', '00:00'],
     'cutoff after 06:00' => ['day_cutoff_time', '06:01', '06:00'],
 ]);
+
+it('requires the day cutoff to stay at least 2 hours before the earliest shift start', function () {
+    $admin = userWithRole('admin');
+    shiftFor(null, ['name' => 'Early', 'start_time' => '07:30', 'end_time' => '16:00']);
+
+    $this->actingAs($admin)->put('/hrm-settings/attendance', ['day_cutoff_time' => '05:31'])
+        ->assertSessionHasErrors(['day_cutoff_time' => 'The day cutoff must be 05:30 or earlier: at least 2 hours before the earliest shift start (Early, 07:30).']);
+    expect(settings('attendance.day_cutoff_time'))->toBe('04:00');
+
+    $this->actingAs($admin)->put('/hrm-settings/attendance', ['day_cutoff_time' => '05:30'])->assertSessionHasNoErrors();
+    expect(settings('attendance.day_cutoff_time'))->toBe('05:30');
+});
+
+it('does not re-check an unchanged cutoff when another card of the group is saved', function () {
+    $admin = userWithRole('admin');
+    Settings::set('attendance', ['day_cutoff_time' => '06:00']);
+    // Written behind the validation's back (older data): a shift too close to the stored cutoff.
+    DB::table('shifts')->insert([
+        'name' => 'Legacy', 'start_time' => '07:00:00', 'end_time' => '15:00:00', 'grace_minutes' => 0,
+        'half_day_hours' => '4.00', 'weekly_offs' => '[]', 'is_default' => false, 'created_at' => now(), 'updated_at' => now(),
+    ]);
+
+    $this->actingAs($admin)->put('/hrm-settings/attendance', ['grace_minutes' => 20])->assertSessionHasNoErrors();
+    $this->actingAs($admin)->put('/hrm-settings/attendance', ['day_cutoff_time' => '05:30'])->assertSessionHasErrors('day_cutoff_time');
+});

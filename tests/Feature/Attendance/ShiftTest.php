@@ -5,6 +5,7 @@ use App\Models\Department;
 use App\Models\Designation;
 use App\Models\Employee;
 use App\Models\Shift;
+use App\Support\Settings;
 use Carbon\CarbonImmutable;
 use Spatie\Activitylog\Models\Activity;
 
@@ -426,3 +427,25 @@ it('marks the employee\'s open days from today when their shift or exempt flag c
     'shift' => [['shift_id' => 'shift']],
     'exempt flag' => [['attendance_exempt' => true]],
 ]);
+
+// ---------------------------------------------------------------- day cutoff margin
+
+it('requires a shift to start at least 2 hours after the day cutoff', function () {
+    $admin = userWithRole('admin');
+
+    // Default cutoff 04:00: 05:59 is too early, 06:00 is the earliest start.
+    $this->actingAs($admin)->post('/attendance/shifts', shPayload(['name' => 'Dawn', 'start_time' => '05:59', 'end_time' => '14:00']))
+        ->assertSessionHasErrors(['start_time' => 'The shift must start at 06:00 or later: at least 2 hours after the attendance day cutoff (04:00), so early clock-ins are not counted on the previous day.']);
+    $this->actingAs($admin)->post('/attendance/shifts', shPayload(['name' => 'Dawn', 'start_time' => '06:00', 'end_time' => '14:00']))
+        ->assertSessionHasNoErrors();
+
+    // A later cutoff moves the margin: with 06:00, a 05:00 shift (the reviewer's case) and a 07:59 start are refused.
+    Settings::set('attendance', ['day_cutoff_time' => '06:00']);
+    $this->actingAs($admin)->post('/attendance/shifts', shPayload(['name' => 'Five', 'start_time' => '05:00', 'end_time' => '14:00']))
+        ->assertSessionHasErrors('start_time');
+    $shift = Shift::query()->where('name', 'Dawn')->firstOrFail();
+    $this->actingAs($admin)->put("/attendance/shifts/{$shift->id}", shPayload(['name' => 'Dawn', 'start_time' => '07:59', 'end_time' => '14:00']))
+        ->assertSessionHasErrors('start_time');
+    $this->actingAs($admin)->put("/attendance/shifts/{$shift->id}", shPayload(['name' => 'Dawn', 'start_time' => '08:00', 'end_time' => '14:00']))
+        ->assertSessionHasNoErrors();
+});
