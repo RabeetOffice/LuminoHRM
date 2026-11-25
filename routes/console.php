@@ -54,8 +54,10 @@ Schedule::command('hrm:attendance-rebuild')
     ->withoutOverlapping(10);
 
 // Nightly close. The company zone is a runtime setting, so it is not baked into the cron expression: the command runs
-// hourly at :30 and closes the previous 7 company-zone days. The first run after 00:30 closes yesterday; every later
-// run finds nothing to do (idempotent) unless an earlier night was missed.
+// hourly at :30 and closes the 7 attendance days before the current one. A day is closed by the first run after the
+// next morning's day cutoff (04:30 with the 04:00 cutoff); every later run finds nothing to do for it (idempotent)
+// unless an earlier run was missed. Each run then backfills a bounded number of older days (up to 62 days back, from
+// the attendance start date) that still miss records; the next run continues.
 Schedule::command('hrm:attendance-close')
     ->hourlyAt(30)
     ->withoutOverlapping(30);

@@ -100,6 +100,12 @@ class UpdateEmployee
                 RebuildMarks::forEmployee((int) $current->getKey());
             }
 
+            // A later joining date leaves days outside the window: flag them so the rebuild removes them. (An earlier
+            // one opens days, which the hourly close backfills.)
+            if ($current->wasChanged(['joining_date', 'last_working_day', 'status'])) {
+                RebuildMarks::outsideEmployment($current);
+            }
+
             $satellites = $this->writer->saveSatellites($current, $data);
             $old += $satellites['old'];
             $new += $satellites['attributes'];

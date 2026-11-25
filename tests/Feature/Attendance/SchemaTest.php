@@ -17,6 +17,7 @@ use App\Support\Settings;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Schema;
 use Spatie\Activitylog\Models\Activity;
@@ -578,4 +579,27 @@ it('shows the shift to every viewer of the employment group and the exempt flag 
 
     expect($employment($managerUser, $report))->toMatchArray(['shift' => 'Night Owl', 'shift_is_default' => false])
         ->and(json_encode($employment($managerUser, $report)))->not->toContain('12:00')->not->toContain('21:00');
+});
+
+it('applies the cutoff + 2 h rule in the default-shift data migration too, and logs the fallback', function () {
+    Log::spy();
+    DB::table('shifts')->delete();
+    Settings::set('attendance', ['shift_start' => '05:00', 'shift_end' => '14:00']); // the cutoff is 04:00
+
+    scRunDefaultShiftMigration();
+
+    expect(Shift::default()->only(['start_time', 'end_time']))->toBe(['start_time' => '09:00', 'end_time' => '18:00']);
+    Log::shouldHaveReceived('warning')
+        ->withArgs(fn ($message) => str_contains($message, 'shift_start is less than 2 hours after the day cutoff'))->once();
+});
+
+it('logs one warning when DefaultShift falls back because of the cutoff, and none for a usable start', function () {
+    Log::spy();
+    Settings::set('attendance', ['shift_start' => '05:30', 'shift_end' => '14:00']);
+    DefaultShift::values();
+    Log::shouldHaveReceived('warning')->once();
+
+    Settings::set('attendance', ['shift_start' => '08:00', 'shift_end' => '17:00']);
+    DefaultShift::values();
+    Log::shouldHaveReceived('warning')->once();
 });

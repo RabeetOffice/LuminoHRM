@@ -7,7 +7,6 @@ use App\Models\Employee;
 use App\Models\User;
 use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\CorrectionEligibility;
-use App\Support\Attendance\DashboardAttendance;
 use App\Support\Attendance\MonthGrid;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -104,7 +103,7 @@ class MyAttendanceController extends Controller
     private function firstMonth(Employee $employee): string
     {
         $from = $employee->joining_date->format('Y-m-d');
-        $start = DashboardAttendance::startDate();
+        $start = AttendanceClock::startDate();
 
         if ($start !== null && $start > $from) {
             $from = $start;

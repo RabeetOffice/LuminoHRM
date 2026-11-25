@@ -5,6 +5,7 @@ namespace App\Support\Attendance;
 use App\Casts\ClockTime;
 use App\Http\Requests\ShiftRequest;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Creates the default shift ("General") from the Phase 1 attendance settings when there is no default shift.
@@ -67,8 +68,18 @@ final class DefaultShift
 
         $cutoff = ClockTime::minutes((new AttendanceClock)->dayCutoff());
 
-        if ($start === null || $end === null || ClockTime::minutes($end) <= ClockTime::minutes($start)
-            || ClockTime::minutes($start) - $cutoff < ShiftRequest::CUTOFF_MARGIN_MINUTES) {
+        $tooEarly = $start !== null && $end !== null && ClockTime::minutes($end) > ClockTime::minutes($start)
+            && ClockTime::minutes($start) - $cutoff < ShiftRequest::CUTOFF_MARGIN_MINUTES;
+
+        if ($tooEarly) {
+            // Not silent: the Phase 1 setting was usable but starts too close to the day cutoff.
+            Log::warning('Default shift: attendance.shift_start is less than 2 hours after the day cutoff; using the configured default times instead', [
+                'shift_start' => $start,
+                'day_cutoff' => (new AttendanceClock)->dayCutoff(),
+            ]);
+        }
+
+        if ($start === null || $end === null || ClockTime::minutes($end) <= ClockTime::minutes($start) || $tooEarly) {
             $start = self::time($defaults['shift_start'] ?? null) ?? '09:00';
             $end = self::time($defaults['shift_end'] ?? null) ?? '18:00';
         }

@@ -19,6 +19,7 @@ use InvalidArgumentException;
  *   $clock->today();                        // CarbonImmutable at 00:00 of the current day in that zone
  *   $clock->utcOffsetHours();               // 5 for Asia/Karachi, 5.5 for Asia/Kolkata (machine handshake "TimeZone=")
  *   $clock->toDateString('2026-11-24 23:59:59');   // "2026-11-24": the date part of a naive value, never shifted
+ *   AttendanceClock::startDate();           // settings('attendance.start_date') as "Y-m-d", or null (not started)
  *
  * It keeps no state: the setting is read on every call (Settings caches per request), and Laravel's test time travel
  * (travelTo, Carbon::setTestNow) is honoured because "now" comes from the Date facade.
@@ -120,6 +121,25 @@ class AttendanceClock
     public function attendanceToday(): string
     {
         return self::dayOf($this->now()->format('Y-m-d H:i:s'), $this->dayCutoff());
+    }
+
+    /**
+     * The attendance start date, settings('attendance.start_date'), as "Y-m-d" (trimmed, a real calendar date), or null
+     * when it is unset or unusable (attendance has not started). The one reader of that setting: the rebuild, the manual
+     * correction, correction requests, the monthly grid, the dashboard and the Daily screen all use it.
+     */
+    public static function startDate(): ?string
+    {
+        $value = settings('attendance.start_date');
+
+        if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        $value = trim($value);
+        $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $value, new DateTimeZone('UTC'));
+
+        return $parsed !== false && $parsed->format('Y-m-d') === $value ? $value : null;
     }
 
     /** attendanceDateFor() with an explicit cutoff ("H:i"), for callers that read the setting once for many punches. */

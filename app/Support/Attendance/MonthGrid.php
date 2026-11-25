@@ -94,7 +94,7 @@ final class MonthGrid
             $first->modify('last day of this month')->format('Y-m-d'),
             (int) $first->format('t'),
             $clock->attendanceToday(),
-            self::startDate(),
+            AttendanceClock::startDate(),
         );
     }
 
@@ -333,17 +333,6 @@ final class MonthGrid
     private static function time(mixed $value): ?string
     {
         return is_string($value) && strlen($value) >= 16 ? substr($value, 11, 5) : null;
-    }
-
-    private static function startDate(): ?string
-    {
-        $value = settings('attendance.start_date');
-
-        if (! is_string($value) || preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) !== 1) {
-            return null;
-        }
-
-        return self::date($value)->format('Y-m-d') === $value ? $value : null;
     }
 
     private static function date(string $date): DateTimeImmutable

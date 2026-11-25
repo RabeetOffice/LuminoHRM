@@ -21,7 +21,9 @@ use Throwable;
 
 class IclockController extends Controller
 {
-    private const MAX_BODY_BYTES = 1048576;
+    /** Accepted requests keep at most this much of the body in device_logs (the stored-log truncation limit; the
+     * request size limit itself is checked separately, before anything is parsed). */
+    private const LOGGED_BODY_BYTES = 1048576;
 
     /** Rejected requests keep only this much of the body. */
     private const REJECTED_BODY_BYTES = 1024;
@@ -325,7 +327,7 @@ class IclockController extends Controller
     private function record(Request $request, ?string $sn, bool $accepted, string $summary, bool $withBody = true): void
     {
         try {
-            $bodyLimit = $withBody ? self::MAX_BODY_BYTES : 0;
+            $bodyLimit = $withBody ? self::LOGGED_BODY_BYTES : 0;
 
             if (! $accepted) {
                 $verdict = $this->rejectedVerdict($request->ip());

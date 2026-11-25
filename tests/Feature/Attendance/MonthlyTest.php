@@ -493,3 +493,19 @@ it('reads a fixed number of queries whatever the number of days or people', func
 
     expect($march)->toBe($february)->and($march)->toBeLessThanOrEqual(12);
 })->with(['admin', 'hr']);
+
+it('lists only the departments of people in a manager scope, and every department for admin', function () {
+    $mine = Department::factory()->create(['name' => 'Mine']);
+    $theirs = Department::factory()->create(['name' => 'Elsewhere Dept']);
+    $manager = userWithRole('manager');
+    $boss = employeeFor($manager, ['department_id' => $mine->id]);
+    mgPerson(['manager_id' => $boss->id, 'department_id' => $mine->id]);
+    mgPerson(['department_id' => $theirs->id]);
+
+    $props = mgProps($this, $manager, 'month=2026-11');
+    expect(array_column($props['departments'], 'id'))->toBe([$mine->id])
+        ->and(json_encode($props))->not->toContain('Elsewhere Dept');
+
+    expect(array_column(mgProps($this, userWithRole('admin'), 'month=2026-11')['departments'], 'id'))
+        ->toContain($mine->id, $theirs->id);
+});

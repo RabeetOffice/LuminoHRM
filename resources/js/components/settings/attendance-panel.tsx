@@ -148,12 +148,13 @@ export function AttendancePanel({ values }: { values: AttendanceValues }) {
 
             <SettingsCard
                 title="Overtime"
-                description="Pay for time worked after the shift ends."
+                description="Overtime minutes are always recorded in attendance. This setting only decides whether payroll pays them."
                 {...card(['overtime_enabled', 'overtime_min_minutes'])}
             >
                 <CheckField
                     id="att-overtime"
                     label="Overtime is paid"
+                    hint="Controls payment in payroll only. Attendance records overtime minutes either way."
                     checked={data.overtime_enabled}
                     error={errors.overtime_enabled}
                     onChange={(v) => setData('overtime_enabled', v)}

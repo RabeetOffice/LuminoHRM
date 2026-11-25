@@ -13,6 +13,7 @@ use App\Models\Shift;
 use App\Models\User;
 use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\AttendanceRebuilder;
+use App\Support\Attendance\Leavers;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
@@ -39,7 +40,9 @@ use Throwable;
  * inactive / resigned / terminated without a last working day).  * A listed person with no row is "Not in yet" on the open
  * day (AttendanceClock::attendanceToday()) and "No record" on a past day (the nightly close has not run); both match
  * the "not_in" filter. On an open day that is a holiday, or a weekly off of the person's shift, a person with no row
- * shows Holiday / Weekend instead and is not counted as missing. A future date is refused.
+ * shows Holiday / Weekend instead and is not counted as missing; nor is an attendance-exempt person with no row on the
+ * open day (shown as Exempt, as the dashboard leaves them out of "expected"). A day before the attendance start date
+ * lists the rows it has (punch days) with before_start = true and no Edit action. A future date is refused.
  *
  * Who may correct whom (update, reset, and each row's can_edit): attendance.edit, the scope, ApplyManualCorrection::
  * mayCorrect (not your own record unless Admin; an Admin / HR login only by an Admin) and a day the person can be
@@ -56,8 +59,6 @@ class DailyController extends Controller
 
     /** Values of the status filter besides the stored statuses. */
     private const EXTRA_FILTERS = ['pending', 'not_in', 'holiday_weekend'];
-
-    private const LEAVING_STATUSES = ['inactive', 'resigned', 'terminated'];
 
     public function __construct(
         private readonly AttendanceClock $clock,
@@ -121,6 +122,9 @@ class DailyController extends Controller
             ? array_flip(User::query()->role(['admin', 'hr'])->whereNotNull('employee_id')->pluck('employee_id')->all())
             : [];
 
+        // A day before the attendance start date can be listed (a punch day) but not corrected or reset.
+        $beforeStart = $start !== null && $date < $start;
+
         $list = $employees->map(fn (Employee $e) => $this->row(
             $e,
             $rows->get($e->id),
@@ -129,8 +133,10 @@ class DailyController extends Controller
             $isHoliday,
             $defaultShift,
             $canEdit
+                && ! $beforeStart
                 && ApplyManualCorrection::mayCorrect($user, $e, isset($privileged[$e->id]))
                 && $this->correct->employmentRefusal($e, $date) === null,
+            $beforeStart,
         ))->values();
 
         $filters = $this->filters($request);
@@ -252,11 +258,11 @@ class DailyController extends Controller
     {
         $q->where('joining_date', '<=', $date)
             ->where(fn (Builder $w) => $w->whereNull('last_working_day')->orWhere('last_working_day', '>=', $date))
-            ->where(fn (Builder $w) => $w->whereNotIn('status', self::LEAVING_STATUSES)->orWhereNotNull('last_working_day'));
+            ->where(fn (Builder $w) => Leavers::exceptWithoutLastDay($w));
     }
 
     /** @return array<string, mixed> */
-    private function row(Employee $e, ?Attendance $a, string $date, bool $isOpen, bool $isHoliday, ?Shift $defaultShift, bool $canEdit): array
+    private function row(Employee $e, ?Attendance $a, string $date, bool $isOpen, bool $isHoliday, ?Shift $defaultShift, bool $canEdit, bool $beforeStart = false): array
     {
         $raw = $a?->getAttributes() ?? [];
         $in = isset($raw['clock_in']) ? (string) $raw['clock_in'] : null;
@@ -266,6 +272,8 @@ class DailyController extends Controller
 
         // No row on the open day: Holiday / Weekend when the day is one for this person, otherwise "Not in yet".
         $offDay = $a === null && $isOpen ? $this->offDay($date, $isHoliday, $shift) : null;
+        // An attendance-exempt person with no row on the open day is not missing (the close records them present).
+        $exemptOpen = $a === null && $isOpen && $offDay === null && (bool) $e->attendance_exempt;
 
         return [
             'employee' => [
@@ -279,8 +287,12 @@ class DailyController extends Controller
             ],
             'shift' => ($a !== null ? $this->snapshotName($a) : null) ?? $shift?->name,
             'has_record' => $a !== null,
-            // No row and not an off day: "Not in yet" on the open day, "No record" on a past day.
-            'not_in' => $a === null && $offDay === null,
+            // No row and not an off day: "Not in yet" on the open day, "No record" on a past day. Never an exempt
+            // person on the open day (shown as Exempt instead).
+            'not_in' => $a === null && $offDay === null && ! $exemptOpen,
+            'exempt' => (bool) $e->attendance_exempt,
+            // A day before the attendance start date: listed (a punch day), never corrected; the page says so.
+            'before_start' => $beforeStart,
             'clock_in' => $in !== null ? substr($in, 11, 5) : null,
             'clock_out' => $out !== null ? substr($out, 11, 5) : null,
             // A clock-out after midnight (before the day cutoff) is on the next calendar day.
@@ -396,9 +408,7 @@ class DailyController extends Controller
 
     private function startDate(): ?string
     {
-        $value = settings('attendance.start_date');
-
-        return is_string($value) ? $this->validDate($value) : null;
+        return AttendanceClock::startDate();
     }
 
     private function validDate(string $value): ?string

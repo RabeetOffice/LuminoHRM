@@ -72,6 +72,8 @@ export type CorrectionDialogProps = {
      * event.preventDefault() and focus that control.
      */
     onCloseAutoFocus?: (event: Event) => void;
+    /** The current attendance day ("Y-m-d"): a clock-in entered alone on it gets a note about later punches. */
+    today?: string;
 };
 
 /**
@@ -87,6 +89,7 @@ export function CorrectionDialog({
     current,
     overrideStatuses,
     onCloseAutoFocus,
+    today,
 }: CorrectionDialogProps) {
     const [busy, setBusy] = useState(false);
 
@@ -105,6 +108,7 @@ export function CorrectionDialog({
                     date={date}
                     current={current}
                     overrideStatuses={overrideStatuses}
+                    today={today}
                     onClose={onClose}
                     onBusy={setBusy}
                 />
@@ -124,6 +128,7 @@ function CorrectionForm({
     overrideStatuses,
     onClose,
     onBusy,
+    today,
 }: FormProps) {
     const dateFormat = usePage().props.app.dateFormat;
     const statuses: AttendanceStatus[] = (
@@ -144,6 +149,13 @@ function CorrectionForm({
     const dateError = (errors as Record<string, string | undefined>).date;
     const target = { employee: employee.id, date };
     const noTimes = statusTakesNoTimes(data.status);
+    // Only a clock-in, on the open day: a later machine punch will not be added to a corrected day.
+    const inOnlyToday =
+        !noTimes &&
+        today !== undefined &&
+        date === today &&
+        data.clock_in !== '' &&
+        data.clock_out === '';
 
     const submit = (event: FormEvent) => {
         event.preventDefault();
@@ -188,9 +200,18 @@ function CorrectionForm({
                     id="correction-in"
                     label="Clock-in"
                     error={errors.clock_in}
+                    hint={
+                        inOnlyToday
+                            ? 'A corrected day is kept as entered; a later machine punch will not be added. Enter the clock-out too, or correct again later.'
+                            : undefined
+                    }
                 >
                     <Input
-                        {...fieldAria('correction-in', errors.clock_in)}
+                        {...fieldAria(
+                            'correction-in',
+                            errors.clock_in,
+                            inOnlyToday,
+                        )}
                         type="time"
                         disabled={noTimes}
                         value={noTimes ? '' : data.clock_in}

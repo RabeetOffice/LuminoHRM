@@ -8,8 +8,8 @@ use App\Models\Shift;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
- * Flags stored attendance days as needing a rebuild after a change to the rules they were worked out with (a shift or
- * a holiday). Only the needs_rebuild column is written; the scheduled rebuild does the work. A manual day is never
+ * Flags stored attendance days as needing a rebuild after a change to the rules they were worked out with (a shift, a
+ * holiday, or a person's employment window). Only the needs_rebuild column is written; the scheduled rebuild does the work. A manual day is never
  * flagged (a rebuild would skip it anyway).
  */
 class RebuildMarks
@@ -62,6 +62,40 @@ class RebuildMarks
             ->where('date', $date)
             ->where('is_manual', false)
             ->where('needs_rebuild', false)
+            ->update(['needs_rebuild' => true]);
+    }
+
+    /**
+     * One employee's joining date, last working day or status changed: their non-manual days that are now outside the
+     * window attendance keeps for them (before the joining date, after the last working day, or, for a leaver without a
+     * last working day, from the current attendance day on) are flagged, closed or not, so the rebuild removes them. One
+     * bounded UPDATE on that employee's rows. Days the window gained are not flagged here: the hourly close backfills
+     * missing days (CloseAttendanceDay).
+     *
+     * @return int the number of days flagged
+     */
+    public static function outsideEmployment(Employee $employee): int
+    {
+        $joined = $employee->joining_date->format('Y-m-d');
+        $last = $employee->last_working_day?->format('Y-m-d');
+        $leftWithoutDate = Leavers::withoutLastDay($employee);
+        $today = app(AttendanceClock::class)->attendanceToday();
+
+        return Attendance::query()
+            ->where('employee_id', $employee->id)
+            ->where('is_manual', false)
+            ->where('needs_rebuild', false)
+            ->where(function ($q) use ($joined, $last, $leftWithoutDate, $today): void {
+                $q->where('date', '<', $joined);
+
+                if ($last !== null) {
+                    $q->orWhere('date', '>', $last);
+                }
+
+                if ($leftWithoutDate) {
+                    $q->orWhere('date', '>=', $today);
+                }
+            })
             ->update(['needs_rebuild' => true]);
     }
 

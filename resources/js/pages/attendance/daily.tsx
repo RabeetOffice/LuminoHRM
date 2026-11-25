@@ -50,8 +50,12 @@ type DailyRow = {
     shift: string | null;
     /** The person has a row for the day. */
     has_record: boolean;
-    /** No row and not an off day: "Not in yet" (open day) or "No record" (past day). */
+    /** No row and not an off day: "Not in yet" (open day) or "No record" (past day). Never an exempt person on the open day. */
     not_in: boolean;
+    /** The person is attendance-exempt (with no row on the open day: shown as Exempt, not missing). */
+    exempt: boolean;
+    /** The day is before the attendance start date: listed, never corrected. */
+    before_start: boolean;
     /** "H:i" wall-clock times. */
     clock_in: string | null;
     clock_out: string | null;
@@ -249,7 +253,9 @@ export default function Daily({
     const statusCell = (row: DailyRow) => {
         let pill;
 
-        if (!row.has_record && row.status === null) {
+        if (!row.has_record && row.status === null && !row.not_in) {
+            pill = <StatusPill tone="grey">Exempt</StatusPill>;
+        } else if (!row.has_record && row.status === null) {
             pill = (
                 <StatusPill tone="grey">
                     {isOpen ? 'Not in yet' : 'No record'}
@@ -284,6 +290,11 @@ export default function Daily({
                         </span>
                     )}
                 </div>
+                {row.before_start && (
+                    <p className="text-xs text-muted-foreground">
+                        Before start date
+                    </p>
+                )}
                 {row.is_manual && row.note && (
                     // Visible text, so the note is readable by keyboard, touch and screen readers alike.
                     <p className="max-w-56 text-xs break-words text-muted-foreground">
@@ -682,6 +693,7 @@ export default function Daily({
                         name: editing.employee.name,
                     }}
                     date={date}
+                    today={today}
                     current={{
                         clock_in: editing.clock_in,
                         clock_out: editing.clock_out,

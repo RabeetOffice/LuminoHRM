@@ -103,7 +103,7 @@ A model attribute whose value must never be stored is listed in `config('hrm.aud
 
 ## Not audited here
 
-Machine requests to `/iclock` have their own `device_logs` table and run no audit query or middleware.
+Machine requests to `/iclock` have their own `device_logs` table and run no audit middleware; punch ingestion writes no audit entry. One exception: the first contact of a serial listed in `HRM_DEVICE_SERIALS` creates its device row, and that writes a "Device created" activity entry (area `attendance`) with no causer (shown as System).
 
 ## Viewer query string
 

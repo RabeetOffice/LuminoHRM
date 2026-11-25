@@ -67,6 +67,8 @@ type Props = {
     departments: { id: number; name: string }[];
     /** The statuses that may be chosen by hand (ApplyManualCorrection::OVERRIDE_STATUSES). */
     overrideStatuses: string[];
+    /** The current attendance day ("Y-m-d"). */
+    today: string;
     can: { export: boolean; edit: boolean };
 };
 
@@ -106,6 +108,7 @@ export default function Monthly({
     filters,
     departments,
     overrideStatuses,
+    today,
     can,
 }: Props) {
     const { url } = usePage();
@@ -548,6 +551,7 @@ export default function Monthly({
                     onClose={() => setDialogOpen(false)}
                     employee={{ id: selected.row.id, name: selected.row.name }}
                     date={selected.day.date}
+                    today={today}
                     current={{
                         clock_in: selected.cell?.[2] ?? null,
                         clock_out: selected.cell?.[3] ?? null,

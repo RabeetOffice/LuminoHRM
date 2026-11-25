@@ -2,6 +2,7 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 // Data migration: production runs `migrate --force` but never seeds. Idempotent: does nothing when a default shift exists.
 // Creates "General" from the attendance settings (or their config defaults). Query builder only, no model events or
@@ -14,6 +15,11 @@ return new class extends Migration
     private const TIME = '/^([01]\d|2[0-3]):([0-5]\d)(:([0-5]\d))?$/';
 
     private const WEEK = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+
+    /** The default attendance day cutoff, and the least gap between it and a shift start (frozen copies). */
+    private const CUTOFF = '04:00';
+
+    private const CUTOFF_MARGIN_MINUTES = 120;
 
     public function up(): void
     {
@@ -60,7 +66,21 @@ return new class extends Migration
         $start = $this->time(settings('attendance.shift_start'));
         $end = $this->time(settings('attendance.shift_end'));
 
-        if ($start === null || $end === null || $this->minutes($end) <= $this->minutes($start)) {
+        // A start less than 2 hours after the attendance day cutoff would put early clock-ins on the previous day (the
+        // shift rule ShiftRequest enforces): start and end then take the defaults too (the same rule as the default-shift support class).
+        $cutoff = settings('attendance.day_cutoff_time');
+        $cutoff = is_string($cutoff) && preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $cutoff) === 1 ? $cutoff : self::CUTOFF;
+        $tooEarly = $start !== null && $end !== null && $this->minutes($end) > $this->minutes($start)
+            && $this->minutes($start) - $this->minutes($cutoff) < self::CUTOFF_MARGIN_MINUTES;
+
+        if ($tooEarly) {
+            Log::warning('Default shift: attendance.shift_start is less than 2 hours after the day cutoff; using the configured default times instead', [
+                'shift_start' => $start,
+                'day_cutoff' => $cutoff,
+            ]);
+        }
+
+        if ($start === null || $end === null || $this->minutes($end) <= $this->minutes($start) || $tooEarly) {
             $start = $this->time($defaults['shift_start'] ?? null) ?? '09:00';
             $end = $this->time($defaults['shift_end'] ?? null) ?? '18:00';
         }

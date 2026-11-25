@@ -4,6 +4,7 @@ namespace App\Actions\Employees;
 
 use App\Actions\SetUserActive;
 use App\Models\User;
+use App\Support\Attendance\Leavers;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeCode;
 use Illuminate\Support\Facades\DB;
@@ -30,7 +31,7 @@ use InvalidArgumentException;
  */
 class ImportEmployees
 {
-    private const DISABLING = ['inactive', 'resigned', 'terminated'];
+    private const DISABLING = Leavers::STATUSES;
 
     public function __construct(private readonly SetUserActive $setActive) {}
 

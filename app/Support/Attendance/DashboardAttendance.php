@@ -43,8 +43,6 @@ final class DashboardAttendance
     /** At most this many names on the "Late Arrivals Today" card (the tile has the full count). */
     public const LATE_LIST_LIMIT = 20;
 
-    private const LEAVING_STATUSES = ['inactive', 'resigned', 'terminated'];
-
     private readonly string $today;
 
     /**
@@ -254,7 +252,7 @@ final class DashboardAttendance
             ->where('attendance_exempt', false)
             ->where('joining_date', '<=', $today)
             ->where(fn (Builder $w) => $w->whereNull('last_working_day')->orWhere('last_working_day', '>=', $today))
-            ->where(fn (Builder $w) => $w->whereNotIn('status', self::LEAVING_STATUSES)->orWhereNotNull('last_working_day'))
+            ->tap(fn (Builder $q) => Leavers::exceptWithoutLastDay($q))
             ->toBase()
             ->get(['employees.id', 'employees.shift_id']);
 
@@ -320,17 +318,9 @@ final class DashboardAttendance
         ];
     }
 
-    /** settings('attendance.start_date') when it is a real "Y-m-d" date, else null. */
+    /** settings('attendance.start_date') when it is a real "Y-m-d" date, else null (kept for callers; see AttendanceClock). */
     public static function startDate(): ?string
     {
-        $value = settings('attendance.start_date');
-
-        if (! is_string($value)) {
-            return null;
-        }
-
-        $parsed = DateTimeImmutable::createFromFormat('!Y-m-d', $value);
-
-        return $parsed !== false && $parsed->format('Y-m-d') === $value ? $value : null;
+        return AttendanceClock::startDate();
     }
 }

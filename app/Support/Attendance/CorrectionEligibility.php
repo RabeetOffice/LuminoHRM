@@ -156,8 +156,8 @@ class CorrectionEligibility
             return 'This day is after your last working day.';
         }
 
-        $start = settings('attendance.start_date');
-        if (is_string($start) && self::validDate($start) !== null && $date < $start) {
+        $start = AttendanceClock::startDate();
+        if ($start !== null && $date < $start) {
             return 'Attendance was not yet recorded on this day.';
         }
 

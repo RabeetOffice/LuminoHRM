@@ -9,6 +9,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Testing\TestResponse;
+use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
@@ -45,6 +46,27 @@ function meSheet(TestResponse $response): Worksheet
     }
 
     return IOFactory::createReader('Xlsx')->load($path)->getSheet(0);
+}
+
+/**
+ * The employee lines of a sheet read with toArray(): the rows between the header and the blank row above the key.
+ *
+ * @param  list<list<mixed>>  $rows
+ * @return list<list<mixed>>
+ */
+function meLines(array $rows): array
+{
+    $lines = [];
+
+    foreach (array_slice($rows, 1) as $row) {
+        if (array_filter($row, fn ($v) => $v !== null && $v !== '') === []) {
+            break;
+        }
+
+        $lines[] = $row;
+    }
+
+    return $lines;
 }
 
 /** @param  array<string, mixed>  $attrs */
@@ -104,7 +126,10 @@ it('names the file after the month and writes one row per employee with letters 
     $sheet = meSheet($response);
     $rows = $sheet->toArray(null, false, false);
 
-    expect($rows)->toHaveCount(2);
+    // Header, one employee, a blank row, the key.
+    expect($rows)->toHaveCount(4)
+        ->and($rows[2][0])->toBeNull()
+        ->and($rows[3][0])->toBe('Key: P present · L late · HD half day · A absent · LV on leave · H holiday · W weekend · … pending calculation (not counted) · – no record');
     expect(array_slice($rows[0], 0, 6))->toBe(['Employee Code', 'Name', 'Department', 'Designation', '01 Sun', '02 Mon'])
         ->and(array_slice($rows[0], 4 + 30))->toBe([
             'Present', 'Late', 'Half Day', 'Absent', 'On Leave', 'Weekend/Holiday', 'Present-equivalent', 'Working Days',
@@ -113,17 +138,20 @@ it('names the file after the month and writes one row per employee with letters 
 
     $line = $rows[1];
     expect(array_slice($line, 0, 4))->toBe(['LD-0001', 'Ayesha Khan', 'Engineering', 'Engineer'])
-        ->and(array_slice($line, 4, 12))->toBe(['–', 'P', 'L', 'HD', 'A', 'LV', 'W', '–', '–', 'H', '–', '–'])
+        // The 11th is pending calculation (…), the rest without a row have no record (–).
+        ->and(array_slice($line, 4, 12))->toBe(['–', 'P', 'L', 'HD', 'A', 'LV', 'W', '–', '–', 'H', '…', '–'])
         // Days still to come.
         ->and($line[4 + 25])->toBe('–')
-        ->and(array_slice($line, 4 + 30))->toBe(['1', '1', '1', '1', '1', '2', '2.5', '4', '21.00', '30', '45']);
+        ->and(array_slice($line, 4 + 30))->toBe([1, 1, 1, 1, 1, 2, 2.5, 4, 21.0, 30, 45]);
 
-    // Every cell is a text cell.
+    // Names, codes and day letters are text cells; the totals are numeric cells Excel can sum.
     foreach ($sheet->getRowIterator(2, 2) as $row) {
-        foreach ($row->getCellIterator() as $cell) {
-            expect($cell->getDataType())->toBe(DataType::TYPE_STRING);
+        foreach ($row->getCellIterator() as $column => $cell) {
+            $isTotal = Coordinate::columnIndexFromString($column) > 4 + 30;
+            expect($cell->getDataType())->toBe($isTotal ? DataType::TYPE_NUMERIC : DataType::TYPE_STRING);
         }
     }
+    expect($sheet->getStyle('AQ2')->getNumberFormat()->getFormatCode())->toBe('0.00'); // worked hours
 });
 
 it('has 28, 29, 30 or 31 day columns', function (string $month, int $days) {
@@ -168,10 +196,10 @@ it('exports every employee of the month, not one page, and honours search and de
     $sellers = meSheet($this->actingAs($admin)->get('/attendance/monthly/export?month=2026-11&department_id='.$sales->id))->toArray(null, false, false);
     $search = meSheet($this->actingAs($admin)->get('/attendance/monthly/export?month=2026-11&search=person07'))->toArray(null, false, false);
 
-    expect($all)->toHaveCount(32)
-        ->and(array_column(array_slice($sellers, 1), 1))->toHaveCount(1)
+    expect(meLines($all))->toHaveCount(31)
+        ->and(meLines($sellers))->toHaveCount(1)
         ->and($sellers[1][1])->toEndWith('Seller')
-        ->and($search)->toHaveCount(2);
+        ->and(meLines($search))->toHaveCount(1);
 });
 
 it('blanks the days after a mid-month leaver\'s last working day and does not count them', function () {
@@ -184,10 +212,10 @@ it('blanks the days after a mid-month leaver\'s last working day and does not co
 
     $rows = meSheet($this->actingAs($admin)->get('/attendance/monthly/export?month=2026-11'))->toArray(null, false, false);
 
-    expect($rows)->toHaveCount(2);
+    expect(meLines($rows))->toHaveCount(1);
     $line = $rows[1];
     expect(array_slice($line, 4 + 10, 6))->toBe(['P', 'L', '–', '–', '–', '–'])
-        ->and(array_slice($line, 4 + 30))->toBe(['1', '1', '0', '0', '0', '0', '2', '2', '17.33', '15', '0']);
+        ->and(array_slice($line, 4 + 30))->toBe([1, 1, 0, 0, 0, 0, 2, 2, 17.33, 15, 0]);
 });
 
 it('leaves out a leaver with no last working day unless they have an attendance row in the month', function () {
@@ -199,8 +227,8 @@ it('leaves out a leaver with no last working day unless they have an attendance 
     $october = meSheet($this->actingAs($admin)->get('/attendance/monthly/export?month=2026-10'))->toArray(null, false, false);
     $november = meSheet($this->actingAs($admin)->get('/attendance/monthly/export?month=2026-11'))->toArray(null, false, false);
 
-    expect(array_column(array_slice($october, 1), 1))->toHaveCount(2)
-        ->and(array_column(array_slice($november, 1), 1))->toHaveCount(1)
+    expect(meLines($october))->toHaveCount(2)
+        ->and(meLines($november))->toHaveCount(1)
         ->and($november[1][1])->toEndWith('Stays');
 });
 

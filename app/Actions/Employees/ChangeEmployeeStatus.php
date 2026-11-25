@@ -6,6 +6,8 @@ use App\Actions\SetUserActive;
 use App\Exceptions\AccountRuleViolation;
 use App\Models\Employee;
 use App\Models\User;
+use App\Support\Attendance\Leavers;
+use App\Support\Attendance\RebuildMarks;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeRoles;
 use Illuminate\Support\Facades\DB;
@@ -27,7 +29,7 @@ use InvalidArgumentException;
 class ChangeEmployeeStatus
 {
     /** Statuses that end a person's access. */
-    public const DISABLING = ['inactive', 'resigned', 'terminated'];
+    public const DISABLING = Leavers::STATUSES;
 
     /** Statuses that need a last working day. */
     public const NEEDS_DAY = ['resigned', 'terminated'];
@@ -85,6 +87,11 @@ class ChangeEmployeeStatus
             $current->status = $status;
             $current->setAttribute('last_working_day', $day);
             $current->save();
+
+            // Attendance days now outside the person's window (after a new last working day, or from today for a
+            // leaver without one) are flagged so the rebuild removes them; manual days stay. Days the window gained
+            // (a last working day extended or cleared, back to active) are backfilled by the hourly close.
+            RebuildMarks::outsideEmployment($current);
 
             // The login follows the status only when it moves between "can sign in" and "cannot"; a change inside a
             // group (or a re-post) never touches an account an Admin disabled or enabled on the Users screen.

@@ -9,6 +9,7 @@ use App\Models\Department;
 use App\Models\Employee;
 use App\Models\User;
 use App\Support\Attendance\AttendanceClock;
+use App\Support\Attendance\Leavers;
 use App\Support\Attendance\MonthGrid;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeAccess;
@@ -48,9 +49,6 @@ class MonthlyController extends Controller
     private const PER_PAGE = 25;
 
     public function __construct(private readonly ApplyManualCorrection $correct) {}
-
-    /** Employee statuses of someone who has left (or is not working): see people(). */
-    private const LEFT_STATUSES = ['inactive', 'resigned', 'terminated'];
 
     public function index(Request $request, AttendanceClock $clock): Response|RedirectResponse
     {
@@ -118,7 +116,14 @@ class MonthlyController extends Controller
                 'department_id' => $departmentId,
             ],
             'overrideStatuses' => ApplyManualCorrection::OVERRIDE_STATUSES,
-            'departments' => Department::query()->orderBy('name')->orderBy('id')->get(['id', 'name'])->all(),
+            'today' => $grid->today,
+            // A team-scoped viewer only sees the departments of the people in their scope (as on the Daily screen).
+            'departments' => Department::query()
+                ->when(! $user->can('attendance.view-all'), fn (Builder $q) => $q->whereIn(
+                    'id',
+                    (new EmployeeAccess($user))->scope(Employee::query())->whereNotNull('department_id')->select('department_id'),
+                ))
+                ->orderBy('name')->orderBy('id')->get(['id', 'name'])->all(),
             'can' => [
                 'export' => $user->can('attendance.view-all'),
                 'edit' => $mayEdit,
@@ -190,8 +195,7 @@ class MonthlyController extends Controller
             ->where(fn (Builder $q) => $q->whereNull('last_working_day')->orWhere('last_working_day', '>=', $grid->first))
             // A leaver with no last working day recorded: only in months where they have attendance (one subquery).
             ->where(fn (Builder $q) => $q
-                ->whereNotIn('status', self::LEFT_STATUSES)
-                ->orWhereNotNull('last_working_day')
+                ->tap(fn (Builder $w) => Leavers::exceptWithoutLastDay($w))
                 ->orWhereExists(fn ($sub) => $sub->selectRaw('1')
                     ->from('attendances')
                     ->whereColumn('attendances.employee_id', 'employees.id')
