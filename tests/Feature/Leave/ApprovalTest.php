@@ -2,9 +2,11 @@
 
 use App\Mail\LeaveRequestDecided;
 use App\Mail\LeaveRequestSubmitted;
+use App\Models\ActivityEntry;
 use App\Models\Attendance;
 use App\Models\Employee;
 use App\Models\Holiday;
+use App\Models\LeaveBalance;
 use App\Models\LeaveDay;
 use App\Models\LeaveRequest;
 use App\Models\User;
@@ -12,8 +14,12 @@ use App\Support\Leave\LeaveBalances;
 use App\Support\Leave\LeaveDays;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Spatie\Activitylog\Models\Activity;
+use Spatie\Permission\PermissionRegistrar;
 
 /*
 | "Now" is 2026-11-25 (a Wednesday) 14:00 in Karachi: the attendance day is 2026-11-25. Attendance started on
@@ -83,7 +89,8 @@ it('runs employee -> manager -> HR and writes one leave day per counted day, mar
     [$user, $employee, $managerUser] = lvTeam();
     [$hrUser] = lvPerson('hr');
     $admin = userWithRole('admin');
-    $r = lvRequest($employee, '2026-11-23', '2026-11-27');
+    // What applying stored (the balance the employee saw then); approval keeps it.
+    $r = lvRequest($employee, '2026-11-23', '2026-11-27', null, 'Annual', ['balance_before' => ['2026' => 13]]);
 
     lvDecide($managerUser, $r, 'manager')->assertRedirect('/leave/requests')
         ->assertSessionHas('success', "Approved. The leave request of {$employee->full_name} now waits for HR.");
@@ -104,7 +111,7 @@ it('runs employee -> manager -> HR and writes one leave day per counted day, mar
     $r->refresh();
     expect($r->status)->toBe('approved')->and($r->hr_decided_by)->toBe($hrUser->id)->and($r->days)->toBe(5.0)
         ->and($r->manager_skipped)->toBeFalse()
-        ->and($r->balance_before)->toEqual(['2026' => 14]);
+        ->and($r->balance_before)->toEqual(['2026' => 13]);
 
     expect(lvDays($r))->toBe([
         '2026-11-23:full:1', '2026-11-24:full:1', '2026-11-25:full:1', '2026-11-26:full:1', '2026-11-27:full:1',
@@ -128,7 +135,9 @@ it('runs employee -> manager -> HR and writes one leave day per counted day, mar
     expect($entries[1]->causer_id)->toBe($hrUser->id)
         ->and($entries[1]->subject_id)->toBe($employee->id)
         ->and($entries[1]->properties['days'])->toEqual(5)
-        ->and($entries[1]->properties['step'])->toBe('final');
+        ->and($entries[1]->properties['step'])->toBe('final')
+        // The balance right before the approval is in the audit entry, not in the column.
+        ->and($entries[1]->properties['balance_before'])->toEqual(['2026' => 14]);
 });
 
 it('makes the manager approval final when the HR step is off, and writes the days', function () {
@@ -316,7 +325,8 @@ it('refuses approving a request across 31 December whose 2026 share would also b
     $fits = lvRequest($employee, '2026-12-14', '2027-01-20');
     $r->forceFill(['status' => 'cancelled'])->save();
     lvDecide($hrUser, $fits, 'final')->assertSessionHas('success');
-    expect($fits->fresh()->status)->toBe('approved')->and($fits->fresh()->balance_before)->toBe(['2026' => 14, '2027' => 14])
+    $audit = Activity::where('log_name', 'leave')->where('properties->request', $fits->id)->sole();
+    expect($fits->fresh()->status)->toBe('approved')->and($audit->properties['balance_before'])->toEqual(['2026' => 14, '2027' => 14])
         ->and(app(LeaveBalances::class)->line($employee, leaveType('Annual'), 2027)->available)->toBe(0.0);
 });
 
@@ -338,6 +348,27 @@ it('approves a request across 31 December of a type without carry-forward on eac
 
     lvDecide($hrUser, $r, 'final')->assertSessionHas('success');
     expect($r->fresh()->status)->toBe('approved')->and(lvDays($r))->toHaveCount(16);
+});
+
+it('refuses a 2026 approval that would overdraw APPROVED 2027 leave relying on the carried days', function () {
+    [, $employee] = lvPerson('employee');
+    [$hrUser] = lvPerson('hr');
+    $annual = leaveType('Annual'); // carry cap 5
+    $balances = app(LeaveBalances::class);
+    foreach ([2026, 2027] as $year) {
+        $balances->ensureYear($employee, $year);
+        LeaveBalance::query()->where('employee_id', $employee->id)->where('leave_type_id', $annual->id)->where('year', $year)
+            ->update(['allocated' => 10]);
+    }
+
+    approvedLeave($employee, '2026-03-02', '2026-03-06'); // 2026: 10 allocated, 5 used, so 5 carry into 2027
+    approvedLeave($employee, '2027-03-01', '2027-03-15'); // 2027: 15 approved = 10 + the 5 carried
+    expect($balances->line($employee, $annual, 2027)->available)->toBe(0.0);
+
+    $r = lvRequest($employee, '2026-11-30', '2026-12-04'); // 5 days in 2026: fits 2026 alone, but empties the carry
+    lvDecide($hrUser, $r, 'final')->assertSessionHas('error',
+        'Not enough Annual leave: these days would be taken from what carries into 2027, and 2027 would end 5 short. Reject it, or ask for the extra days as Unpaid leave.');
+    expect($r->fresh()->status)->toBe('pending')->and(lvDays($r))->toBe([]);
 });
 
 it('never limits unpaid leave', function () {
@@ -430,6 +461,117 @@ it('requires a reason to reject, makes the rejection final, frees the pending da
         ->toBe('Too many people away that week.');
 
     lvDecide($managerUser, $r, 'manager')->assertSessionHas('error', 'This request was already rejected.');
+});
+
+it('lets HR reject at the final step while the request waits for the manager, recorded as manager skipped', function () {
+    [$user, $employee, $managerUser] = lvTeam();
+    [$hrUser] = lvPerson('hr');
+    $r = lvRequest($employee, '2026-12-01');
+
+    lvDecide($hrUser, $r, 'final', 'reject', 'Year-end freeze on leave.')->assertSessionHas('success');
+
+    $r->refresh();
+    expect($r->status)->toBe('rejected')->and($r->manager_skipped)->toBeTrue()->and($r->hr_decided_by)->toBe($hrUser->id)
+        ->and($r->manager_decided_by)->toBeNull()->and(lvDays($r))->toBe([]);
+    $entry = Activity::where('log_name', 'leave')->where('properties->request', $r->id)->sole();
+    expect($entry->description)->toBe('Leave rejected')->and($entry->properties['manager_skipped'])->toBeTrue()
+        ->and($entry->properties['step'])->toBe('final');
+    Mail::assertQueued(LeaveRequestDecided::class, fn ($m) => $m->hasTo($user->email) && $m->outcome === 'rejected'
+        && $m->note === 'Year-end freeze on leave.');
+
+    lvDecide($managerUser, $r, 'manager')->assertSessionHas('error', 'This request was already rejected.');
+});
+
+it('mails the only active Admin when their manager approves their own request', function () {
+    [$managerUser, $manager] = lvPerson('manager');
+    [$admin, $adminEmployee] = lvPerson('admin', ['manager_id' => $manager->id]);
+    $r = lvRequest($adminEmployee, '2026-12-01');
+
+    lvDecide($managerUser, $r, 'manager')->assertSessionHas('success');
+    expect($r->fresh()->status)->toBe('manager_approved');
+    Mail::assertQueued(LeaveRequestSubmitted::class, fn ($m) => $m->hasTo($admin->email) && $m->afterManager);
+
+    // With a second Admin, that Admin decides it and the requester is not mailed.
+    Mail::fake();
+    $other = userWithRole('admin');
+    $second = lvRequest($adminEmployee, '2026-12-03');
+    lvDecide($managerUser, $second, 'manager')->assertSessionHas('success');
+    Mail::assertQueued(LeaveRequestSubmitted::class, fn ($m) => $m->hasTo($other->email));
+    Mail::assertNotQueued(LeaveRequestSubmitted::class, fn ($m) => $m->hasTo($admin->email));
+});
+
+it('retries the final approval after a deadlock and ends with one set of days, one audit entry and one mail', function () {
+    // Laravel retries only a top-level transaction, and RefreshDatabase wraps every test in one. Run this test on a
+    // fresh in-memory database of its own (migrated here), then put the shared connection back for the teardown.
+    $connection = DB::connection();
+    $shared = $connection->getPdo();
+    $connection->setPdo(app('db.factory')->make(config('database.connections.sqlite'), 'sqlite-deadlock')->getPdo());
+    app(PermissionRegistrar::class)->forgetCachedPermissions();
+
+    try {
+        Artisan::call('migrate', ['--force' => true]);
+        Settings::set('attendance', ['start_date' => '2026-01-01']);
+
+        [$user, $employee] = lvPerson('employee');
+        [$hrUser] = lvPerson('hr');
+        $r = lvRequest($employee, '2026-11-30', '2026-12-02');
+
+        $thrown = 0;
+        ActivityEntry::creating(function () use (&$thrown) {
+            if ($thrown++ === 0) {
+                throw new QueryException('sqlite', 'insert into "activity_log"', [],
+                    new PDOException('SQLSTATE[40001]: Serialization failure: 1213 Deadlock found when trying to get lock; try restarting transaction'));
+            }
+        });
+
+        lvDecide($hrUser, $r, 'final')->assertSessionHas('success');
+
+        expect($thrown)->toBe(2)
+            ->and($r->fresh()->status)->toBe('approved')
+            ->and(lvDays($r))->toHaveCount(3)
+            ->and(LeaveDay::count())->toBe(3)
+            ->and(Activity::where('log_name', 'leave')->where('properties->request', $r->id)->count())->toBe(1);
+        Mail::assertQueued(LeaveRequestDecided::class, 1);
+        Mail::assertQueued(LeaveRequestDecided::class, fn ($m) => $m->hasTo($user->email));
+    } finally {
+        ActivityEntry::flushEventListeners();
+        $connection->setPdo($shared);
+        (fn () => $this->transactions = 1)->call($connection); // the RefreshDatabase transaction, rolled back after the test
+        app(PermissionRegistrar::class)->forgetCachedPermissions();
+    }
+});
+
+it('escapes Markdown in the decision mail so typed text stays literal', function () {
+    [$user, $employee] = lvPerson('employee');
+    $r = lvRequest($employee, '2026-12-01');
+
+    $html = (new LeaveRequestDecided($r->fresh(), $user->name, 'rejected', 'See [the policy](https://evil.example) **now**'))->render();
+    expect($html)->toContain('[the policy](https://evil.example)')
+        ->toContain('**now**')
+        ->not->toContain('href="https://evil.example"')
+        ->not->toContain('<strong>now</strong>');
+});
+
+it('words the withdrawn outcome and leaves out a "Days: 0" line', function () {
+    [$user, $employee] = lvPerson('employee');
+    $open = lvRequest($employee, '2026-12-01');
+
+    $withdrawn = new LeaveRequestDecided($open->fresh(), $user->name, 'withdrawn', 'Your employment ended on 30 Nov 2026.');
+    expect($withdrawn->envelope()->subject)->toBe('Your leave request was cancelled');
+    expect($withdrawn->render())->toContain('Your leave request was cancelled before it was decided')
+        ->toContain('Your employment ended on 30 Nov 2026.')
+        ->toContain('1 day');
+
+    // A whole request emptied by a holiday: outcome "cancelled" with the holiday note, no days line.
+    $holiday = approvedLeave($employee, '2026-12-07');
+    $holiday->forceFill(['status' => 'cancelled', 'days' => 0])->save();
+    $html = (new LeaveRequestDecided($holiday->fresh(), $user->name, 'cancelled', 'Mon 7 Dec 2026 became a holiday.'))->render();
+    expect($html)->toContain('Your approved leave was cancelled. Its days went back to your balance.')
+        ->toContain('Mon 7 Dec 2026 became a holiday.')
+        ->not->toContain('Days:')
+        ->not->toContain('0 day');
+
+    expect(fn () => new LeaveRequestDecided($open, $user->name, 'bogus'))->toThrow(InvalidArgumentException::class);
 });
 
 // ---------------------------------------------------------------- access and mail

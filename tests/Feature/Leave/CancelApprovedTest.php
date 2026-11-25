@@ -89,7 +89,8 @@ it('cancels the whole request when cancelling from its first day', function () {
         "The leave of {$employee->full_name} was cancelled; 5 days went back to the balance.");
 
     $r->refresh();
-    expect($r->status)->toBe('cancelled')->and($r->cancelled_from)->toBeNull()->and($r->days)->toBe(0.0)
+    // The request keeps the days it was approved for (shown on the screens); the balance comes from leave days.
+    expect($r->status)->toBe('cancelled')->and($r->cancelled_from)->toBeNull()->and($r->days)->toBe(5.0)
         ->and(caDates($r))->toBe([]);
     expect(Activity::where('log_name', 'leave')->where('properties->request', $r->id)->sole()->description)->toBe('Leave cancelled');
     expect(app(LeaveBalances::class)->line($employee, leaveType(), 2026)->used)->toBe(0.0);
@@ -100,10 +101,35 @@ it('cancels a future leave entirely from today', function () {
     [$hrUser] = caPerson('hr');
     $r = approvedLeave($employee, '2026-12-01', '2026-12-02');
 
-    // Today is before the first day: the earliest allowed is the first day.
-    caCancel($hrUser, $r)->assertSessionHasErrors('from_date');
-    caCancel($hrUser, $r, ['from_date' => '2026-12-01'])->assertSessionHas('success');
-    expect($r->fresh()->status)->toBe('cancelled');
+    // Today is before the first day: without a date the server cancels from the first day, so the whole leave goes.
+    caCancel($hrUser, $r)->assertSessionHasNoErrors()->assertSessionHas('success',
+        "The leave of {$employee->full_name} was cancelled; 2 days went back to the balance.");
+    expect($r->fresh()->status)->toBe('cancelled')->and($r->fresh()->days)->toBe(2.0)->and(caDates($r))->toBe([]);
+});
+
+it('refuses the default cancel-from date when the leave is already over', function () {
+    [, $employee] = caPerson();
+    [$hrUser] = caPerson('hr');
+    $r = approvedLeave($employee, '2026-11-16', '2026-11-20');
+
+    caCancel($hrUser, $r)->assertSessionHasErrors(['from_date' => 'Choose a day from Mon 16 Nov 2026 to Fri 20 Nov 2026.']);
+    expect(caDates($r))->toHaveCount(5);
+});
+
+it('lets the only active Admin cancel their own approved leave (audited) and refuses it once a second Admin exists', function () {
+    [$admin, $adminEmployee] = caPerson('admin');
+    $r = approvedLeave($adminEmployee, '2026-12-07', '2026-12-08');
+
+    $this->actingAs($admin)->get("/leave/requests/{$r->id}")->assertOk()
+        ->assertInertia(fn ($p) => $p->where('request.can.cancel_approved', true));
+
+    caCancel($admin, $r, ['from_date' => '2026-12-08'])->assertSessionHas('success');
+    $entry = Activity::where('log_name', 'leave')->where('properties->request', $r->id)->sole();
+    expect($entry->properties['own_request'])->toBeTrue()->and(caDates($r))->toBe(['2026-12-07']);
+
+    userWithRole('admin');
+    caCancel($admin, $r, ['from_date' => '2026-12-07'])->assertForbidden();
+    expect(caDates($r))->toBe(['2026-12-07']);
 });
 
 it('refuses a cancel-from date outside the leave days and a missing reason', function () {

@@ -6,6 +6,7 @@ use App\Models\Employee;
 use App\Models\LeaveRequest;
 use App\Models\User;
 use App\Support\Leave\LeaveDays;
+use App\Support\Leave\WaitingForMe;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
@@ -101,21 +102,65 @@ it('lists what each user may decide now under "Waiting for me", with counts that
             ->where('requests.data.0.can.skips_manager', false)
             ->where('counts', ['waiting' => 1, 'all' => 2]));
 
+    // HR: the final-step requests only; the one still with the manager is under All ("Decide as HR").
     $this->actingAs($hrUser)->get('/leave/requests')->assertOk()
-        ->assertInertia(fn ($p) => $p->has('requests.data', 3)
-            ->where('counts', ['waiting' => 3, 'all' => 4])
-            ->where('requests.data.0.id', $atManager->id)
+        ->assertInertia(fn ($p) => $p->has('requests.data', 2)
+            ->where('counts', ['waiting' => 2, 'all' => 4])
+            ->where('requests.data.0.id', $atHr->id)
+            ->where('requests.data.0.stage', 'final')
             ->where('requests.data.0.can.decide', 'final')
-            ->where('requests.data.0.can.skips_manager', true)
-            ->where('requests.data.1.id', $atHr->id)
-            ->where('requests.data.1.stage', 'final')
-            ->where('requests.data.2.id', $direct->id)
+            ->where('requests.data.1.id', $direct->id)
             ->where('can.apply_on_behalf', true)
             ->has('on_behalf.employees')
             ->where('on_behalf.window', ['min' => '2026-10-26', 'max' => '2027-12-31']));
 
     $this->actingAs($hrUser)->get('/leave/requests?tab=all')->assertOk()
-        ->assertInertia(fn ($p) => $p->has('requests.data', 4)->where('counts', ['waiting' => 3, 'all' => 4]));
+        ->assertInertia(fn ($p) => $p->has('requests.data', 4)->where('counts', ['waiting' => 2, 'all' => 4])
+            ->where('requests.data', fn ($rows) => collect($rows)->firstWhere('id', $atManager->id)['can']['skips_manager'] === true
+                && collect($rows)->firstWhere('id', $atManager->id)['can']['decide'] === 'final'));
+
+    expect(WaitingForMe::count($hrUser))->toBe(2)->and(WaitingForMe::count($managerUser))->toBe(1);
+});
+
+it('offers on-behalf applications only for people the user may administer, never their own record', function () {
+    [$admin, $adminEmployee] = rsPerson('admin');
+    [$hrUser, $hrEmployee] = rsPerson('hr');
+    [, $employee] = rsPerson();
+
+    $ids = fn (User $u) => collect($this->actingAs($u)->get('/leave/requests')->assertOk()
+        ->viewData('page')['props']['on_behalf']['employees'])->pluck('id')->all();
+
+    expect($ids($admin))->toContain($hrEmployee->id, $employee->id)->not->toContain($adminEmployee->id)
+        ->and($ids($hrUser))->toContain($employee->id)->not->toContain($hrEmployee->id, $adminEmployee->id);
+});
+
+it('sends the back link: My Leaves for the requester, the requests list for approvers', function () {
+    [$user, $employee] = rsPerson();
+    [$hrUser] = rsPerson('hr');
+    $r = rsRequest($employee, '2026-12-01');
+
+    $this->actingAs($user)->get("/leave/requests/{$r->id}")->assertOk()
+        ->assertInertia(fn ($p) => $p->where('back', ['url' => '/my/leaves', 'label' => 'My Leaves']));
+    $this->actingAs($hrUser)->get("/leave/requests/{$r->id}")->assertOk()
+        ->assertInertia(fn ($p) => $p->where('back', ['url' => '/leave/requests', 'label' => 'Leave Requests']));
+});
+
+it('shows the manager\'s note and HR\'s note separately on the detail page', function () {
+    [$managerUser, $manager] = rsPerson('manager');
+    [$user, $employee] = rsPerson('employee', ['manager_id' => $manager->id]);
+    [$hrUser] = rsPerson('hr');
+    $r = rsRequest($employee, '2026-12-01');
+
+    $this->actingAs($managerUser)->put("/leave/requests/{$r->id}/manager-decide", ['decision' => 'approve', 'note' => 'Covered by Sara.'])
+        ->assertSessionHas('success');
+    $this->actingAs($hrUser)->put("/leave/requests/{$r->id}/final-decide", ['decision' => 'approve', 'note' => 'Fine by HR.'])
+        ->assertSessionHas('success');
+
+    $this->actingAs($user)->get("/leave/requests/{$r->id}")->assertOk()
+        ->assertInertia(fn ($p) => $p->where('request.manager_note', 'Covered by Sara.')
+            ->where('request.hr_note', 'Fine by HR.')
+            ->where('request.decision_note', 'Fine by HR.')
+            ->missing('history.0.step'));
 });
 
 it('filters by status, type, department, overlapping dates and search', function () {
@@ -164,11 +209,40 @@ it('runs a fixed number of queries for the list, whatever the number of rows', f
     expect($count(2))->toBe($count(6));
 });
 
+it('runs a fixed number of queries for HR viewing approved rows (cancel windows in one query)', function () {
+    [$hrUser] = rsPerson('hr');
+
+    $count = function (int $rows) use ($hrUser): int {
+        LeaveRequest::query()->delete();
+        for ($i = 0; $i < $rows; $i++) {
+            [, $e] = rsPerson();
+            approvedLeave($e, '2026-11-23', '2026-11-27');
+        }
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $props = $this->actingAs($hrUser)->get('/leave/requests?tab=all')->assertOk()->viewData('page')['props'];
+        $n = count(DB::getQueryLog());
+        DB::disableQueryLog();
+
+        expect($props['requests']['data'])->toHaveCount($rows)
+            ->and($props['requests']['data'][0]['can']['cancel_approved'])->toBeTrue()
+            ->and($props['requests']['data'][0]['cancel_range'])->toBe(['min' => '2026-11-23', 'max' => '2026-11-27', 'default' => '2026-11-25']);
+
+        return $n;
+    };
+
+    $count(1);
+
+    expect($count(2))->toBe($count(6));
+});
+
 it('shows the detail page: planned days while open, ledger days once approved, balances, needs attention and history', function () {
     [$user, $employee] = rsPerson();
     [$hrUser] = rsPerson('hr');
     [$otherManager] = rsPerson('manager');
-    $r = rsRequest($employee, '2026-11-23', '2026-11-24');
+    // balance_before: what applying stored; approval keeps it.
+    $r = rsRequest($employee, '2026-11-23', '2026-11-24', ['balance_before' => ['2026' => 14]]);
 
     $this->actingAs($hrUser)->get("/leave/requests/{$r->id}")->assertOk()
         ->assertInertia(fn ($p) => $p->where('days_source', 'plan')

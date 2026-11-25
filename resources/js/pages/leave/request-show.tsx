@@ -21,7 +21,7 @@ import {
     leaveRangeLabel,
 } from '@/lib/leave';
 import { dayHalfLabel, requestPill } from '@/lib/leave-requests';
-import { index, show } from '@/routes/leave/requests';
+import { show } from '@/routes/leave/requests';
 import type { LeaveRequestRow } from './requests';
 
 type Detail = LeaveRequestRow & {
@@ -34,6 +34,9 @@ type Detail = LeaveRequestRow & {
     hr_decided_on: string | null;
     manager_skipped: boolean;
     decision_note: string | null;
+    /** Each step's own note (from the history): the manager's and the final (HR) decision's. */
+    manager_note: string | null;
+    hr_note: string | null;
     canceller: string | null;
     cancelled_on: string | null;
     cancel_reason: string | null;
@@ -51,7 +54,11 @@ type BalanceNow = {
     label: string;
 };
 
+type BackLink = { url: string; label: string };
+
 type Props = {
+    /** Where "back" goes: the requests list for approvers, My Leaves for everyone else. */
+    back: BackLink;
     request: Detail;
     days: { date: string; half: 'full' | 'am' | 'pm'; amount: number }[];
     /** ledger: the recorded leave days; plan: how the days count now (while open); none: no days. */
@@ -71,6 +78,7 @@ type Props = {
 };
 
 export default function LeaveRequestShow({
+    back,
     request,
     days,
     days_source,
@@ -78,6 +86,7 @@ export default function LeaveRequestShow({
     balance,
     needs_attention,
     history,
+    today,
 }: Props) {
     const { props } = usePage();
     const dateFormat = props.app.dateFormat;
@@ -121,9 +130,9 @@ export default function LeaveRequestShow({
             <div className="flex flex-1 flex-col gap-6 p-4 md:p-6">
                 <div>
                     <Button variant="ghost" size="sm" asChild className="-ml-2">
-                        <Link href={index().url}>
+                        <Link href={back.url}>
                             <ArrowLeft />
-                            Leave Requests
+                            {back.label}
                         </Link>
                     </Button>
                 </div>
@@ -276,13 +285,29 @@ export default function LeaveRequestShow({
                                             ' (manager step skipped)'}
                                     </Fact>
                                 )}
-                                {request.decision_note && (
-                                    <Fact label="Decision note">
+                                {request.manager_note && (
+                                    <Fact label="Manager's note">
                                         <span className="break-words">
-                                            {request.decision_note}
+                                            {request.manager_note}
                                         </span>
                                     </Fact>
                                 )}
+                                {request.hr_note && (
+                                    <Fact label="HR's note">
+                                        <span className="break-words">
+                                            {request.hr_note}
+                                        </span>
+                                    </Fact>
+                                )}
+                                {!request.manager_note &&
+                                    !request.hr_note &&
+                                    request.decision_note && (
+                                        <Fact label="Decision note">
+                                            <span className="break-words">
+                                                {request.decision_note}
+                                            </span>
+                                        </Fact>
+                                    )}
                                 {request.canceller && (
                                     <Fact label="Cancelled">
                                         {request.canceller}
@@ -380,8 +405,8 @@ export default function LeaveRequestShow({
                                                 {b.before !== null && (
                                                     <>
                                                         <dt className="text-muted-foreground">
-                                                            Available before
-                                                            this leave
+                                                            Available when
+                                                            applied
                                                         </dt>
                                                         <dd className="tabular-nums">
                                                             {formatDayAmount(
@@ -476,6 +501,7 @@ export default function LeaveRequestShow({
                 open={cancelOpen}
                 onOpenChange={setCancelOpen}
                 subject={request}
+                today={today}
             />
 
             <ConfirmDialog
@@ -511,9 +537,12 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
     );
 }
 
-LeaveRequestShow.layout = (props: { request: { id: number } }) => ({
+LeaveRequestShow.layout = (props: {
+    back: BackLink;
+    request: { id: number };
+}) => ({
     breadcrumbs: [
-        { title: 'Leave Requests', href: index() },
+        { title: props.back.label, href: props.back.url },
         { title: 'Request', href: show(props.request.id) },
     ],
 });

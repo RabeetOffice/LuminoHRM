@@ -1,4 +1,5 @@
 import { router } from '@inertiajs/react';
+import { TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import LeaveRequestController from '@/actions/App/Http/Controllers/Leave/LeaveRequestController';
@@ -17,7 +18,12 @@ import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
 import { leaveDateLabel, leaveRangeLabel } from '@/lib/leave';
 import type { LeaveHalf } from '@/lib/leave';
-import { cancelFromAllowed, MIN_REASON } from '@/lib/leave-requests';
+import {
+    cancelFromAllowed,
+    cancelsPastDays,
+    MIN_REASON,
+    PAST_DAYS_WARNING,
+} from '@/lib/leave-requests';
 
 export type CancelSubject = {
     id: number;
@@ -34,13 +40,20 @@ type Props = {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     subject: CancelSubject | null;
+    /** Today's attendance day ("Y-m-d"), for the warning about past days. */
+    today: string;
 };
 
 /**
  * HR / Admin cancel approved leave from a chosen day on (default today). Days from that day go back to the balance and
  * the attendance days are worked out again; earlier days stay. A reason is required; the employee sees it.
  */
-export function CancelApprovedDialog({ open, onOpenChange, subject }: Props) {
+export function CancelApprovedDialog({
+    open,
+    onOpenChange,
+    subject,
+    today,
+}: Props) {
     const [busy, setBusy] = useState(false);
 
     return (
@@ -54,6 +67,7 @@ export function CancelApprovedDialog({ open, onOpenChange, subject }: Props) {
                         key={subject.id}
                         subject={subject}
                         range={subject.cancel_range}
+                        today={today}
                         onBusy={setBusy}
                         onClose={() => onOpenChange(false)}
                     />
@@ -66,11 +80,12 @@ export function CancelApprovedDialog({ open, onOpenChange, subject }: Props) {
 type FormProps = {
     subject: CancelSubject;
     range: { min: string; max: string; default: string };
+    today: string;
     onBusy: (busy: boolean) => void;
     onClose: () => void;
 };
 
-function CancelForm({ subject, range, onBusy, onClose }: FormProps) {
+function CancelForm({ subject, range, today, onBusy, onClose }: FormProps) {
     const [from, setFrom] = useState(range.default);
     const [note, setNote] = useState('');
     const [errors, setErrors] = useState<{ from_date?: string; note?: string }>(
@@ -78,6 +93,7 @@ function CancelForm({ subject, range, onBusy, onClose }: FormProps) {
     );
     const [processing, setProcessing] = useState(false);
     const whole = from === range.min;
+    const pastDays = cancelsPastDays(from, today);
 
     const submit = (event: FormEvent) => {
         event.preventDefault();
@@ -151,6 +167,16 @@ function CancelForm({ subject, range, onBusy, onClose }: FormProps) {
                     className="w-full sm:w-48"
                 />
             </Field>
+
+            {pastDays && (
+                <p
+                    role="note"
+                    className="flex gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200"
+                >
+                    <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+                    {PAST_DAYS_WARNING}
+                </p>
+            )}
 
             <Field
                 id="cancel-reason"

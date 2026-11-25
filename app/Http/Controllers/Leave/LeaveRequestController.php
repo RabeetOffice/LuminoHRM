@@ -19,7 +19,9 @@ use App\Support\EmployeeFiles;
 use App\Support\Leave\LeaveBalances;
 use App\Support\Leave\LeaveDays;
 use App\Support\Leave\LeaveRouting;
+use App\Support\Leave\WaitingForMe;
 use App\Support\ListQuery;
+use App\Support\PayrollLock;
 use DateTimeImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
@@ -46,8 +48,9 @@ use Spatie\Activitylog\Models\Activity;
  *
  * A request outside the user's scope and one that does not exist are both 403 (ids cannot be probed). A stale or
  * refused decision comes back as a flash error, never as a 500 or a second write. The "Waiting for me" tab lists the
- * open requests this user may decide now (LeaveRouting::decidableStage); routing is primed once for the page, so it
- * runs no query per row. Counts per tab use the same filters as the rows.
+ * open requests waiting at the step this user decides (WaitingForMe: HR sees final-step requests only); routing is
+ * primed once for the page and the cancel windows of approved rows come from one grouped query, so the list runs no
+ * query per row. Counts per tab use the same filters as the rows.
  */
 class LeaveRequestController extends Controller
 {
@@ -74,11 +77,9 @@ class LeaveRequestController extends Controller
             return $this->applyFilters($query, $filters);
         };
 
-        // Waiting for me: the open requests in scope (and filters) this user may decide now.
-        $open = $filtered()->whereIn('status', (array) config('hrm.leave.open_statuses'))->with('employee')->get();
-        $this->routing->prime($open);
-        $waitingIds = $open->filter(fn (LeaveRequest $r) => $this->routing->decidableStage($user, $r) !== null)
-            ->pluck('id')->all();
+        // Waiting for me: the open requests in scope (and filters) waiting at the step this user decides (WaitingForMe;
+        // the dashboard's Pending count uses the same rule).
+        $waitingIds = WaitingForMe::ids($user, fn (Builder $q): Builder => $this->applyFilters($q, $filters), $this->routing);
 
         $paginator = $filtered()
             ->when($tab === 'waiting', fn (Builder $q) => $q->whereIn('id', $waitingIds))
@@ -94,6 +95,7 @@ class LeaveRequestController extends Controller
         /** @var Collection<int, LeaveRequest> $items */
         $items = $paginator->getCollection();
         $this->routing->prime($items);
+        $windows = $this->cancelWindows($items->where('status', 'approved')->pluck('id')->all());
 
         $canApplyOnBehalf = $user->can('leave.approve-all');
 
@@ -101,7 +103,7 @@ class LeaveRequestController extends Controller
             'tab' => $tab,
             'filters' => $filters,
             'requests' => [
-                'data' => $items->map(fn (LeaveRequest $r) => $this->row($r, $user))->values()->all(),
+                'data' => $items->map(fn (LeaveRequest $r) => $this->row($r, $user, $windows[$r->id] ?? null))->values()->all(),
                 ...$this->pageMeta($paginator),
             ],
             'counts' => ['waiting' => count($waitingIds), 'all' => $filtered()->count()],
@@ -187,10 +189,18 @@ class LeaveRequestController extends Controller
 
         $stage = $this->routing->stage($found);
         $onBehalf = $found->appliedBy !== null && (int) $found->appliedBy->employee_id !== (int) $found->employee_id;
+        $history = $this->history($found);
+        $window = $found->status === 'approved' ? ($this->cancelWindows([$found->id])[$found->id] ?? null) : null;
+
+        // Where "back" goes: the requests list for approvers, My Leaves for everyone else (they cannot open the list).
+        $back = $user->canAny(['leave.approve-all', 'leave.approve-team'])
+            ? ['url' => route('leave.requests.index', [], false), 'label' => 'Leave Requests']
+            : ['url' => route('my.leaves', [], false), 'label' => 'My Leaves'];
 
         return Inertia::render('leave/request-show', [
+            'back' => $back,
             'request' => [
-                ...$this->row($found, $user),
+                ...$this->row($found, $user, $window),
                 'reason' => $found->reason,
                 // Who applied, when it was someone other than the employee (HR on their behalf).
                 'applied_by' => $onBehalf ? $found->appliedBy->name : null,
@@ -201,6 +211,9 @@ class LeaveRequestController extends Controller
                 'hr_decided_on' => $found->hr_decided_at?->format('Y-m-d'),
                 'manager_skipped' => (bool) $found->manager_skipped,
                 'decision_note' => $found->decision_note,
+                // The one decision_note column holds the last note; each step's own note comes from the audit trail.
+                'manager_note' => $this->stepNote($history, 'manager'),
+                'hr_note' => $this->stepNote($history, 'final'),
                 'canceller' => $found->canceller?->name,
                 'cancelled_on' => $found->cancelled_at?->format('Y-m-d'),
                 'cancel_reason' => $found->cancel_reason,
@@ -214,7 +227,7 @@ class LeaveRequestController extends Controller
             'plan_refusal' => $planRefusal,
             'balance' => $balance,
             'needs_attention' => $needsAttention,
-            'history' => $this->history($found),
+            'history' => array_map(fn (array $h): array => array_diff_key($h, ['step' => true]), $history),
             'today' => $this->clock->attendanceToday(),
         ]);
     }
@@ -246,9 +259,8 @@ class LeaveRequestController extends Controller
         $found = $this->routing->findVisible($user, $leaveRequest);
         abort_if($found === null, 403);
 
-        $from = $request->fromDate() ?? $this->clock->attendanceToday();
-
-        return $this->attempt(fn () => $decisions->cancelApproved($user, $found, $from, $request->reason()));
+        // No date: the action picks max(first cancellable day, today) under its lock.
+        return $this->attempt(fn () => $decisions->cancelApproved($user, $found, $request->fromDate(), $request->reason()));
     }
 
     /**
@@ -313,15 +325,16 @@ class LeaveRequestController extends Controller
             ->when($f['search'] !== '', fn (Builder $q) => $q->whereIn('employee_id', Employee::query()->select('id')->search($f['search'])));
     }
 
-    /** @return array<string, mixed> */
-    private function row(LeaveRequest $r, User $user): array
+    /**
+     * @param  array{min: string|null, max: string}|null  $window  the request's cancel window (cancelWindows())
+     * @return array<string, mixed>
+     */
+    private function row(LeaveRequest $r, User $user, ?array $window = null): array
     {
         $stage = $this->routing->stage($r);
         $manager = $stage === LeaveRouting::STAGE_MANAGER ? $this->routing->managerApprover($r->employee) : null;
-        $canCancelApproved = $r->status === 'approved'
-            && $this->routing->mayAdminister($user, $r->employee)
-            && $this->routing->canCancelApproved($user, $r);
-        $cancelRange = $canCancelApproved ? $this->cancelRange($r) : null;
+        $canCancelApproved = LeaveDecisions::mayCancelApproved($this->routing, $user, $r, $window['min'] ?? null);
+        $cancelRange = $canCancelApproved && $window !== null ? $this->cancelRange($window) : null;
 
         return [
             'id' => $r->id,
@@ -356,30 +369,85 @@ class LeaveRequestController extends Controller
     }
 
     /**
-     * The days HR may cancel from: earliest (LeaveRouting::earliestCancellableDate) to the last leave day, and the
-     * default (today, kept inside that range).
+     * The days HR may cancel from: earliest to the last leave day, and the default (today, kept inside that range).
      *
+     * @param  array{min: string|null, max: string}  $window
      * @return array{min: string, max: string, default: string}|null
      */
-    private function cancelRange(LeaveRequest $r): ?array
+    private function cancelRange(array $window): ?array
     {
-        $min = $this->routing->earliestCancellableDate($r);
-        $max = LeaveDay::query()->toBase()->where('leave_request_id', $r->id)->max('date');
-
-        if ($min === null || $max === null) {
+        if ($window['min'] === null) {
             return null;
         }
 
-        $max = substr((string) $max, 0, 10);
         $today = $this->clock->attendanceToday();
 
-        return ['min' => $min, 'max' => $max, 'default' => max($min, min($today, $max))];
+        return ['min' => $window['min'], 'max' => $window['max'], 'default' => max($window['min'], min($today, $window['max']))];
+    }
+
+    /**
+     * Each request's cancel window from ONE grouped query over these requests' leave days (by request and month): the
+     * first removable day (the LeaveRouting::earliestCancellableDate rule: the first day after the last day in a locked
+     * payroll month, null when none is left) and the last leave day. Requests without leave days are left out.
+     *
+     * @param  list<int>|array<int, int>  $ids
+     * @return array<int, array{min: string|null, max: string}>
+     */
+    private function cancelWindows(array $ids): array
+    {
+        if ($ids === []) {
+            return [];
+        }
+
+        $rows = LeaveDay::query()->toBase()
+            ->whereIn('leave_request_id', array_values($ids))
+            ->selectRaw('leave_request_id, substr(date, 1, 7) as month, min(date) as first_day, max(date) as last_day')
+            ->groupByRaw('leave_request_id, substr(date, 1, 7)')
+            ->orderBy('leave_request_id')
+            ->orderBy('month')
+            ->get();
+
+        $windows = [];
+
+        foreach ($rows as $row) {
+            $id = (int) $row->leave_request_id;
+            $window = $windows[$id] ?? ['min' => null, 'max' => ''];
+
+            if (PayrollLock::isLocked((string) $row->month)) {
+                $window['min'] = null;
+            } else {
+                $window['min'] ??= substr((string) $row->first_day, 0, 10);
+            }
+
+            $window['max'] = substr((string) $row->last_day, 0, 10);
+            $windows[$id] = $window;
+        }
+
+        return $windows;
+    }
+
+    /**
+     * The note of the last decision at this step ("manager" or "final") in the request's history, or null.
+     *
+     * @param  list<array{step: string|null, note: string|null}>  $history
+     */
+    private function stepNote(array $history, string $step): ?string
+    {
+        $note = null;
+
+        foreach ($history as $entry) {
+            if ($entry['step'] === $step) {
+                $note = $entry['note'];
+            }
+        }
+
+        return $note;
     }
 
     /**
      * The request's audit entries, oldest first: what, who, when, note.
      *
-     * @return list<array{description: string, by: string, on: string|null, time: string|null, note: string|null}>
+     * @return list<array{description: string, by: string, on: string|null, time: string|null, note: string|null, step: string|null}>
      */
     private function history(LeaveRequest $r): array
     {
@@ -400,13 +468,15 @@ class LeaveRequestController extends Controller
                     'on' => $a->created_at?->format('Y-m-d'),
                     'time' => $a->created_at?->format('H:i'),
                     'note' => is_string($note) ? $note : null,
+                    'step' => is_string($a->properties['step'] ?? null) ? $a->properties['step'] : null,
                 ];
             })
             ->all());
     }
 
     /**
-     * Working people whose leave this user may administer (on-behalf applications).
+     * Working people whose leave this user may administer (on-behalf applications), never the user's own record (they
+     * apply for themselves on My Leaves).
      *
      * @return list<array{id: int, name: string, code: string}>
      */
@@ -414,6 +484,7 @@ class LeaveRequestController extends Controller
     {
         return array_values(Employee::query()
             ->whereIn('status', ['active', 'probation'])
+            ->when($user->employee_id !== null, fn (Builder $q) => $q->whereKeyNot($user->employee_id))
             ->orderBy('first_name')->orderBy('last_name')->orderBy('id')
             ->get(['id', 'first_name', 'last_name', 'employee_code'])
             ->filter(fn (Employee $e) => $this->routing->mayAdminister($user, $e))

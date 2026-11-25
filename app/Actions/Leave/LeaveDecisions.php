@@ -10,6 +10,7 @@ use App\Models\LeaveDay;
 use App\Models\LeaveRequest;
 use App\Models\LeaveType;
 use App\Models\User;
+use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\RebuildMarks;
 use App\Support\Audit\Audit;
 use App\Support\Leave\BalanceLine;
@@ -49,7 +50,23 @@ class LeaveDecisions
         private readonly LeaveRouting $routing,
         private readonly LeaveBalances $balances,
         private readonly LeaveDayRemoval $removal,
+        private readonly AttendanceClock $clock,
     ) {}
+
+    /**
+     * Whether $by may cancel this approved request now: it is approved and still has a removable day ($earliest, the
+     * LeaveRouting::earliestCancellableDate value), $by may administer the employee's leave, and $by is not the
+     * requester — except the only active Admin on their own leave (the same exception as deciding it:
+     * LeaveRouting::mayDecideFinal holds for a requester only in that case). The list, the detail page and the action
+     * all ask this.
+     */
+    public static function mayCancelApproved(LeaveRouting $routing, User $by, LeaveRequest $request, ?string $earliest): bool
+    {
+        return $request->status === 'approved'
+            && $earliest !== null
+            && $routing->mayAdminister($by, $request->employee)
+            && (! $routing->isRequester($by, $request) || $routing->mayDecideFinal($by, $request));
+    }
 
     /**
      * The reporting manager's decision. Approval moves the request to the final step, or approves it outright when
@@ -66,6 +83,9 @@ class LeaveDecisions
         $outcome = null;
 
         $result = DB::transaction(function () use ($by, $request, $approve, $note, &$final, &$outcome): LeaveRequest {
+            // A deadlock retry runs this again: start from a clean slate.
+            $final = false;
+            $outcome = null;
             $locked = $this->lock($request);
             // Nobody decides their own request; anyone who is not one of its deciders gets 403 before any message.
             abort_unless($this->routing->isApprover($by, $locked), 403);
@@ -120,6 +140,13 @@ class LeaveDecisions
                 $this->queueMail($approver, new LeaveRequestSubmitted($result, $approver->name, true));
             }
 
+            // The only active Admin's own request: they alone may give the final decision, so they are told too
+            // (finalApprovers never lists the requester).
+            $requester = User::query()->where('employee_id', $result->employee_id)->where('is_active', true)->first();
+            if ($requester !== null && $this->routing->mayDecideFinal($requester, $result)) {
+                $this->queueMail($requester, new LeaveRequestSubmitted($result, $requester->name, true));
+            }
+
             return "Approved. The leave request of {$name} now waits for HR.";
         }
 
@@ -141,6 +168,7 @@ class LeaveDecisions
         $outcome = null;
 
         $result = DB::transaction(function () use ($by, $request, $approve, $note, &$outcome): LeaveRequest {
+            $outcome = null; // a deadlock retry starts clean
             $locked = $this->lock($request);
             abort_unless($this->routing->isApprover($by, $locked), 403);
 
@@ -204,11 +232,14 @@ class LeaveDecisions
      * earlier days stay. No day left → cancelled; otherwise it stays approved with cancelled_from = $from ("partly
      * cancelled").
      *
-     * @param  string  $from  "Y-m-d"
+     * Without $from the default is max(first cancellable day, today's attendance day), worked out under the lock: a
+     * leave that has not started yet is cancelled whole; one whose last day is already past is refused (pick a date).
+     *
+     * @param  string|null  $from  "Y-m-d", or null for the default
      *
      * @throws ValidationException a stale or refused cancellation
      */
-    public function cancelApproved(User $by, LeaveRequest $request, string $from, string $reason): string
+    public function cancelApproved(User $by, LeaveRequest $request, ?string $from, string $reason): string
     {
         $reason = trim($reason);
 
@@ -216,17 +247,19 @@ class LeaveDecisions
             throw ValidationException::withMessages(['note' => 'Say why the leave is cancelled (at least 5 characters). The employee will see this.']);
         }
 
-        if (! $this->isDate($from)) {
+        if ($from !== null && ! $this->isDate($from)) {
             throw ValidationException::withMessages(['from_date' => 'Choose the first day to cancel.']);
         }
 
         $summary = [];
 
-        $result = DB::transaction(function () use ($by, $request, $from, $reason, &$summary): LeaveRequest {
+        $result = DB::transaction(function () use ($by, $request, &$from, $reason, &$summary): LeaveRequest {
+            $summary = []; // a deadlock retry starts clean
             $locked = $this->lock($request);
+            $own = $this->routing->isRequester($by, $locked);
 
-            // HR / Admin who may administer this employee's leave, never on their own request.
-            abort_if($this->routing->isRequester($by, $locked) || ! $this->routing->mayAdminister($by, $locked->employee), 403);
+            // HR / Admin who may administer this employee's leave; on their own request only the sole active Admin.
+            abort_if(! $this->routing->mayAdminister($by, $locked->employee) || ($own && ! $this->routing->mayDecideFinal($by, $locked)), 403);
 
             if ($locked->status !== 'approved') {
                 throw $this->stale($locked);
@@ -240,6 +273,7 @@ class LeaveDecisions
 
             $all = $this->dayDates($locked);
             $last = $all === [] ? $earliest : $all[count($all) - 1];
+            $from ??= max($earliest, $this->clock->attendanceToday());
 
             if ($from < $earliest || $from > $last) {
                 throw ValidationException::withMessages([
@@ -251,7 +285,7 @@ class LeaveDecisions
                 throw ValidationException::withMessages(['from_date' => 'Payroll for that month is locked; its leave days cannot be cancelled.']);
             }
 
-            abort_unless($this->routing->canCancelApproved($by, $locked), 403);
+            abort_unless(self::mayCancelApproved($this->routing, $by, $locked, $earliest), 403);
 
             $dates = array_values(array_filter($all, fn (string $d): bool => $d >= $from));
             $removed = $this->removal->remove($locked, $dates, 'Cancelled by HR', $by);
@@ -262,14 +296,16 @@ class LeaveDecisions
                 $halves += LeaveDays::halves($amount);
             }
 
-            $whole = LeaveDay::query()->where('leave_request_id', $locked->id)->doesntExist();
+            $whole = $remaining->count() === 0;
             $locked->fill([
                 'status' => $whole ? 'cancelled' : 'approved',
                 'cancelled_from' => $whole ? null : $from,
                 'cancelled_by' => $by->id,
                 'cancelled_at' => now(),
                 'cancel_reason' => $reason,
-                'days' => LeaveDays::fromHalves($halves),
+                // A wholly cancelled request keeps the days it was approved for (shown on the screens and in the mail);
+                // a partly cancelled one shows what remains. Balances never read this: they come from leave_days.
+                'days' => $whole ? $locked->days : LeaveDays::fromHalves($halves),
             ])->save();
 
             $summary = ['whole' => $whole, ...$removed];
@@ -280,7 +316,8 @@ class LeaveDecisions
                 'removed' => $removed['removed'],
                 'refunded' => $removed['amount'],
                 'kept_locked' => $removed['kept_locked'] === [] ? null : $removed['kept_locked'],
-                'days' => $locked->days,
+                'days' => $whole ? 0 : $locked->days,
+                'own_request' => $own ? true : null,
                 'note' => $reason,
             ]);
 
@@ -416,11 +453,11 @@ class LeaveDecisions
         $old = (float) $locked->days;
         $recounted = LeaveDays::halves($old) !== LeaveDays::halves($plan->total) ? [$old, $plan->total] : null;
 
+        // balance_before keeps what applying stored (the balance the employee saw); the available days right before
+        // this approval go into the audit entry only.
         $locked->fill([
             'status' => 'approved',
             'days' => $plan->total,
-            // Paid types: the available days right before this approval (this request left out), per year.
-            'balance_before' => $balanceBefore ?? $locked->balance_before,
         ])->save();
 
         RebuildMarks::forLeaveDays($employee->id, $dates);

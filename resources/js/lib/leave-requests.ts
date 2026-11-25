@@ -63,6 +63,38 @@ export function cancelFromAllowed(
     );
 }
 
+/**
+ * Whether cancelling from this day removes leave on days already past ("Y-m-d" compared as text): those days are
+ * worked out again from punches, and a day without punches becomes absent.
+ */
+export function cancelsPastDays(from: string, today: string): boolean {
+    return /^\d{4}-\d{2}-\d{2}$/.test(from) && from < today;
+}
+
+export const PAST_DAYS_WARNING =
+    'Past days without punches will count as absent.';
+
+/**
+ * The people matching a search for the on-behalf picker: every word must appear in the name or the employee ID
+ * (case-insensitive). An empty search keeps everyone.
+ */
+export function filterPeople<T extends { name: string; code: string }>(
+    people: T[],
+    search: string,
+): T[] {
+    const words = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+
+    if (words.length === 0) {
+        return people;
+    }
+
+    return people.filter((person) => {
+        const text = `${person.name} ${person.code}`.toLowerCase();
+
+        return words.every((word) => text.includes(word));
+    });
+}
+
 /** The half of a counted day in words: "Full day", "First half", "Second half". */
 export function dayHalfLabel(half: 'full' | 'am' | 'pm'): string {
     return half === 'am'

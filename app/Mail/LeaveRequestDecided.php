@@ -16,13 +16,19 @@ use InvalidArgumentException;
  * balance" (a holiday added on a leave day, Task 8): to the requester only. It names only the requester's own request
  * (type, dates, days, the note); nothing about anyone else. Queued after the commit.
  *
- * Outcomes: approved | rejected | cancelled | refunded.
+ * Outcomes:
+ *   approved | rejected  a decision on the request;
+ *   cancelled            approved leave cancelled (HR from a date on, or a holiday covering every day of it: pass the
+ *                        reason as the note);
+ *   refunded             some days of approved leave went back to the balance (a holiday on a leave day);
+ *   withdrawn            an OPEN request cancelled by the system (for example the employment ended), reason as note.
+ * The Days line is left out when the request holds no days.
  */
 class LeaveRequestDecided extends Mailable implements ShouldQueue
 {
     use Queueable, SerializesModels;
 
-    public const OUTCOMES = ['approved', 'rejected', 'cancelled', 'refunded'];
+    public const OUTCOMES = ['approved', 'rejected', 'cancelled', 'refunded', 'withdrawn'];
 
     public int $tries = 3;
 
@@ -45,6 +51,7 @@ class LeaveRequestDecided extends Mailable implements ShouldQueue
             'approved' => 'Your leave request was approved',
             'rejected' => 'Your leave request was rejected',
             'cancelled' => 'Your approved leave was cancelled',
+            'withdrawn' => 'Your leave request was cancelled',
             default => 'Leave days went back to your balance', // refunded
         });
     }
@@ -52,19 +59,42 @@ class LeaveRequestDecided extends Mailable implements ShouldQueue
     public function content(): Content
     {
         $r = $this->request;
+        $days = (float) $r->days;
 
         return new Content(markdown: 'mail.leave.decided', with: [
-            'recipientName' => $this->recipientName,
+            // Typed text goes through Markdown after Blade: escaped (LeaveRequestSubmitted::plain) so it stays literal.
+            // Keys differ from the public properties: those are passed to the view too and would win, unescaped.
+            'greetName' => LeaveRequestSubmitted::plain($this->recipientName),
             'outcome' => $this->outcome,
-            'typeName' => $r->type->name,
-            'dates' => LeaveRequestSubmitted::dates($r->from_date->format('Y-m-d'), $r->to_date->format('Y-m-d'), $r->half),
-            'days' => LeaveRequestSubmitted::days((float) $r->days),
+            'panel' => self::panel(array_filter([
+                'Type' => $r->type->name,
+                'Dates' => LeaveRequestSubmitted::dates($r->from_date->format('Y-m-d'), $r->to_date->format('Y-m-d'), $r->half),
+                'Days' => $days > 0 ? LeaveRequestSubmitted::days($days) : null, // never a "Days: 0" line
+                'Note' => $this->note,
+            ], fn (?string $v): bool => $v !== null && trim($v) !== '')),
             'stillApproved' => $r->status === 'approved',
             'cancelledFrom' => $r->cancelled_from !== null
                 ? (new \DateTimeImmutable($r->cancelled_from->format('Y-m-d')))->format('D j M Y')
                 : null,
-            'note' => $this->note,
             'url' => url(route('leave.requests.show', $r, false)),
         ]);
+    }
+
+    /**
+     * The panel's lines ("**Type:** Annual<br>" …), output raw by the template: each value is Markdown-escaped
+     * (LeaveRequestSubmitted::plain) and then HTML-escaped. Every line starts with "**", never with "<br>" (CommonMark
+     * would take such a line as raw HTML and skip the Markdown escaping).
+     *
+     * @param  array<string, string>  $facts  label => text
+     */
+    private static function panel(array $facts): string
+    {
+        $lines = [];
+
+        foreach ($facts as $label => $text) {
+            $lines[] = "**{$label}:** ".e(LeaveRequestSubmitted::plain($text));
+        }
+
+        return implode("<br>\n", $lines);
     }
 }

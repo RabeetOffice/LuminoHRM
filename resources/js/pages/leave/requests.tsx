@@ -1,6 +1,7 @@
 import { Head, Link, router, usePage } from '@inertiajs/react';
 import { Check, Plus, X } from 'lucide-react';
-import { useState } from 'react';
+import { useId, useState } from 'react';
+import type { KeyboardEvent } from 'react';
 import LeaveApplicationController from '@/actions/App/Http/Controllers/Leave/LeaveApplicationController';
 import { Avatar } from '@/components/hrm/avatar';
 import { ConfirmDialog } from '@/components/hrm/confirm-dialog';
@@ -42,10 +43,11 @@ import {
     leaveStatusLabel,
 } from '@/lib/leave';
 import type { LeaveHalf, LeaveStatus } from '@/lib/leave';
-import { requestPill } from '@/lib/leave-requests';
+import { filterPeople, requestPill } from '@/lib/leave-requests';
 import type { LeaveStage } from '@/lib/leave-requests';
 import { nextTableUrl } from '@/lib/table-query';
 import { statusPanelId, statusTabId } from '@/lib/tabs';
+import { cn } from '@/lib/utils';
 import { index, show } from '@/routes/leave/requests';
 
 type Tab = 'waiting' | 'all';
@@ -126,6 +128,7 @@ export default function LeaveRequests({
     statuses,
     types,
     departments,
+    today,
     can,
     on_behalf,
 }: Props) {
@@ -146,7 +149,8 @@ export default function LeaveRequests({
     const [withdrawOpen, setWithdrawOpen] = useState(false);
     const [busy, setBusy] = useState(false);
     const [pickOpen, setPickOpen] = useState(false);
-    const [picked, setPicked] = useState<string>('');
+    const [picked, setPicked] = useState<number | null>(null);
+    const [pickSearch, setPickSearch] = useState('');
     const [applyFor, setApplyFor] = useState<
         (Option & { code: string }) | null
     >(null);
@@ -281,7 +285,7 @@ export default function LeaveRequests({
                             aria-label={`Decide as HR on the leave of ${row.employee.name}, skipping the manager`}
                             onClick={() => decide(row, null)}
                         >
-                            Decide as HR
+                            Decide as HR (skips manager)
                         </Button>
                     )}
                     {row.can.decide && !row.can.skips_manager && (
@@ -365,7 +369,13 @@ export default function LeaveRequests({
                     subtitle="The reporting manager decides first, then HR. HR can also decide a request the manager has not answered. Approved leave is counted again when it is approved and lands in attendance as On Leave."
                     actions={
                         can.apply_on_behalf && on_behalf ? (
-                            <Button onClick={() => setPickOpen(true)}>
+                            <Button
+                                onClick={() => {
+                                    setPicked(null);
+                                    setPickSearch('');
+                                    setPickOpen(true);
+                                }}
+                            >
                                 <Plus />
                                 Apply on behalf
                             </Button>
@@ -549,6 +559,7 @@ export default function LeaveRequests({
                 open={cancelOpen}
                 onOpenChange={setCancelOpen}
                 subject={cancelling}
+                today={today}
             />
 
             <ConfirmDialog
@@ -580,29 +591,13 @@ export default function LeaveRequests({
                                     approval yourself.
                                 </DialogDescription>
                             </DialogHeader>
-                            <div className="grid gap-2">
-                                <Label htmlFor="on-behalf-employee">
-                                    Employee
-                                </Label>
-                                <Select
-                                    value={picked}
-                                    onValueChange={setPicked}
-                                >
-                                    <SelectTrigger id="on-behalf-employee">
-                                        <SelectValue placeholder="Choose an employee" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {on_behalf.employees.map((e) => (
-                                            <SelectItem
-                                                key={e.id}
-                                                value={String(e.id)}
-                                            >
-                                                {e.name} · {e.code}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </div>
+                            <EmployeePicker
+                                people={on_behalf.employees}
+                                search={pickSearch}
+                                onSearch={setPickSearch}
+                                picked={picked}
+                                onPick={setPicked}
+                            />
                             <DialogFooter className="flex-col-reverse gap-2 sm:flex-row">
                                 <Button
                                     variant="outline"
@@ -611,11 +606,11 @@ export default function LeaveRequests({
                                     Back
                                 </Button>
                                 <Button
-                                    disabled={picked === ''}
+                                    disabled={picked === null}
                                     onClick={() => {
                                         const found =
                                             on_behalf.employees.find(
-                                                (e) => String(e.id) === picked,
+                                                (e) => e.id === picked,
                                             ) ?? null;
                                         setApplyFor(found);
                                         setPickOpen(false);
@@ -639,6 +634,120 @@ export default function LeaveRequests({
                 </>
             )}
         </>
+    );
+}
+
+const PICKER_LIMIT = 50;
+
+type Person = Option & { code: string };
+
+/**
+ * The on-behalf employee picker: a search box over the people the server says this user may apply for, and the
+ * matching names as a list (the first 50; type more to narrow). Arrow keys move, Enter picks.
+ */
+function EmployeePicker({
+    people,
+    search,
+    onSearch,
+    picked,
+    onPick,
+}: {
+    people: Person[];
+    search: string;
+    onSearch: (search: string) => void;
+    picked: number | null;
+    onPick: (id: number) => void;
+}) {
+    const listId = useId();
+    const matches = filterPeople(people, search);
+    const shown = matches.slice(0, PICKER_LIMIT);
+    const activeIndex = Math.max(
+        0,
+        shown.findIndex((p) => p.id === picked),
+    );
+
+    const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+        if (shown.length === 0) {
+            return;
+        }
+
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            const step = event.key === 'ArrowDown' ? 1 : -1;
+            const current = shown.findIndex((p) => p.id === picked);
+            const next =
+                current === -1
+                    ? 0
+                    : Math.min(Math.max(current + step, 0), shown.length - 1);
+            onPick(shown[next].id);
+        } else if (event.key === 'Enter') {
+            event.preventDefault();
+            onPick(shown[activeIndex].id);
+        }
+    };
+
+    return (
+        <div className="grid gap-2">
+            <Label htmlFor="on-behalf-employee">Employee</Label>
+            <Input
+                id="on-behalf-employee"
+                role="combobox"
+                aria-expanded="true"
+                aria-controls={listId}
+                aria-autocomplete="list"
+                aria-activedescendant={
+                    picked !== null ? `${listId}-${picked}` : undefined
+                }
+                autoComplete="off"
+                placeholder="Search by name or ID"
+                value={search}
+                onChange={(e) => onSearch(e.target.value)}
+                onKeyDown={onKeyDown}
+            />
+            <ul
+                id={listId}
+                role="listbox"
+                aria-label="Employees"
+                className="max-h-64 overflow-auto rounded-md border p-1"
+            >
+                {shown.map((person) => (
+                    <li
+                        key={person.id}
+                        id={`${listId}-${person.id}`}
+                        role="option"
+                        aria-selected={person.id === picked}
+                        onClick={() => onPick(person.id)}
+                        className={cn(
+                            'flex cursor-pointer items-center justify-between gap-3 rounded-sm px-2 py-1.5 text-sm hover:bg-accent',
+                            person.id === picked &&
+                                'bg-accent font-medium text-accent-foreground',
+                        )}
+                    >
+                        <span>{person.name}</span>
+                        <span className="text-xs text-muted-foreground">
+                            {person.code}
+                        </span>
+                    </li>
+                ))}
+                {shown.length === 0 && (
+                    <li
+                        role="presentation"
+                        className="px-2 py-1.5 text-sm text-muted-foreground"
+                    >
+                        No one found.
+                    </li>
+                )}
+                {matches.length > shown.length && (
+                    <li
+                        role="presentation"
+                        className="px-2 py-1.5 text-xs text-muted-foreground"
+                    >
+                        {matches.length - shown.length} more: type more of the
+                        name to narrow the list.
+                    </li>
+                )}
+            </ul>
+        </div>
     );
 }
 

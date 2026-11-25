@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
     canSendDecision,
     cancelFromAllowed,
+    cancelsPastDays,
     dayHalfLabel,
+    filterPeople,
     requestPill,
 } from './leave-requests';
 
@@ -70,6 +72,36 @@ describe('cancelFromAllowed', () => {
         expect(cancelFromAllowed('2026-11-28', range)).toBe(false);
         expect(cancelFromAllowed('', range)).toBe(false);
         expect(cancelFromAllowed('25/11/2026', range)).toBe(false);
+    });
+});
+
+describe('cancelsPastDays', () => {
+    it('is true only for a day before today', () => {
+        expect(cancelsPastDays('2026-11-24', '2026-11-25')).toBe(true);
+        expect(cancelsPastDays('2026-11-25', '2026-11-25')).toBe(false);
+        expect(cancelsPastDays('2026-11-26', '2026-11-25')).toBe(false);
+        expect(cancelsPastDays('', '2026-11-25')).toBe(false);
+    });
+});
+
+describe('filterPeople', () => {
+    const people = [
+        { id: 1, name: 'Sara Khan', code: 'EMP-001' },
+        { id: 2, name: 'Ali Raza', code: 'EMP-002' },
+        { id: 3, name: 'Sarah Ali', code: 'EMP-010' },
+    ];
+
+    it('keeps everyone for an empty search', () => {
+        expect(filterPeople(people, '  ')).toHaveLength(3);
+    });
+
+    it('matches every word in the name or the ID, ignoring case', () => {
+        expect(filterPeople(people, 'sar').map((p) => p.id)).toEqual([1, 3]);
+        expect(filterPeople(people, 'ali emp-01').map((p) => p.id)).toEqual([
+            3,
+        ]);
+        expect(filterPeople(people, '002').map((p) => p.id)).toEqual([2]);
+        expect(filterPeople(people, 'nobody')).toEqual([]);
     });
 });
 

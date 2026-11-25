@@ -1,5 +1,6 @@
+{{-- The panel lines are built (and escaped) in LeaveRequestDecided::panel(). --}}
 <x-mail::message>
-Hello {{ $recipientName }},
+Hello {{ $greetName }},
 
 @if ($outcome === 'approved')
 Your leave request was approved.
@@ -11,17 +12,14 @@ Your approved leave was cancelled from {{ $cancelledFrom }}. The days before it 
 @else
 Your approved leave was cancelled. Its days went back to your balance.
 @endif
+@elseif ($outcome === 'withdrawn')
+Your leave request was cancelled before it was decided. Nothing was taken from your balance.
 @else
 Some days of your approved leave went back to your balance.
 @endif
 
 <x-mail::panel>
-**Type:** {{ $typeName }}<br>
-**Dates:** {{ $dates }}<br>
-**Days:** {{ $days }}
-@if ($note)
-<br>**Note:** {{ $note }}
-@endif
+{!! $panel !!}
 </x-mail::panel>
 
 <x-mail::button :url="$url">
