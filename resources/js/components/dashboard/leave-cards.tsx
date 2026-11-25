@@ -6,7 +6,7 @@ import { LeaveBalanceList } from '@/components/leave/leave-balance-list';
 import { LeaveTypeBadge } from '@/components/leave/leave-type-badge';
 import {
     MY_LEAVES_HREF,
-    PENDING_LEAVES_HREF,
+    ALL_REQUESTS_HREF,
     dayPhrase,
     halfDayNote,
     leaveStatusBars,
@@ -74,7 +74,7 @@ export function LeaveStatusCard({ byStatus }: { byStatus: LeaveByStatus }) {
     return (
         <LeaveCardShell
             title="Leave requests this month"
-            action={<CardLink href={PENDING_LEAVES_HREF}>Requests</CardLink>}
+            action={<CardLink href={ALL_REQUESTS_HREF}>Requests</CardLink>}
         >
             {total === 0 ? (
                 <Empty>No leave requests in {byStatus.label} yet.</Empty>

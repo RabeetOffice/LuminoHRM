@@ -24,7 +24,7 @@ use DateTimeZone;
  *   - flags: FLAG_MANUAL | FLAG_EARLY | FLAG_OVERTIME | FLAG_ATTENTION | FLAG_NEXT_DAY (the clock-out falls on a later
  *     calendar date than the attendance day, e.g. a night shift ending at 06:00) | FLAG_OVERRIDDEN (a manual row whose
  *     status was chosen by hand, attendances.status_overridden: the correction dialog starts on that status) |
- *     FLAG_HALF_LEAVE (half-day leave, attendances.leave_half set on a non-manual row: the code describes the worked
+ *     FLAG_HALF_LEAVE (half-day leave, attendances.leave_half set: the code describes the worked
  *     half, P or A);
  *   - in / out: "H:i" wall-clock times as recorded (or null); worked, late, early, overtime: minutes.
  *
@@ -36,8 +36,7 @@ use DateTimeZone;
  *   present-equivalent = present + late + 0.5 x half day
  *   working days       = present + late + half day + absent      (on leave, holiday, weekend and pending are not)
  * A half-day leave day counts half: present 0.5 + on leave 0.5 when the worked half was enough, absent 0.5 + on leave
- * 0.5 when it was not; so it is half a working day. Totals are then halves (floats); whole values stay ints. A manual
- * row ignores leave_half (a manual correction ignores leave).
+ * 0.5 when it was not; so it is half a working day. Totals are then halves (floats); whole values stay ints.
  *
  * Reads: one query for the month's holidays, one query per 500 employees for their attendance rows; nothing per day
  * or per cell.
@@ -280,8 +279,8 @@ final class MonthGrid
             'manual' => (bool) ($row['is_manual'] ?? false),
             'attention' => (bool) ($row['needs_attention'] ?? false),
             'overridden' => (bool) ($row['status_overridden'] ?? false),
-            // A manual correction ignores leave: a half left on a manual row is not shown or counted.
-            'half_leave' => ! ($row['is_manual'] ?? false) && in_array($row['leave_half'] ?? null, ['am', 'pm'], true),
+            // A manual correction stores the right half too, so a manual row shows and counts it like any other.
+            'half_leave' => in_array($row['leave_half'] ?? null, ['am', 'pm'], true),
         ];
     }
 

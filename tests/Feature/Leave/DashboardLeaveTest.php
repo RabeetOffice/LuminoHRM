@@ -5,6 +5,7 @@ use App\Models\LeaveDay;
 use App\Models\LeaveRequest;
 use App\Models\User;
 use App\Support\Attendance\AttendanceClock;
+use App\Support\Leave\BalanceLine;
 use App\Support\Leave\DashboardLeave;
 use App\Support\Leave\LeaveBalances;
 use App\Support\Leave\LeaveRouting;
@@ -163,6 +164,7 @@ it('counts for HR every open request they may decide, at either step, never thei
 });
 
 it('matches the "waiting for me" rule: the requests in scope whose decidable stage is not null', function (string $role) {
+    $this->withoutVite();
     [$managerUser, $manager, $a, $b, $indirect, $outsider] = dlTeam();
     $viewer = $role === 'manager' ? $managerUser : userWithRole($role);
     foreach ([$a, $b, $indirect, $outsider, $manager] as $i => $person) {
@@ -175,8 +177,11 @@ it('matches the "waiting for me" rule: the requests in scope whose decidable sta
         ->count();
 
     $props = dlProps($this->actingAs($viewer)->get('/dashboard')->assertOk());
+    // The Leave -> Requests "Waiting for me" tab counts the same requests.
+    $tabs = $this->actingAs($viewer)->get('/leave/requests')->assertOk()->inertiaProps('counts');
 
-    expect($props['pendingLeaves']['count'])->toBe($expected)->and($expected)->toBeGreaterThan(0);
+    expect($props['pendingLeaves']['count'])->toBe($expected)->and($expected)->toBeGreaterThan(0)
+        ->and($tabs['waiting'])->toBe($props['pendingLeaves']['count']);
 })->with(['admin', 'hr', 'manager']);
 
 // ---------------------------------------------------------------- on leave today
@@ -286,6 +291,34 @@ it('sums only the paid lines into the total available, exact to the half day', f
         ->and(DashboardLeave::mine(app(LeaveBalances::class), app(AttendanceClock::class), 999999))->toBeNull();
 });
 
+it('does not net an overdrawn type against the others in the total available', function () {
+    $line = fn (bool $paid, float $available) => new BalanceLine(1, 'T', '#000', 2026, $paid, 0, 0, 0, 0, 0, 0, $available, $available, $available < 0);
+
+    expect(DashboardLeave::totalAvailable([$line(true, 10), $line(true, -2)]))->toBe(10.0)
+        ->and(DashboardLeave::totalAvailable([$line(true, 10.5), $line(true, -2.5), $line(false, INF)]))->toBe(10.5);
+});
+
+it('counts the pending days of every year in pending_total, a request dated next January included', function () {
+    $user = userWithRole('employee');
+    $me = employeeFor($user, ['joining_date' => '2026-01-01']);
+    leaveRequest($me, ['from_date' => '2026-11-26', 'to_date' => '2026-11-26', 'days' => 1]);
+    leaveRequest($me, ['from_date' => '2027-01-05', 'to_date' => '2027-01-05', 'days' => 0.5, 'half' => 'am', 'is_half_day' => true]);
+    leaveRequest($me, ['from_date' => '2027-01-06', 'to_date' => '2027-01-06', 'days' => 1, 'status' => 'rejected']);
+
+    $mine = DashboardLeave::mine(app(LeaveBalances::class), app(AttendanceClock::class), $me->id);
+
+    expect($mine['pending_total'])->toBe(1.5);
+});
+
+it('hasEmployee tells the page whether the account is linked to an employee record', function () {
+    expect(dlProps($this->actingAs(userWithRole('employee'))->get('/dashboard')->assertOk())['hasEmployee'])->toBeFalse();
+
+    $user = userWithRole('employee');
+    employeeFor($user, ['joining_date' => '2026-01-01']);
+
+    expect(dlProps($this->actingAs($user)->get('/dashboard')->assertOk())['hasEmployee'])->toBeTrue();
+});
+
 // ---------------------------------------------------------------- query count
 
 it('reads a fixed number of queries for the leave figures whatever the number of people', function (string $role) {
@@ -326,5 +359,7 @@ it('reads a fixed number of queries for the leave figures whatever the number of
     $count(); // the seeder behind userWithRole() resets the permission cache: warm it again
     $large = $count();
 
-    expect($large)->toBe($small);
+    // Measured with leave data present (approved + pending requests, a leave day today): admin 21, hr 21, manager 23,
+    // employee 10 queries for the whole dashboard.
+    expect($large)->toBe($small)->and($large)->toBeLessThanOrEqual(25);
 })->with(['admin', 'hr', 'manager', 'employee']);

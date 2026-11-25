@@ -39,6 +39,7 @@ use Inertia\Response;
  *                  the viewer may decide now (the "Waiting for me" count), who is on approved leave on the attendance
  *                  day (names, type, full or half; leavers left out), and this month's requests by status. Everyone for
  *                  leave.approve-all, else own record + direct reports. Never a reason or an attachment.
+ *   hasEmployee    bool: the account is linked to an employee record.
  *   myLeave        {year, lines, total_available}  for everyone with an employee record who lacks payroll.view (the
  *                  "Leave Balance" tile replaces "Payroll This Month"): their own balance lines for the current leave
  *                  year; total_available sums the paid lines only.
@@ -52,7 +53,8 @@ class DashboardController extends Controller
     {
         $user = $request->user();
         $access = new EmployeeAccess($user);
-        $props = [];
+        // Whether the account is linked to an employee record (the page words its empty cards by it).
+        $props = ['hasEmployee' => $user->employee_id !== null && Employee::query()->whereKey($user->employee_id)->exists()];
 
         if ($user->canAny(['employees.view-all', 'employees.view-team'])) {
             $props['employeeCount'] = $this->employeeCount($access, $user->can('employees.view-all'));

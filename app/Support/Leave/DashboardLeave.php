@@ -140,7 +140,7 @@ final class DashboardLeave
      * available paid days (unpaid lines are never limited and are left out of the total). Null when the account's
      * employee record is gone.
      *
-     * @return array{year: int, lines: list<array<string, mixed>>, total_available: float}|null
+     * @return array{year: int, lines: list<array<string, mixed>>, total_available: float, pending_total: float}|null
      */
     public static function mine(LeaveBalances $balances, AttendanceClock $clock, int $employeeId): ?array
     {
@@ -158,11 +158,32 @@ final class DashboardLeave
             'year' => $year,
             'lines' => array_map(fn (BalanceLine $line) => $line->toArray(), $lines),
             'total_available' => self::totalAvailable($lines),
+            'pending_total' => self::pendingTotal($employeeId),
         ];
     }
 
     /**
-     * The sum of available days over the paid lines (exact to the half day). Unpaid lines hold INF and never count.
+     * Days still waiting for approval across ALL years (a request dated next January counts), every leave type
+     * including unpaid: one query over the employee's open requests.
+     */
+    private static function pendingTotal(int $employeeId): float
+    {
+        $halves = 0;
+
+        foreach (LeaveRequest::query()
+            ->where('employee_id', $employeeId)
+            ->whereIn('status', (array) config('hrm.leave.open_statuses'))
+            ->toBase()
+            ->pluck('days') as $days) {
+            $halves += LeaveDays::halves($days);
+        }
+
+        return LeaveDays::fromHalves($halves);
+    }
+
+    /**
+     * The sum of available days over the paid lines, each line floored at zero: an overdrawn type is never netted
+     * against the others (exact to the half day). Unpaid lines hold INF and never count.
      *
      * @param  list<BalanceLine>  $lines
      */
@@ -172,7 +193,7 @@ final class DashboardLeave
 
         foreach ($lines as $line) {
             if ($line->isPaid) {
-                $halves += LeaveDays::halves($line->available);
+                $halves += max(0, LeaveDays::halves($line->available));
             }
         }
 

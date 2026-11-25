@@ -519,7 +519,7 @@ it('marks half-day leave and counts it as halves', function () {
     mgDay($e, '2026-11-03', 'absent', ['leave_half' => 'pm', 'clock_in' => '2026-11-03 09:00:00', 'clock_out' => '2026-11-03 11:00:00', 'worked_minutes' => 120]);
     mgDay($e, '2026-11-04', 'on_leave', ['clock_in' => null, 'clock_out' => null, 'worked_minutes' => 0]);
     mgDay($e, '2026-11-05', 'present', ['worked_minutes' => 540]);
-    // A manual row ignores a leftover half.
+    // A manual correction stores the right half too: it shows and counts like any other.
     mgDay($e, '2026-11-06', 'present', ['is_manual' => true, 'leave_half' => 'am', 'worked_minutes' => 480]);
 
     $row = mgRow(mgProps($this, $admin, 'month=2026-11'), $e);
@@ -527,10 +527,10 @@ it('marks half-day leave and counts it as halves', function () {
     expect($row['cells'][1])->toBe(['P', MonthGrid::FLAG_HALF_LEAVE, '13:30', '18:00', 270, 0, 0, 0])
         ->and($row['cells'][2])->toBe(['A', MonthGrid::FLAG_HALF_LEAVE, '09:00', '11:00', 120, 0, 0, 0])
         ->and($row['cells'][3][1] & MonthGrid::FLAG_HALF_LEAVE)->toBe(0)
-        ->and($row['cells'][5][1])->toBe(MonthGrid::FLAG_MANUAL)
+        ->and($row['cells'][5][1])->toBe(MonthGrid::FLAG_MANUAL | MonthGrid::FLAG_HALF_LEAVE)
         ->and($row['totals'])->toBe([
-            'present' => 2.5, 'late' => 0, 'half_day' => 0, 'absent' => 0.5, 'on_leave' => 2, 'off' => 0,
+            'present' => 2, 'late' => 0, 'half_day' => 0, 'absent' => 0.5, 'on_leave' => 2.5, 'off' => 0,
             'worked_minutes' => 270 + 120 + 540 + 480, 'late_minutes' => 0, 'overtime_minutes' => 0,
-            'equivalent' => 2.5, 'working_days' => 3,
+            'equivalent' => 2, 'working_days' => 2.5,
         ]);
 });

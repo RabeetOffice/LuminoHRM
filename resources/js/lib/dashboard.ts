@@ -9,6 +9,8 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { formatClockTime } from '@/lib/clock-time';
+import { leaves as myLeaves } from '@/routes/my';
+import { index as requestsIndex } from '@/routes/leave/requests';
 
 export type TileColor = 'green' | 'blue' | 'rose' | 'amber' | 'violet' | 'teal';
 
@@ -617,8 +619,10 @@ export type LeaveBalanceLine = {
 export type MyLeave = {
     year: number;
     lines: LeaveBalanceLine[];
-    /** Available paid days (unpaid lines are never counted). */
+    /** Available paid days, an overdrawn type counted as zero (unpaid lines are never counted). */
     total_available: number;
+    /** Days waiting for approval across all years, every type. */
+    pending_total: number;
 };
 
 /** Words and bar colours for the "Leave requests this month" chart. */
@@ -626,25 +630,27 @@ export const LEAVE_STATUS_META: Record<
     LeaveStatusKey,
     { label: string; bar: string }
 > = {
-    pending: { label: 'Waiting for manager', bar: 'bg-amber-400' },
-    manager_approved: { label: 'Waiting for HR', bar: 'bg-orange-400' },
+    pending: { label: 'Pending', bar: 'bg-amber-400' },
+    manager_approved: { label: 'Manager approved', bar: 'bg-orange-400' },
     approved: { label: 'Approved', bar: 'bg-emerald-500' },
     rejected: { label: 'Rejected', bar: 'bg-rose-500' },
     cancelled: { label: 'Cancelled', bar: 'bg-neutral-400' },
 };
 
-/**
- * Where the Pending Leaves tile leads (Leave → Requests, "Waiting for me") and where a person's own leave lives. Plain
- * paths: the typed routes for these screens come with the requests and My Leaves screens.
- */
-export const PENDING_LEAVES_HREF = '/leave/requests?tab=waiting';
+/** Leave → Requests, "Waiting for me" tab: where the Pending Leaves tile leads. */
+export const PENDING_LEAVES_HREF = requestsIndex({
+    query: { tab: 'waiting' },
+}).url;
 
-export const MY_LEAVES_HREF = '/my/leaves';
+/** Leave → Requests, every request (the status chart's link). */
+export const ALL_REQUESTS_HREF = requestsIndex({ query: { tab: 'all' } }).url;
+
+/** My Leaves. */
+export const MY_LEAVES_HREF = myLeaves().url;
 
 /** Leave → Requests narrowed to one person (searched by employee code). */
-export function personRequestsHref(code: string): string {
-    return `/leave/requests?tab=all&search=${encodeURIComponent(code)}`;
-}
+export const personRequestsHref = (code: string): string =>
+    requestsIndex({ query: { tab: 'all', search: code } }).url;
 
 /** Whole half days, so float drift never reaches a label. */
 const halvesOf = (days: number) => Math.round(days * 2);
@@ -765,10 +771,8 @@ export function pendingLeavesTile(
     }
 
     if (mine) {
-        const halves = mine.lines.reduce(
-            (sum, line) => sum + halvesOf(line.pending),
-            0,
-        );
+        // Across all years: a request dated next January counts, not only this leave year's lines.
+        const halves = halvesOf(mine.pending_total);
 
         return {
             label: 'My Pending Leave',

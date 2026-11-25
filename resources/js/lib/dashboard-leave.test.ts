@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+    ALL_REQUESTS_HREF,
     LEAVE_STATUS_SERIES,
     MY_LEAVES_HREF,
     PENDING_LEAVES_HREF,
@@ -53,8 +54,17 @@ const unpaid = line({
     label: '2 used',
 });
 
-function mine(lines: LeaveBalanceLine[], total: number): MyLeave {
-    return { year: 2026, lines, total_available: total };
+function mine(
+    lines: LeaveBalanceLine[],
+    total: number,
+    pending = lines.reduce((sum, l) => sum + l.pending, 0),
+): MyLeave {
+    return {
+        year: 2026,
+        lines,
+        total_available: total,
+        pending_total: pending,
+    };
 }
 
 describe('daysLabel', () => {
@@ -89,7 +99,8 @@ describe('leave status chart', () => {
         expect(bars.map((b) => b.key)).toEqual([...LEAVE_STATUS_SERIES]);
         expect(bars.map((b) => b.count)).toEqual([4, 1, 2, 0, 1]);
         expect(bars.map((b) => b.percent)).toEqual([100, 25, 50, 0, 25]);
-        expect(bars[1]?.label).toBe('Waiting for HR');
+        expect(bars[0]?.label).toBe('Pending');
+        expect(bars[1]?.label).toBe('Manager approved');
     });
 
     test('totals every status; an empty month draws no bar and never divides by zero', () => {
@@ -202,15 +213,32 @@ describe('pendingLeavesTile', () => {
         );
     });
 
+    test('counts pending days of every year, next January included', () => {
+        // This year's line shows 0 pending; 1.5 days wait in the next leave year.
+        const tile = pendingLeavesTile(
+            undefined,
+            mine([line({ pending: 0 })], 9.5, 1.5),
+        );
+
+        expect(tile?.value).toBe('1.5');
+        expect(tile?.unit).toBe('days');
+    });
+
     test('nothing to show without either figure', () => {
         expect(pendingLeavesTile(undefined, undefined)).toBeNull();
     });
 });
 
 describe('links', () => {
+    test('use the typed routes', () => {
+        expect(PENDING_LEAVES_HREF).toBe('/leave/requests?tab=waiting');
+        expect(ALL_REQUESTS_HREF).toBe('/leave/requests?tab=all');
+        expect(MY_LEAVES_HREF).toBe('/my/leaves');
+    });
+
     test('the requests list narrowed to one person', () => {
         expect(personRequestsHref('EMP 001')).toBe(
-            '/leave/requests?tab=all&search=EMP%20001',
+            '/leave/requests?tab=all&search=EMP+001',
         );
     });
 });

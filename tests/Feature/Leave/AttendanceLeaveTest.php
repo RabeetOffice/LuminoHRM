@@ -309,7 +309,7 @@ it('reads leave days with one query per batch, whatever the number of days', fun
         ->and(Attendance::query()->where('leave_half', 'am')->where('status', 'absent')->count())->toBe(4);
 });
 
-it('sends the half of a half-day leave day on the Daily screen, never for a manual row', function () {
+it('sends the half of a half-day leave day on the Daily screen, for a manual row too', function () {
     $this->withoutVite();
     $half = alEmployee();
     $full = alEmployee();
@@ -326,7 +326,7 @@ it('sends the half of a half-day leave day on the Daily screen, never for a manu
     expect($rows[$half->id]['leave_half'])->toBe('am')
         ->and($rows[$half->id]['status'])->toBe('present')
         ->and($rows[$full->id]['leave_half'])->toBeNull()
-        ->and($rows[$manual->id]['leave_half'])->toBeNull()
+        ->and($rows[$manual->id]['leave_half'])->toBe('pm')
         ->and($response->inertiaProps('summary')['on_leave'])->toBe(1);
 });
 

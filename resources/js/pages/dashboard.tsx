@@ -108,6 +108,8 @@ type Props = {
     leaveByStatus?: LeaveByStatus;
     /** The viewer's own balance (everyone with an employee record who does not see payroll). */
     myLeave?: MyLeave;
+    /** The account is linked to an employee record. */
+    hasEmployee?: boolean;
 };
 
 const SERIES_META: Record<TrendSeriesKey, { label: string; bar: string }> = {
@@ -130,6 +132,7 @@ export default function Dashboard({
     onLeaveToday,
     leaveByStatus,
     myLeave,
+    hasEmployee,
 }: Props) {
     const { auth, app } = usePage().props;
     const can = useCan();
@@ -299,12 +302,12 @@ export default function Dashboard({
                         <LeaveStatusCard byStatus={leaveByStatus} />
                     ) : myLeave ? (
                         <MyLeaveCard mine={myLeave} />
-                    ) : (
+                    ) : hasEmployee === false ? (
                         <PlaceholderCard
                             title="Leave"
                             note="Your leave appears here once your account is linked to an employee record."
                         />
-                    )}
+                    ) : null}
                     {onLeaveToday && (
                         <OnLeaveTodayCard
                             people={onLeaveToday}
