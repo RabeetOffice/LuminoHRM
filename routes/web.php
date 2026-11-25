@@ -180,7 +180,24 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/', [LeaveTypeController::class, 'index'])->name('index');
         Route::post('/', [LeaveTypeController::class, 'store'])->name('store');
         Route::put('{leaveType}', [LeaveTypeController::class, 'update'])->whereNumber('leaveType')->name('update');
+        Route::patch('{leaveType}/active', [LeaveTypeController::class, 'setActive'])->whereNumber('leaveType')->name('active');
         Route::delete('{leaveType}', [LeaveTypeController::class, 'destroy'])->whereNumber('leaveType')->name('destroy');
+    });
+
+    // Leave > Requests: the list (leave.approve-all or leave.approve-team, checked in the controller), the detail page
+    // (the requester or anyone LeaveRouting lets see it), the decisions and HR's cancellation of approved leave. Who
+    // decides which step is LeaveRouting's (403 outside scope). Ids are numeric, so Task 5's static "preview" route
+    // under the same prefix never matches here.
+    Route::prefix('leave/requests')->name('leave.requests.')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Leave\LeaveRequestController::class, 'index'])->name('index');
+        Route::get('{leaveRequest}', [\App\Http\Controllers\Leave\LeaveRequestController::class, 'show'])
+            ->whereNumber('leaveRequest')->name('show');
+        Route::put('{leaveRequest}/manager-decide', [\App\Http\Controllers\Leave\LeaveRequestController::class, 'managerDecide'])
+            ->whereNumber('leaveRequest')->name('manager-decide');
+        Route::put('{leaveRequest}/final-decide', [\App\Http\Controllers\Leave\LeaveRequestController::class, 'finalDecide'])
+            ->whereNumber('leaveRequest')->middleware('can:leave.approve-all')->name('final-decide');
+        Route::post('{leaveRequest}/cancel-approved', [\App\Http\Controllers\Leave\LeaveRequestController::class, 'cancelApproved'])
+            ->whereNumber('leaveRequest')->middleware('can:leave.approve-all')->name('cancel-approved');
     });
 
     // Users and roles. No delete route: accounts are disabled, never removed.

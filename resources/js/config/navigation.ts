@@ -30,6 +30,7 @@ import { index as shiftsIndex } from '@/routes/attendance/shifts';
 import { index as auditLogIndex } from '@/routes/audit-log';
 import { index as holidaysIndex } from '@/routes/holidays';
 import { index as hrmSettingsIndex } from '@/routes/hrm-settings';
+import { index as leaveRequestsIndex } from '@/routes/leave/requests';
 import { index as leaveTypesIndex } from '@/routes/leave/types';
 import { attendance as myAttendance, leaves as myLeaves } from '@/routes/my';
 import { index as organizationIndex } from '@/routes/organization';
@@ -134,7 +135,8 @@ export const navigation: NavGroup[] = [
                 icon: CalendarCheck,
                 permission: ['leave.approve-all', 'leave.approve-team'],
                 children: [
-                    { title: 'Requests', href: '/leave/requests', ...unready },
+                    // Approvers: everyone's (leave.approve-all) or own team's (leave.approve-team).
+                    { title: 'Requests', href: leaveRequestsIndex() },
                     { title: 'Balances', href: '/leave/balances', ...unready },
                     {
                         title: 'Leave Types',

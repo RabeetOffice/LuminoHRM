@@ -103,6 +103,7 @@ describe('ready flag', () => {
             'Raw Punches',
         ]);
         expect(r[1].items[4].children?.map((c) => c.title)).toEqual([
+            'Requests',
             'Leave Types',
             'Holidays',
         ]);
@@ -465,6 +466,19 @@ describe('shifts and holidays', () => {
         expect(toUrl(child(r, 'Leave', 'Leave Types')?.href ?? '')).toBe(
             '/leave/types',
         );
+    });
+
+    test('leave requests are ready for approvers, a manager included', () => {
+        for (const perms of [
+            ['leave.approve-all'],
+            ['attendance.view-team', 'leave.approve-team'],
+        ]) {
+            const r = filterNavigation(navigation, perms, '', full);
+            expect(child(r, 'Leave', 'Requests')?.soon).toBe(false);
+            expect(toUrl(child(r, 'Leave', 'Requests')?.href ?? '')).toBe(
+                '/leave/requests',
+            );
+        }
     });
 
     test('are hidden from a manager', () => {
