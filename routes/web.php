@@ -37,6 +37,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // My Profile: the signed-in person's own employee record, read-only (an empty state when the account is not linked).
     Route::get('my/profile', [MyProfileController::class, 'show'])->name('my.profile');
 
+    // My Attendance: the signed-in person's own month (no person in the URL; an empty state when not linked).
+    Route::get('my/attendance', [\App\Http\Controllers\Attendance\MyAttendanceController::class, 'show'])->name('my.attendance');
+
     // Departments & Designations. Authorisation is enforced here, on the server.
     Route::middleware('can:org.manage')->prefix('organization')->group(function () {
         Route::get('/', [DepartmentController::class, 'index'])->name('organization.index');

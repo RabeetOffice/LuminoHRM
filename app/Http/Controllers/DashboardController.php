@@ -3,6 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Models\Employee;
+use App\Support\Attendance\AttendanceClock;
+use App\Support\Attendance\DashboardAttendance;
+use App\Support\Attendance\MonthGrid;
 use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
 use Illuminate\Database\Eloquent\Builder;
@@ -21,13 +24,18 @@ use Inertia\Response;
  *   birthdays      [{id, name, designation, photo_url}]  for employees.view-all only (the date of birth is
  *                  restricted). Active + probation people whose birthday is today in the company's display zone;
  *                  29 February birthdays show on 28 February in other years. Never the date or the year.
+ *   attendanceToday, lateToday, attendanceTrend
+ *                  for attendance.view-all / attendance.view-team only, over the same people as employeeCount
+ *                  (App\Support\Attendance\DashboardAttendance: today's counts, today's late people, the last 30 closed
+ *                  days). Nobody outside the scope is counted or named.
+ *   myAttendance   for everyone else with an employee record: their own month so far (MonthGrid totals) and today.
  */
 class DashboardController extends Controller
 {
     /** The statuses counted as "employed". */
     public const COUNTED = ['active', 'probation'];
 
-    public function index(Request $request): Response
+    public function index(Request $request, AttendanceClock $clock): Response
     {
         $user = $request->user();
         $access = new EmployeeAccess($user);
@@ -41,7 +49,53 @@ class DashboardController extends Controller
             $props['birthdays'] = $this->birthdays($access);
         }
 
+        if ($user->canAny(['attendance.view-all', 'attendance.view-team'])) {
+            // The same people as the employee count: EmployeeAccess::scope (Admin/HR: everyone; Manager: own + reports).
+            $attendance = new DashboardAttendance($clock, $access->scope(Employee::query()), $user->can('employees.view-all'));
+            $props['attendanceToday'] = $attendance->today();
+            $props['lateToday'] = $attendance->late();
+            $props['attendanceTrend'] = $attendance->trend();
+        } elseif ($user->employee_id !== null) {
+            $props['myAttendance'] = $this->myAttendance($clock, (int) $user->employee_id);
+        }
+
         return Inertia::render('dashboard', $props);
+    }
+
+    /**
+     * The viewer's own month so far (MonthGrid totals: never pending, nothing outside the employment window or after
+     * today), and today's status. Null when the account's employee record is gone.
+     *
+     * @return array{month: string, label: string, totals: array<string, int|float>, today: array{status: string|null, clock_in: string|null, clock_out: string|null}|null}|null
+     */
+    private function myAttendance(AttendanceClock $clock, int $employeeId): ?array
+    {
+        $employee = Employee::query()->find($employeeId, ['id', 'joining_date', 'last_working_day']);
+
+        if ($employee === null) {
+            return null;
+        }
+
+        $grid = MonthGrid::for(MonthGrid::currentMonth($clock), $clock);
+
+        if ($grid === null) {
+            return null;
+        }
+
+        $row = $grid->rows([$employee])[$employee->id];
+        $todayIndex = (int) substr($clock->attendanceToday(), 8, 2) - 1;
+        $cell = $row['cells'][$todayIndex] ?? null;
+
+        return [
+            'month' => $grid->month,
+            'label' => $grid->label(),
+            'totals' => $row['totals'],
+            'today' => $cell === null ? null : [
+                'status' => array_search($cell[0], MonthGrid::CODES, true) ?: null,
+                'clock_in' => is_string($cell[2]) ? $cell[2] : null,
+                'clock_out' => is_string($cell[3]) ? $cell[3] : null,
+            ],
+        ];
     }
 
     /** @return array{scope: string, total: int, probation: int} */

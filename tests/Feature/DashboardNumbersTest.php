@@ -3,6 +3,7 @@
 use App\Models\Department;
 use App\Models\Designation;
 use App\Models\Employee;
+use App\Support\Settings;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Notification;
 
@@ -16,7 +17,7 @@ beforeEach(function () {
     config(['app.timezone' => 'UTC']);
     date_default_timezone_set('UTC');
     // Pin the display zone so the day-boundary tests never depend on the default setting.
-    \App\Support\Settings::set('company', ['timezone' => 'Asia/Karachi']);
+    Settings::set('company', ['timezone' => 'Asia/Karachi']);
 });
 
 afterEach(function () {
@@ -149,8 +150,9 @@ it('lists today\'s birthdays for Admin and HR with id, name, designation and pho
             'photo_url' => null,
         ]);
 
-    // The birth year and the full date never reach the browser.
-    $json = json_encode(dnPageProps($response));
+    // The birth year and the full date never reach the browser. (The attendance figures carry today's date, which is
+    // the day being looked at, not a birth date, so they are left out of this text search.)
+    $json = json_encode(array_diff_key(dnPageProps($response), array_flip(['attendanceToday', 'lateToday', 'attendanceTrend'])));
     expect($json)->not->toContain('1990')->not->toContain('2001')->not->toContain('06-15')->not->toContain('dob');
 })->with(['admin', 'hr']);
 
@@ -236,8 +238,8 @@ it('walks every page prop of each role and finds only the allowed keys', functio
         expect(array_keys($props['employeeCount']))->toBe(['scope', 'total', 'probation']);
     }
 })->with([
-    ['admin', ['employeeCount', 'birthdays']],
-    ['hr', ['employeeCount', 'birthdays']],
-    ['manager', ['employeeCount']],
+    ['admin', ['employeeCount', 'birthdays', 'attendanceToday', 'lateToday', 'attendanceTrend']],
+    ['hr', ['employeeCount', 'birthdays', 'attendanceToday', 'lateToday', 'attendanceTrend']],
+    ['manager', ['employeeCount', 'attendanceToday', 'lateToday', 'attendanceTrend']],
     ['employee', []],
 ]);

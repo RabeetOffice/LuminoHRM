@@ -48,6 +48,7 @@ describe('visibleTabs', () => {
             'Contact',
             'Banking',
             'Documents',
+            'Attendance',
         ]);
         expect(PROFILE_TABS[0].title).toBe('Basic Information');
     });

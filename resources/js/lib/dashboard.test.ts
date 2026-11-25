@@ -1,11 +1,21 @@
 import { describe, expect, test } from 'vitest';
 import {
+    attendanceBannerLine,
+    barPercent,
     dashboardTiles,
+    formatDays,
     formatLongDate,
     greetingFor,
+    hasTrendData,
     hourIn,
+    personalAttendanceTiles,
     probationNote,
+    shortDay,
+    teamAttendanceTiles,
+    trendMax,
+    trendSeries,
 } from '@/lib/dashboard';
+import type { AttendanceToday, MyMonthAttendance } from '@/lib/dashboard';
 
 describe('greetingFor', () => {
     test.each([
@@ -113,5 +123,254 @@ describe('invalid or missing app timezone', () => {
                 /^\w+, \d{1,2} \w+ 2026$/,
             );
         }
+    });
+});
+
+describe('shortDay', () => {
+    test('reads the date as text', () => {
+        expect(shortDay('2026-11-24')).toBe('24 Nov');
+        expect(shortDay('2026-01-05')).toBe('5 Jan');
+    });
+
+    test('returns anything else unchanged', () => {
+        expect(shortDay('2026-13-01')).toBe('2026-13-01');
+        expect(shortDay('nonsense')).toBe('nonsense');
+    });
+});
+
+describe('trendSeries', () => {
+    const days = ['2026-11-21', '2026-11-22', '2026-11-23'];
+
+    test('one bar per listed day, oldest first, zeros where nothing was sent', () => {
+        const series = trendSeries(days, [
+            { date: '2026-11-23', status: 'present', count: 4 },
+            { date: '2026-11-23', status: 'late', count: 2 },
+            { date: '2026-11-21', status: 'absent', count: 1 },
+            { date: '2026-11-21', status: 'half_day', count: 3 },
+        ]);
+
+        expect(series.map((d) => d.date)).toEqual(days);
+        expect(series[0]).toEqual({
+            date: '2026-11-21',
+            label: '21 Nov',
+            present: 0,
+            late: 0,
+            half_day: 3,
+            absent: 1,
+            total: 4,
+        });
+        expect(series[1].total).toBe(0);
+        expect(series[2]).toMatchObject({ present: 4, late: 2, total: 6 });
+    });
+
+    test('ignores days not listed and statuses not charted', () => {
+        const series = trendSeries(days, [
+            { date: '2026-11-24', status: 'present', count: 9 },
+            { date: '2026-11-22', status: 'weekend', count: 5 },
+            { date: '2026-11-22', status: 'on_leave', count: 1 },
+        ]);
+
+        expect(series.map((d) => d.total)).toEqual([0, 0, 0]);
+        expect(hasTrendData(series)).toBe(false);
+    });
+
+    test('scale: the tallest bar, never below 1, and segment heights as percentages', () => {
+        const series = trendSeries(days, [
+            { date: '2026-11-22', status: 'present', count: 3 },
+            { date: '2026-11-22', status: 'late', count: 1 },
+            { date: '2026-11-23', status: 'present', count: 1 },
+        ]);
+
+        expect(trendMax(series)).toBe(4);
+        expect(trendMax(trendSeries(days, []))).toBe(1);
+        expect(barPercent(1, 4)).toBe(25);
+        expect(barPercent(1, 3)).toBe(33.3);
+        expect(barPercent(0, 4)).toBe(0);
+        expect(hasTrendData(series)).toBe(true);
+    });
+
+    test('an empty list of days gives no bars', () => {
+        expect(trendSeries([], [])).toEqual([]);
+    });
+});
+
+const baseToday: AttendanceToday = {
+    date: '2026-11-24',
+    open: true,
+    started: true,
+    start_date: '2026-01-01',
+    present: 7,
+    late: 2,
+    absent: 0,
+    pending: 0,
+    not_in: 3,
+    expected: 10,
+    holiday: false,
+    last_punch: { date: '2026-11-24', time: '13:05' },
+};
+
+describe('attendanceBannerLine', () => {
+    test('present count and the last punch in 12-hour form', () => {
+        expect(attendanceBannerLine(baseToday)).toBe(
+            '7 present today · last punch received 1:05 PM',
+        );
+    });
+
+    test('names the day when the last punch is not from today', () => {
+        expect(
+            attendanceBannerLine({
+                ...baseToday,
+                last_punch: { date: '2026-11-22', time: '00:05' },
+            }),
+        ).toBe('7 present today · last punch received 22 Nov, 12:05 AM');
+    });
+
+    test('leaves the punch out when there are none', () => {
+        expect(
+            attendanceBannerLine({
+                ...baseToday,
+                present: 0,
+                last_punch: null,
+            }),
+        ).toBe('0 present today');
+    });
+});
+
+describe('teamAttendanceTiles', () => {
+    test('open day: "Not in yet" out of the expected people', () => {
+        const tiles = teamAttendanceTiles(baseToday);
+
+        expect(tiles.present).toEqual({
+            value: '7',
+            note: 'Clocked in today',
+        });
+        expect(tiles.absent).toEqual({
+            label: 'Not in yet',
+            value: '3',
+            note: 'of 10 expected today',
+        });
+        expect(tiles.late.value).toBe('2');
+    });
+
+    test('a closed day reads "Absent Today" and adds those marked absent', () => {
+        const tiles = teamAttendanceTiles({
+            ...baseToday,
+            open: false,
+            absent: 1,
+        });
+
+        expect(tiles.absent).toEqual({
+            label: 'Absent Today',
+            value: '4',
+            note: 'of 10 expected',
+        });
+    });
+
+    test('before attendance has started: a dash and a hint, never "everyone absent"', () => {
+        const notStarted = {
+            ...baseToday,
+            started: false,
+            start_date: null,
+            not_in: null,
+            expected: null,
+        };
+
+        expect(teamAttendanceTiles(notStarted).absent).toEqual({
+            label: 'Not in yet',
+            value: '–',
+            note: 'Attendance has not started',
+        });
+        expect(
+            teamAttendanceTiles({ ...notStarted, start_date: '2026-12-01' })
+                .absent.note,
+        ).toBe('Attendance starts 1 Dec');
+        expect(teamAttendanceTiles(notStarted).present.value).toBe('7');
+    });
+
+    test('notes: holiday, marked absent, pending, nobody late', () => {
+        expect(
+            teamAttendanceTiles({ ...baseToday, holiday: true, not_in: 0 })
+                .absent.note,
+        ).toBe('Holiday today');
+        expect(
+            teamAttendanceTiles({ ...baseToday, absent: 2 }).absent.note,
+        ).toBe('2 marked absent');
+        expect(
+            teamAttendanceTiles({ ...baseToday, pending: 3 }).present.note,
+        ).toBe('Clocked in today · 3 being calculated');
+        expect(teamAttendanceTiles({ ...baseToday, late: 0 }).late.note).toBe(
+            'Nobody late today',
+        );
+    });
+});
+
+describe('personalAttendanceTiles', () => {
+    const mine: MyMonthAttendance = {
+        month: '2026-11',
+        label: 'November 2026',
+        totals: {
+            present: 2,
+            late: 1,
+            half_day: 1,
+            absent: 1,
+            on_leave: 0,
+            off: 4,
+            worked_minutes: 1800,
+            late_minutes: 65,
+            overtime_minutes: 0,
+            equivalent: 3.5,
+            working_days: 5,
+        },
+        today: null,
+    };
+
+    test('present-equivalent with half days, out of working days', () => {
+        const tiles = personalAttendanceTiles(mine);
+
+        expect(tiles.present).toEqual({
+            label: 'Present This Month',
+            value: '3.5',
+            note: 'of 5 working days',
+        });
+        expect(tiles.absent).toEqual({
+            label: 'Absent This Month',
+            value: '1',
+            note: 'November 2026',
+        });
+        expect(tiles.late).toEqual({
+            label: 'Late This Month',
+            value: '1',
+            note: '1h 5m late in total',
+        });
+    });
+
+    test('an empty month', () => {
+        const empty = personalAttendanceTiles({
+            ...mine,
+            totals: {
+                ...mine.totals,
+                present: 0,
+                late: 0,
+                half_day: 0,
+                absent: 0,
+                late_minutes: 0,
+                equivalent: 0,
+                working_days: 0,
+            },
+        });
+
+        expect(empty.present.value).toBe('0');
+        expect(empty.present.note).toBe('No working days yet');
+        expect(empty.late.note).toBe('Never late');
+    });
+});
+
+describe('formatDays', () => {
+    test.each([
+        [0, '0'],
+        [4, '4'],
+        [3.5, '3.5'],
+    ])('%d', (value, expected) => {
+        expect(formatDays(value)).toBe(expected);
     });
 });

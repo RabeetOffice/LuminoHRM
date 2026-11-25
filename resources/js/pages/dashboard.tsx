@@ -1,18 +1,48 @@
 import { Head, Link, usePage } from '@inertiajs/react';
+import { ArrowRight } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { Avatar } from '@/components/hrm/avatar';
 import { PageHeader } from '@/components/hrm/page-header';
-import { useCan } from '@/hooks/use-can';
+import { AttendanceStatusPill } from '@/components/attendance/status-symbol';
+import type { AttendanceStatusValue } from '@/components/attendance/status-symbol';
 import {
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
+} from '@/components/ui/tooltip';
+import { useCan } from '@/hooks/use-can';
+import { formatClockTime } from '@/lib/clock-time';
+import {
+    TREND_SERIES,
+    attendanceBannerLine,
+    barPercent,
     dashboardTiles,
+    formatDays,
     formatLongDate,
     greetingFor,
+    hasTrendData,
     hourIn,
+    personalAttendanceTiles,
     probationNote,
+    teamAttendanceTiles,
     tileTones,
+    trendMax,
+    trendSeries,
 } from '@/lib/dashboard';
+import type {
+    AttendanceTileKey,
+    AttendanceToday,
+    MyMonthAttendance,
+    TileFigure,
+    TrendDay,
+    TrendSeriesKey,
+} from '@/lib/dashboard';
+import { formatMinutes } from '@/lib/minutes';
 import { cn } from '@/lib/utils';
 import { dashboard } from '@/routes';
+import { daily } from '@/routes/attendance';
 import { show } from '@/routes/employees';
+import { attendance as myAttendanceRoute } from '@/routes/my';
 
 /** Sent only to people who may see employees (Admin, HR: the company; Manager: their team). */
 type EmployeeCount = {
@@ -29,22 +59,48 @@ type Birthday = {
     photo_url: string | null;
 };
 
+/** Today's late people in the viewer's scope (attendance.view-all / view-team only). */
+type LateToday = {
+    total: number;
+    people: {
+        id: number;
+        name: string;
+        photo_url: string | null;
+        clock_in: string | null;
+        late_minutes: number;
+    }[];
+};
+
+/** The last 30 closed days: the dates (oldest first) and grouped counts. */
+type AttendanceTrend = {
+    days: string[];
+    counts: { date: string; status: string; count: number }[];
+};
+
 type Props = {
     employeeCount?: EmployeeCount;
     birthdays?: Birthday[];
+    attendanceToday?: AttendanceToday;
+    lateToday?: LateToday;
+    attendanceTrend?: AttendanceTrend;
+    myAttendance?: MyMonthAttendance | null;
 };
 
-// The employee tile is real; the other figures arrive with the attendance, leave,
-// payroll and asset modules. Until then those tiles show a dash.
-const cards = [
-    {
-        title: 'Attendance, last 7 days',
-        note: 'Daily attendance appears here.',
-    },
-    { title: 'Leave overview', note: 'Leave requests by status appear here.' },
-];
+const SERIES_META: Record<TrendSeriesKey, { label: string; bar: string }> = {
+    present: { label: 'Present', bar: 'bg-emerald-500' },
+    late: { label: 'Late', bar: 'bg-amber-400' },
+    half_day: { label: 'Half Day', bar: 'bg-orange-400' },
+    absent: { label: 'Absent', bar: 'bg-rose-500' },
+};
 
-export default function Dashboard({ employeeCount, birthdays }: Props) {
+export default function Dashboard({
+    employeeCount,
+    birthdays,
+    attendanceToday,
+    lateToday,
+    attendanceTrend,
+    myAttendance,
+}: Props) {
     const { auth, app } = usePage().props;
     const can = useCan();
     const now = new Date();
@@ -54,6 +110,15 @@ export default function Dashboard({ employeeCount, birthdays }: Props) {
         can('payroll.view'),
         employeeCount?.scope ?? null,
     );
+
+    // The attendance tiles: the team's or company's day, or a plain Employee's own month.
+    let figures: Partial<Record<AttendanceTileKey, TileFigure>> = {};
+
+    if (attendanceToday) {
+        figures = teamAttendanceTiles(attendanceToday);
+    } else if (myAttendance) {
+        figures = personalAttendanceTiles(myAttendance);
+    }
 
     return (
         <>
@@ -71,6 +136,11 @@ export default function Dashboard({ employeeCount, birthdays }: Props) {
                     <p className="mt-1 text-sm text-banner-foreground/70">
                         {today}
                     </p>
+                    {attendanceToday && (
+                        <p className="mt-3 text-sm font-medium text-banner-foreground/90">
+                            {attendanceBannerLine(attendanceToday)}
+                        </p>
+                    )}
                 </section>
 
                 <section
@@ -82,67 +152,95 @@ export default function Dashboard({ employeeCount, birthdays }: Props) {
                             : 'xl:grid-cols-5',
                     )}
                 >
-                    {tiles.map(({ key, label, icon: Icon, color }) => (
-                        <div
-                            key={key}
-                            className={cn(
-                                'rounded-xl border p-4 shadow-xs',
-                                tileTones[color].tile,
-                            )}
-                        >
+                    {tiles.map(({ key, label, icon: Icon, color }) => {
+                        const figure =
+                            key === 'present' ||
+                            key === 'absent' ||
+                            key === 'late'
+                                ? figures[key]
+                                : undefined;
+
+                        return (
                             <div
+                                key={key}
                                 className={cn(
-                                    'flex size-10 items-center justify-center rounded-lg',
-                                    tileTones[color].icon,
+                                    'rounded-xl border p-4 shadow-xs',
+                                    tileTones[color].tile,
                                 )}
                             >
-                                <Icon className="size-5" aria-hidden="true" />
+                                <div
+                                    className={cn(
+                                        'flex size-10 items-center justify-center rounded-lg',
+                                        tileTones[color].icon,
+                                    )}
+                                >
+                                    <Icon
+                                        className="size-5"
+                                        aria-hidden="true"
+                                    />
+                                </div>
+                                <p className="mt-3 text-sm text-muted-foreground">
+                                    {figure?.label ?? label}
+                                </p>
+                                {key === 'employees' && employeeCount ? (
+                                    <>
+                                        <p className="mt-1 text-2xl font-semibold tabular-nums">
+                                            {employeeCount.total}
+                                        </p>
+                                        <p className="mt-1 text-xs text-muted-foreground">
+                                            {probationNote(
+                                                employeeCount.probation,
+                                            )}
+                                        </p>
+                                    </>
+                                ) : figure ? (
+                                    <>
+                                        <p className="mt-1 text-2xl font-semibold tabular-nums">
+                                            {figure.value === '–' ? (
+                                                <span aria-label="Not known yet">
+                                                    –
+                                                </span>
+                                            ) : (
+                                                figure.value
+                                            )}
+                                        </p>
+                                        <p className="mt-1 text-xs text-muted-foreground">
+                                            {figure.note}
+                                        </p>
+                                    </>
+                                ) : (
+                                    <>
+                                        <p className="mt-1 text-2xl font-semibold">
+                                            <span aria-label="No data yet">
+                                                —
+                                            </span>
+                                        </p>
+                                        <p className="mt-1 text-xs text-muted-foreground">
+                                            No data yet
+                                        </p>
+                                    </>
+                                )}
                             </div>
-                            <p className="mt-3 text-sm text-muted-foreground">
-                                {label}
-                            </p>
-                            {key === 'employees' && employeeCount ? (
-                                <>
-                                    <p className="mt-1 text-2xl font-semibold tabular-nums">
-                                        {employeeCount.total}
-                                    </p>
-                                    <p className="mt-1 text-xs text-muted-foreground">
-                                        {probationNote(employeeCount.probation)}
-                                    </p>
-                                </>
-                            ) : (
-                                <>
-                                    <p className="mt-1 text-2xl font-semibold">
-                                        <span aria-label="No data yet">—</span>
-                                    </p>
-                                    <p className="mt-1 text-xs text-muted-foreground">
-                                        No data yet
-                                    </p>
-                                </>
-                            )}
-                        </div>
-                    ))}
+                        );
+                    })}
                 </section>
 
-                <section
-                    className={cn(
-                        'grid gap-4 lg:grid-cols-2',
-                        birthdays && 'xl:grid-cols-3',
+                <section className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+                    {attendanceTrend ? (
+                        <TrendCard trend={attendanceTrend} />
+                    ) : myAttendance ? (
+                        <MyMonthCard mine={myAttendance} />
+                    ) : (
+                        <PlaceholderCard
+                            title="Attendance"
+                            note="Your attendance appears here once your account is linked to an employee record."
+                        />
                     )}
-                >
-                    {cards.map(({ title, note }) => (
-                        <div
-                            key={title}
-                            className="flex min-h-64 flex-col rounded-xl border bg-card shadow-xs"
-                        >
-                            <h3 className="border-b px-5 py-4 text-base font-semibold">
-                                {title}
-                            </h3>
-                            <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
-                                {note}
-                            </div>
-                        </div>
-                    ))}
+                    {lateToday && <LateCard late={lateToday} />}
+                    <PlaceholderCard
+                        title="Leave overview"
+                        note="Leave requests by status appear here."
+                    />
                     {birthdays && <BirthdaysCard people={birthdays} />}
                 </section>
             </div>
@@ -150,17 +248,303 @@ export default function Dashboard({ employeeCount, birthdays }: Props) {
     );
 }
 
+function CardShell({
+    title,
+    action,
+    children,
+    className,
+}: {
+    title: string;
+    action?: ReactNode;
+    children: ReactNode;
+    className?: string;
+}) {
+    return (
+        <div
+            className={cn(
+                'flex min-h-64 flex-col rounded-xl border bg-card shadow-xs',
+                className,
+            )}
+        >
+            <div className="flex items-center justify-between gap-3 border-b px-5 py-4">
+                <h3 className="text-base font-semibold">{title}</h3>
+                {action}
+            </div>
+            {children}
+        </div>
+    );
+}
+
+function EmptyNote({ children }: { children: ReactNode }) {
+    return (
+        <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-muted-foreground">
+            {children}
+        </div>
+    );
+}
+
+function PlaceholderCard({ title, note }: { title: string; note: string }) {
+    return (
+        <CardShell title={title}>
+            <EmptyNote>{note}</EmptyNote>
+        </CardShell>
+    );
+}
+
+/**
+ * Stacked bars per closed day (present, late, half day, absent), drawn with plain elements: no chart library. The
+ * bars are decoration for sighted users; the same numbers are in a table for screen readers.
+ */
+function TrendCard({ trend }: { trend: AttendanceTrend }) {
+    const series = trendSeries(trend.days, trend.counts);
+    const max = trendMax(series);
+    const first = series[0];
+    const last = series[series.length - 1];
+
+    return (
+        <CardShell title="Attendance, last 30 days" className="lg:col-span-2">
+            {!hasTrendData(series) ? (
+                <EmptyNote>
+                    Nothing to show yet. Each day appears here once it has
+                    closed.
+                </EmptyNote>
+            ) : (
+                <div className="flex flex-1 flex-col gap-3 p-5">
+                    <ul
+                        aria-label="Chart legend"
+                        className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground"
+                    >
+                        {TREND_SERIES.map((key) => (
+                            <li key={key} className="flex items-center gap-1.5">
+                                <span
+                                    aria-hidden="true"
+                                    className={cn(
+                                        'size-2.5 rounded-sm',
+                                        SERIES_META[key].bar,
+                                    )}
+                                />
+                                {SERIES_META[key].label}
+                            </li>
+                        ))}
+                    </ul>
+                    <div
+                        aria-hidden="true"
+                        className="flex h-44 items-end gap-[2px] border-b sm:gap-1"
+                    >
+                        {series.map((day) => (
+                            <TrendBar key={day.date} day={day} max={max} />
+                        ))}
+                    </div>
+                    <div
+                        aria-hidden="true"
+                        className="flex justify-between text-xs text-muted-foreground"
+                    >
+                        <span>{first?.label}</span>
+                        <span>{last?.label}</span>
+                    </div>
+                    <table className="sr-only">
+                        <caption>Attendance per closed day</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Day</th>
+                                {TREND_SERIES.map((key) => (
+                                    <th key={key} scope="col">
+                                        {SERIES_META[key].label}
+                                    </th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {series
+                                .filter((day) => day.total > 0)
+                                .map((day) => (
+                                    <tr key={day.date}>
+                                        <th scope="row">{day.label}</th>
+                                        {TREND_SERIES.map((key) => (
+                                            <td key={key}>{day[key]}</td>
+                                        ))}
+                                    </tr>
+                                ))}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+        </CardShell>
+    );
+}
+
+function TrendBar({ day, max }: { day: TrendDay; max: number }) {
+    return (
+        <Tooltip>
+            <TooltipTrigger asChild>
+                <div className="flex h-full min-w-0 flex-1 flex-col-reverse rounded-t-sm hover:bg-muted/60">
+                    {TREND_SERIES.map((key) =>
+                        day[key] > 0 ? (
+                            <div
+                                key={key}
+                                className={cn(
+                                    SERIES_META[key].bar,
+                                    'w-full first:rounded-none last:rounded-t-sm',
+                                )}
+                                style={{
+                                    height: `${barPercent(day[key], max)}%`,
+                                }}
+                            />
+                        ) : null,
+                    )}
+                </div>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="grid gap-0.5 text-left">
+                <span className="font-semibold">{day.label}</span>
+                {day.total === 0 ? (
+                    <span>No records</span>
+                ) : (
+                    TREND_SERIES.filter((key) => day[key] > 0).map((key) => (
+                        <span key={key}>
+                            {SERIES_META[key].label}: {day[key]}
+                        </span>
+                    ))
+                )}
+            </TooltipContent>
+        </Tooltip>
+    );
+}
+
+/** Today's late people in the viewer's scope, earliest clock-in first. */
+function LateCard({ late }: { late: LateToday }) {
+    return (
+        <CardShell
+            title="Late Arrivals Today"
+            action={
+                <Link
+                    href={daily()}
+                    className="text-sm font-medium text-brand-ink hover:underline"
+                >
+                    Daily view
+                </Link>
+            }
+        >
+            {late.people.length === 0 ? (
+                <EmptyNote>No late arrivals today.</EmptyNote>
+            ) : (
+                <>
+                    <ul role="list" className="divide-y overflow-y-auto">
+                        {late.people.map((person) => (
+                            <li
+                                key={person.id}
+                                className="flex items-center gap-3 px-5 py-3"
+                            >
+                                <Avatar
+                                    src={person.photo_url}
+                                    name={person.name}
+                                    size="md"
+                                />
+                                <div className="min-w-0 flex-1">
+                                    <Link
+                                        href={show(person.id)}
+                                        className="block truncate text-sm font-medium hover:underline"
+                                    >
+                                        {person.name}
+                                    </Link>
+                                    <div className="text-xs text-muted-foreground">
+                                        In at{' '}
+                                        {formatClockTime(person.clock_in) ||
+                                            '—'}
+                                    </div>
+                                </div>
+                                <span className="rounded-md bg-amber-50 px-2 py-0.5 text-xs font-medium whitespace-nowrap text-amber-700 tabular-nums dark:bg-amber-500/15 dark:text-amber-300">
+                                    {formatMinutes(person.late_minutes) || '0m'}{' '}
+                                    late
+                                </span>
+                            </li>
+                        ))}
+                    </ul>
+                    {late.total > late.people.length && (
+                        <p className="border-t px-5 py-3 text-xs text-muted-foreground">
+                            and {late.total - late.people.length} more on the
+                            daily view
+                        </p>
+                    )}
+                </>
+            )}
+        </CardShell>
+    );
+}
+
+/** A plain Employee's own month so far, with a link to My Attendance. */
+function MyMonthCard({ mine }: { mine: MyMonthAttendance }) {
+    const { totals } = mine;
+    const items: [string, string][] = [
+        ['Present', String(totals.present)],
+        ['Late', String(totals.late)],
+        ['Half day', String(totals.half_day)],
+        ['Absent', String(totals.absent)],
+        ['Worked', formatMinutes(totals.worked_minutes) || '0m'],
+        ['Late minutes', formatMinutes(totals.late_minutes) || '0m'],
+    ];
+
+    return (
+        <CardShell
+            title={`My attendance, ${mine.label}`}
+            action={
+                <Link
+                    href={myAttendanceRoute()}
+                    className="inline-flex items-center gap-1 text-sm font-medium text-brand-ink hover:underline"
+                >
+                    Open
+                    <ArrowRight aria-hidden="true" className="size-3.5" />
+                </Link>
+            }
+        >
+            <div className="grid gap-4 p-5">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="text-muted-foreground">Today:</span>
+                    {mine.today ? (
+                        <>
+                            {/* An unknown or null status shows as Pending (statusMeta). */}
+                            <AttendanceStatusPill
+                                status={
+                                    mine.today.status as AttendanceStatusValue
+                                }
+                            />
+                            {mine.today.clock_in && (
+                                <span className="text-muted-foreground">
+                                    in at {formatClockTime(mine.today.clock_in)}
+                                </span>
+                            )}
+                        </>
+                    ) : (
+                        <span>No record yet</span>
+                    )}
+                </div>
+                <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    {items.map(([label, value]) => (
+                        <div key={label} className="rounded-lg border p-3">
+                            <dt className="text-xs text-muted-foreground">
+                                {label}
+                            </dt>
+                            <dd className="mt-0.5 text-lg font-semibold tabular-nums">
+                                {value}
+                            </dd>
+                        </div>
+                    ))}
+                </dl>
+                <p className="text-xs text-muted-foreground">
+                    Present days counting a half day as half:{' '}
+                    {formatDays(totals.equivalent)} of {totals.working_days}{' '}
+                    working days.
+                </p>
+            </div>
+        </CardShell>
+    );
+}
+
 /** Admin and HR only: who has a birthday today (in the company's time zone, decided on the server). */
 function BirthdaysCard({ people }: { people: Birthday[] }) {
     return (
-        <div className="flex min-h-64 flex-col rounded-xl border bg-card shadow-xs">
-            <h3 className="border-b px-5 py-4 text-base font-semibold">
-                Today's Birthdays
-            </h3>
+        <CardShell title="Today's Birthdays">
             {people.length === 0 ? (
-                <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
-                    No birthdays today.
-                </div>
+                <EmptyNote>No birthdays today.</EmptyNote>
             ) : (
                 <ul role="list" className="divide-y overflow-y-auto">
                     {people.map((person) => (
@@ -190,7 +574,7 @@ function BirthdaysCard({ people }: { people: Birthday[] }) {
                     ))}
                 </ul>
             )}
-        </div>
+        </CardShell>
     );
 }
 

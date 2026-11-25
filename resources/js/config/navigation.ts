@@ -30,6 +30,7 @@ import { index as shiftsIndex } from '@/routes/attendance/shifts';
 import { index as auditLogIndex } from '@/routes/audit-log';
 import { index as holidaysIndex } from '@/routes/holidays';
 import { index as hrmSettingsIndex } from '@/routes/hrm-settings';
+import { attendance as myAttendance } from '@/routes/my';
 import { index as organizationIndex } from '@/routes/organization';
 import { index as usersIndex } from '@/routes/users';
 
@@ -257,9 +258,8 @@ export const navigation: NavGroup[] = [
             },
             {
                 title: 'My Attendance',
-                href: '/my/attendance',
+                href: myAttendance(),
                 icon: CalendarClock,
-                ...unready,
             },
             {
                 title: 'My Leaves',

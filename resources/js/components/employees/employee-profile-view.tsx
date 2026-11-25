@@ -1,5 +1,6 @@
 import { Link, usePage } from '@inertiajs/react';
 import {
+    ArrowRight,
     Briefcase,
     Building2,
     Cake,
@@ -28,8 +29,11 @@ import {
 } from '@/lib/employee-profile';
 import type { ProfileTabKey } from '@/lib/employee-profile';
 import { formatDate } from '@/lib/format-date';
+import { formatMinutes } from '@/lib/minutes';
 import { statusPanelId, statusTabId } from '@/lib/tabs';
+import { monthly } from '@/routes/attendance';
 import { show } from '@/routes/employees';
+import { attendance as myAttendance } from '@/routes/my';
 
 type Person = { id: number; name: string; code: string; designation: string };
 
@@ -78,6 +82,31 @@ export type EmployeeProfile = {
         account_number: string | null;
     };
     documents?: { items: EmployeeDocumentItem[] };
+    /** Only for viewers allowed to see this person's attendance (the person, view-all, view-team for a report). */
+    attendance?: ProfileAttendance;
+};
+
+/** The current month's attendance summary (MonthGrid totals; pending days never counted, half day = 0.5). */
+export type ProfileAttendance = {
+    month: string;
+    label: string;
+    /** The viewer's own record: link to My Attendance instead of the monthly grid. */
+    own: boolean;
+    /** What the monthly grid link searches for. */
+    code: string;
+    totals: {
+        present: number;
+        late: number;
+        half_day: number;
+        absent: number;
+        on_leave: number;
+        off: number;
+        worked_minutes: number;
+        late_minutes: number;
+        overtime_minutes: number;
+        equivalent: number;
+        working_days: number;
+    };
 };
 
 type Props = {
@@ -118,6 +147,62 @@ function InfoRow({
     );
 }
 
+/** The Attendance tab: this month so far, and a link to the full month (My Attendance for one's own record). */
+function AttendancePanel({ attendance }: { attendance: ProfileAttendance }) {
+    const { totals } = attendance;
+    const items: [string, string][] = [
+        ['Present', String(totals.present)],
+        ['Late', String(totals.late)],
+        ['Half day', String(totals.half_day)],
+        ['Absent', String(totals.absent)],
+        ['Worked', formatMinutes(totals.worked_minutes) || '0h'],
+        ['Late minutes', formatMinutes(totals.late_minutes) || '0m'],
+    ];
+    const href = attendance.own
+        ? myAttendance()
+        : monthly({
+              query: { month: attendance.month, search: attendance.code },
+          });
+
+    return (
+        <div className="grid gap-5">
+            <p className="text-sm text-muted-foreground">
+                {attendance.label}:{' '}
+                <span className="font-medium text-foreground tabular-nums">
+                    {Number.isInteger(totals.equivalent)
+                        ? totals.equivalent
+                        : totals.equivalent.toFixed(1)}{' '}
+                    / {totals.working_days}
+                </span>{' '}
+                working days present (a half day counts as half).
+            </p>
+            <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {items.map(([label, value]) => (
+                    <div key={label} className="rounded-lg border p-3">
+                        <dt className="text-xs text-muted-foreground">
+                            {label}
+                        </dt>
+                        <dd className="mt-0.5 text-lg font-semibold tabular-nums">
+                            {value}
+                        </dd>
+                    </div>
+                ))}
+            </dl>
+            <div>
+                <Link
+                    href={href}
+                    className="inline-flex items-center gap-1 text-sm font-medium text-brand-ink hover:underline"
+                >
+                    {attendance.own
+                        ? 'Open My Attendance'
+                        : 'Open the monthly attendance'}
+                    <ArrowRight aria-hidden="true" className="size-3.5" />
+                </Link>
+            </div>
+        </div>
+    );
+}
+
 function Card({ title, children }: { title: string; children: ReactNode }) {
     return (
         <section className="rounded-xl border bg-card p-4 shadow-xs sm:p-6">
@@ -147,8 +232,15 @@ export function EmployeeProfileView({
     const available = visibleTabs(tabs);
     const [tab, setTab] = useState<ProfileTabKey>(available[0]?.key ?? 'basic');
 
-    const { basic, identity, employment, contact, banking, documents } =
-        employee;
+    const {
+        basic,
+        identity,
+        employment,
+        contact,
+        banking,
+        documents,
+        attendance,
+    } = employee;
 
     const activeTab =
         available.find((item) => item.key === tab) ?? available[0];
@@ -330,6 +422,7 @@ export function EmployeeProfileView({
                 canManage={canManageDocuments}
             />
         ),
+        attendance: attendance && <AttendancePanel attendance={attendance} />,
     };
 
     return (

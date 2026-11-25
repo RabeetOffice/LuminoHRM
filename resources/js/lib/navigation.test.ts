@@ -107,7 +107,10 @@ describe('ready flag', () => {
             'Users & Roles',
             'Audit Log',
         ]);
-        expect(r[3].items.map((i) => i.title)).toEqual(['My Profile']);
+        expect(r[3].items.map((i) => i.title)).toEqual([
+            'My Profile',
+            'My Attendance',
+        ]);
     });
 
     test('Audit Log is for admin only', () => {
@@ -295,7 +298,7 @@ describe('soon entries (default)', () => {
             false,
             true,
             false,
-            true,
+            false,
             true,
             true,
             true,
@@ -402,7 +405,7 @@ describe('soon entries (default)', () => {
         expect(entry?.permission).toBeUndefined();
     });
 
-    test('the ready entries today are exactly the eight built pages', () => {
+    test('the ready entries today are exactly the nine built pages', () => {
         const ready = navigation
             .flatMap((g) => g.items)
             .filter((i) => i.children === undefined && i.ready !== false)
@@ -416,6 +419,7 @@ describe('soon entries (default)', () => {
             'Users & Roles',
             'Audit Log',
             'My Profile',
+            'My Attendance',
         ]);
     });
 });
@@ -523,5 +527,16 @@ describe('correction requests', () => {
         }
 
         expect(find([])).toBeUndefined();
+    });
+});
+
+describe('my attendance', () => {
+    test('is ready for everyone, with no permission needed', () => {
+        const entry = filterNavigation(navigation, [])
+            .flatMap((g) => g.items)
+            .find((i) => i.title === 'My Attendance');
+
+        expect(entry?.soon).toBe(false);
+        expect(toUrl(entry?.href ?? '')).toBe('/my/attendance');
     });
 });

@@ -5,6 +5,8 @@ namespace App\Http\Resources;
 use App\Models\Employee;
 use App\Models\Shift;
 use App\Models\User;
+use App\Support\Attendance\AttendanceClock;
+use App\Support\Attendance\MonthGrid;
 use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
 use App\Support\EmployeeRoles;
@@ -27,6 +29,10 @@ use Illuminate\Http\Resources\Json\JsonResource;
  *   contact    address, emergency_name, emergency_phone
  *   banking    bank_name, account_title, account_number
  *   documents  items [{id, type, title, original_name, size_bytes, uploaded_at, expiry_date, download_url}]
+ *   attendance the current month's summary {month, label, own, code, totals} (MonthGrid totals: pending never counted)
+ *              for viewers allowed to see this person's attendance: the person themself, attendance.view-all, or
+ *              attendance.view-team for their own direct reports. Not an EmployeeAccess field group: it has its own
+ *              permissions. Absent (key and tab) for everyone else.
  *
  * Never add a field to a group without asking whether the roles that see that group may see it, and never return
  * the model or a relation as it is.
@@ -42,6 +48,7 @@ class EmployeeProfileResource extends JsonResource
         'contact' => 'contact',
         'banking' => 'banking',
         'documents' => 'documents',
+        'attendance' => 'attendance',
     ];
 
     /** @var list<string> */
@@ -51,11 +58,18 @@ class EmployeeProfileResource extends JsonResource
 
     private readonly bool $manage;
 
+    private readonly bool $own;
+
     public function __construct(Employee $resource, private readonly EmployeeAccess $access, User $viewer)
     {
         parent::__construct($resource);
 
+        $this->own = $viewer->employee_id !== null && (int) $viewer->employee_id === (int) $resource->getKey();
         $this->groups = $access->fieldGroups($resource);
+
+        if ($this->own || self::maySeeAttendance($viewer, $resource)) {
+            $this->groups[] = 'attendance';
+        }
         $this->viewAll = $viewer->can('employees.view-all');
         $this->manage = $access->canManage();
     }
@@ -127,6 +141,10 @@ class EmployeeProfileResource extends JsonResource
         if ($this->allows('documents')) {
             // Never the stored path: a document leaves the disk only through its download route.
             $data['documents'] = ['items' => EmployeeFiles::documentItems($employee)];
+        }
+
+        if ($this->allows('attendance')) {
+            $data['attendance'] = $this->attendance();
         }
 
         return $data;
@@ -215,6 +233,43 @@ class EmployeeProfileResource extends JsonResource
             'code' => $report->employee_code,
             'designation' => $report->designation->name,
         ])->all());
+    }
+
+    /**
+     * Whether the viewer may see this person's attendance besides their own: attendance.view-all, or
+     * attendance.view-team for a direct report.
+     */
+    public static function maySeeAttendance(User $viewer, Employee $employee): bool
+    {
+        if ($viewer->can('attendance.view-all')) {
+            return true;
+        }
+
+        return $viewer->employee_id !== null
+            && $employee->manager_id !== null
+            && (int) $employee->manager_id === (int) $viewer->employee_id
+            && $viewer->can('attendance.view-team');
+    }
+
+    /**
+     * The current month's attendance summary. `own` tells the page to link to My Attendance instead of the monthly
+     * grid (which lists a Manager's reports, not the Manager); `code` is what the grid link searches for.
+     *
+     * @return array{month: string, label: string, own: bool, code: string, totals: array<string, int|float>}
+     */
+    private function attendance(): array
+    {
+        $clock = app(AttendanceClock::class);
+        $month = MonthGrid::currentMonth($clock);
+        $grid = MonthGrid::for($month, $clock);
+
+        return [
+            'month' => $month,
+            'label' => $grid?->label() ?? $month,
+            'own' => $this->own,
+            'code' => $this->resource->employee_code,
+            'totals' => $grid === null ? MonthGrid::emptyTotals() : $grid->rows([$this->resource])[$this->resource->id]['totals'],
+        ];
     }
 
     private function allows(string $group): bool
