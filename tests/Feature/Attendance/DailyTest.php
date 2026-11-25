@@ -771,3 +771,61 @@ it('lists only the departments of people in a manager scope, and filters within 
     $this->actingAs($manager)->get('/attendance/daily?date=2026-11-23&department='.$other->department_id)->assertOk()
         ->assertInertia(fn ($p) => $p->where('rows', []));
 });
+
+// ---------------------------------------------------------------- a single entered time keeps its role (I-1)
+
+it('keeps a single entered time in the role it was entered as', function (?string $in, ?string $out, array $expected) {
+    $e = dlEmployee();
+
+    $this->actingAs(userWithRole('hr'))
+        ->put("/attendance/daily/{$e->id}/2026-11-23", dlPayload(['clock_in' => $in, 'clock_out' => $out]))
+        ->assertSessionHasNoErrors();
+
+    $row = dlFind($e, '2026-11-23');
+    expect([$row->getRawOriginal('clock_in'), $row->getRawOriginal('clock_out'), $row->status, $row->late_minutes, $row->early_minutes, $row->needs_attention])
+        ->toBe($expected);
+})->with([
+    'clock-in 14:00 only: late 300, flagged' => ['14:00', null, ['2026-11-23 14:00:00', null, 'late', 300, 0, true]],
+    'clock-out 12:00 only: never late' => [null, '12:00', [null, '2026-11-23 12:00:00', 'present', 0, 0, true]],
+]);
+
+it('keeps a clock-in entered alone on the open day as the clock-in', function () {
+    $e = dlEmployee();
+
+    $this->actingAs(userWithRole('hr'))
+        ->put("/attendance/daily/{$e->id}/2026-11-24", dlPayload(['clock_in' => '13:45', 'clock_out' => null]))
+        ->assertSessionHasNoErrors();
+
+    expect(dlFind($e, '2026-11-24')->only(['status', 'late_minutes', 'needs_attention', 'closed']))
+        ->toBe(['status' => 'late', 'late_minutes' => 285, 'needs_attention' => false, 'closed' => false]);
+});
+
+it('does not count an exempt person with no row on the open day as not in yet', function () {
+    $exempt = dlEmployee(['attendance_exempt' => true]);
+    $missing = dlEmployee();
+
+    $response = $this->actingAs(userWithRole('hr'))->get('/attendance/daily')->assertOk();
+    $rows = collect($response->inertiaProps('rows'));
+
+    expect($rows->firstWhere('employee.id', $exempt->id))->toMatchArray(['not_in' => false, 'exempt' => true, 'has_record' => false, 'status' => null])
+        ->and($rows->firstWhere('employee.id', $missing->id))->toMatchArray(['not_in' => true, 'exempt' => false])
+        ->and($response->inertiaProps('summary')['not_in'])->toBe(1);
+
+    // On a past day without a row (the close has not run) both are "No record".
+    $past = collect($this->actingAs(userWithRole('hr'))->get('/attendance/daily?date=2026-11-23')->inertiaProps('rows'));
+    expect($past->firstWhere('employee.id', $exempt->id)['not_in'])->toBeTrue();
+});
+
+it('marks rows before the attendance start date and offers no edit on them', function () {
+    Settings::set('attendance', ['start_date' => '2026-11-20']);
+    $e = dlEmployee();
+    dlRow($e, '2026-11-19', ['status' => 'present', 'clock_in' => '2026-11-19 09:00:00', 'clock_out' => '2026-11-19 18:00:00']);
+    dlRow($e, '2026-11-20', ['status' => 'present']);
+    $hr = userWithRole('hr');
+
+    $before = collect($this->actingAs($hr)->get('/attendance/daily?date=2026-11-19')->inertiaProps('rows'))->firstWhere('employee.id', $e->id);
+    $after = collect($this->actingAs($hr)->get('/attendance/daily?date=2026-11-20')->inertiaProps('rows'))->firstWhere('employee.id', $e->id);
+
+    expect($before)->toMatchArray(['before_start' => true, 'can_edit' => false, 'status' => 'present'])
+        ->and($after)->toMatchArray(['before_start' => false, 'can_edit' => true]);
+});

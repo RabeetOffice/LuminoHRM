@@ -26,7 +26,8 @@ use InvalidArgumentException;
  *     single-punch rule on the first punch (never a half day). Machine punches only (closePairRule): times a person
  *     entered by hand are taken literally;
  *   - one kept punch: before the shift midpoint it is the clock-in (the late rule applies); at or after the midpoint it
- *     is the clock-out (never late). Either way the status is present / late and, once closed, needs attention.
+ *     is the clock-out (never late). Either way the status is present / late and, once closed, needs attention. A
+ *     single time a person entered (singleRole 'in' / 'out') keeps the role they gave it instead of the midpoint rule.
  *
  * Arithmetic is on whole minutes, rounded down from the seconds the machine records:
  *   - late       when the WHOLE minutes from shift start to clock-in are more than the grace, so 09:15:59 is on time
@@ -80,6 +81,10 @@ final class DayCalculator
             throw new InvalidArgumentException('Half-day hours must be more than 0.');
         }
 
+        if ($in->singleRole !== null && $in->singleRole !== 'in' && $in->singleRole !== 'out') {
+            throw new InvalidArgumentException("Not a single-time role [{$in->singleRole}].");
+        }
+
         // The cutoff is still validated (a caller passing garbage is a bug), but it no longer filters: the punches given
         // are this day's, decided by punch_date at ingestion. A later cutoff change must not make stored punches vanish.
         $this->at($in->date, $in->dayCutoff, $zone);
@@ -104,9 +109,14 @@ final class DayCalculator
         $last = count($kept) > 1 ? $kept[count($kept) - 1] : null;
         $onePunch = $first !== null && $last === null;
 
-        // One punch at or after the shift midpoint is a clock-out (the clock-in is missing).
+        // One punch at or after the shift midpoint is a clock-out (the clock-in is missing). A time a person entered alone
+        // keeps the role they gave it (singleRole), whatever the midpoint.
         $midpoint = $start->modify('+'.intdiv($end->getTimestamp() - $start->getTimestamp(), 2).' seconds');
-        $onlyOut = $onePunch && $first >= $midpoint;
+        $onlyOut = $onePunch && match ($in->singleRole) {
+            'in' => false,
+            'out' => true,
+            default => $first >= $midpoint,
+        };
 
         $clockIn = $onlyOut ? null : $first?->format(self::PUNCH_FORMAT);
         $clockOut = $onlyOut ? $first->format(self::PUNCH_FORMAT) : $last?->format(self::PUNCH_FORMAT);

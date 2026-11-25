@@ -687,3 +687,35 @@ it('keeps a request pending for the Admin when there is no active HR user', func
     crDecide($admin, $c, 'hr')->assertSessionHas('success');
     expect(crDay($employee)->is_manual)->toBeTrue();
 });
+
+it('approves a request with only a clock-in, no recorded clock-out, as a late clock-in (not a clock-out)', function () {
+    [$user, $employee] = crPerson('employee');
+    [$hrUser] = crPerson('hr');
+
+    crSubmit($user, ['clock_in' => '14:00', 'clock_out' => null])->assertSessionHas('success');
+    crDecide($hrUser, crLatest(), 'hr')->assertSessionHas('success');
+
+    $row = crDay($employee);
+    expect($row->only(['status', 'late_minutes', 'needs_attention', 'is_manual']))
+        ->toBe(['status' => 'late', 'late_minutes' => 300, 'needs_attention' => true, 'is_manual' => true])
+        ->and($row->getRawOriginal('clock_in'))->toBe('2026-11-20 14:00:00')
+        ->and($row->getRawOriginal('clock_out'))->toBeNull();
+});
+
+it('works out a day still pending calculation before resolving the empty side at approval', function () {
+    [$user, $employee] = crPerson('employee', ['device_user_id' => '501']);
+    [$hrUser] = crPerson('hr');
+
+    crSubmit($user, ['clock_in' => '09:00', 'clock_out' => null])->assertSessionHas('success');
+    // The clock-out arrives afterwards: ingestion leaves a bare pending row (status null, no times yet).
+    punch($employee, '2026-11-20 18:20:00');
+    Attendance::query()->where('employee_id', $employee->id)->where('date', '2026-11-20')->delete();
+    Attendance::query()->create(['employee_id' => $employee->id, 'date' => '2026-11-20', 'status' => null, 'needs_rebuild' => true]);
+
+    crDecide($hrUser, crLatest(), 'hr')->assertSessionHas('success');
+
+    $row = crDay($employee);
+    expect($row->only(['status', 'is_manual']))->toBe(['status' => 'present', 'is_manual' => true])
+        ->and($row->getRawOriginal('clock_in'))->toBe('2026-11-20 09:00:00')
+        ->and($row->getRawOriginal('clock_out'))->toBe('2026-11-20 18:20:00');
+});

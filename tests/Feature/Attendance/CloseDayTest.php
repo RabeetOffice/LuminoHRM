@@ -181,6 +181,7 @@ it('only marks a still-open manual override row closed', function () {
 });
 
 it('changes nothing when run twice', function () {
+    Settings::set('attendance', ['start_date' => '2026-11-17']); // nothing older to backfill
     cdEmployee();
     cdEmployee(['attendance_exempt' => true]);
     $single = cdEmployee();
@@ -220,7 +221,8 @@ it('picks the company date with the server clock in UTC', function () {
         ->and(cdRow($e, '2026-11-25'))->toBeNull();
 });
 
-it('catches up the previous 7 days, and no further', function () {
+it('catches up the previous 7 days in the hourly run', function () {
+    Settings::set('attendance', ['start_date' => '2026-11-17']); // older days are the backfill's (tested below)
     $e = cdEmployee();
 
     $this->artisan('hrm:attendance-close')
@@ -375,6 +377,7 @@ it('closes everyone else when one employee-day cannot be decided, and flags that
 });
 
 it('closes the later days when one day of the catch-up fails', function () {
+    Settings::set('attendance', ['start_date' => '2026-11-17']);
     Log::spy();
     $e = cdEmployee();
     $real = new AttendanceRebuilder(app(DayCalculator::class), app(AttendanceClock::class));
@@ -470,4 +473,152 @@ it('flags open days from the attendance day of now when a shift changes after mi
 
     expect(RebuildMarks::forEmployee($e->id))->toBe(1)
         ->and(cdRow($e, '2026-11-23')->needs_rebuild)->toBeTrue();
+});
+
+it('finalises a still-open manual row with only a late clock-in as a late clock-in, not a clock-out', function () {
+    $e = cdEmployee();
+    $manual = Attendance::factory()->create([
+        'employee_id' => $e->id, 'date' => '2026-11-23', 'is_manual' => true, 'closed' => false, 'status' => 'late',
+        'clock_in' => '2026-11-23 14:00:00', 'clock_out' => null, 'late_minutes' => 300,
+    ]);
+
+    $this->artisan('hrm:attendance-close', ['date' => '2026-11-23'])->assertSuccessful();
+
+    $row = Attendance::query()->findOrFail($manual->id);
+    expect($row->only(['status', 'late_minutes', 'early_minutes', 'needs_attention', 'closed']))
+        ->toBe(['status' => 'late', 'late_minutes' => 300, 'early_minutes' => 0, 'needs_attention' => true, 'closed' => true])
+        ->and($row->getRawOriginal('clock_in'))->toBe('2026-11-23 14:00:00')
+        ->and($row->getRawOriginal('clock_out'))->toBeNull();
+});
+
+// ---------------------------------------------------------------- backfill of older days (I-2)
+
+/** Runs the hourly close and returns how many queries it ran. */
+function cdCountedClose(): int
+{
+    $counter = new ArrayObject(['n' => 0]);
+    DB::listen(function () use ($counter) {
+        $counter['n']++;
+    });
+
+    test()->artisan('hrm:attendance-close')->assertSuccessful();
+
+    return $counter['n'];
+}
+
+it('backfills every day from a start date set 20 days back, a bounded number of days per run', function () {
+    Settings::set('attendance', ['start_date' => '2026-11-04']);
+    $staff = cdStaff(3);
+    punch($staff[0], '2026-11-05 09:00:00');
+    punch($staff[0], '2026-11-05 18:00:00');
+
+    // Run 1: the 7 recent days, then the 10 oldest missing days; 3 remain for the next run.
+    $this->artisan('hrm:attendance-close')
+        ->expectsOutput('attendance_close date=2026-11-23 written=3')
+        ->expectsOutput('attendance_backfill date=2026-11-04 written=3')
+        ->expectsOutput('attendance_backfill date=2026-11-13 written=3')
+        ->doesntExpectOutput('attendance_backfill date=2026-11-14 written=3')
+        ->expectsOutput('attendance_backfill remaining=3')
+        ->assertSuccessful();
+
+    $this->travel(1)->hours();
+    $this->artisan('hrm:attendance-close')
+        ->expectsOutput('attendance_backfill date=2026-11-14 written=3')
+        ->expectsOutput('attendance_backfill date=2026-11-16 written=3')
+        ->doesntExpectOutput('attendance_backfill remaining=0')
+        ->assertSuccessful();
+
+    foreach ($staff as $e) {
+        $dates = Attendance::query()->where('employee_id', $e->id)->orderBy('date')->get()->map(fn ($a) => $a->getRawOriginal('date'))->all();
+        expect($dates)->toHaveCount(20)->and($dates[0])->toBe('2026-11-04')->and(end($dates))->toBe('2026-11-23');
+    }
+
+    expect(cdRow($staff[0], '2026-11-05')->status)->toBe('present')
+        ->and(cdRow($staff[1], '2026-11-05')->status)->toBe('absent')
+        ->and(cdRow($staff[1], '2026-11-07')->status)->toBe('weekend')
+        ->and(Attendance::query()->where('closed', false)->count())->toBe(0);
+});
+
+it('never looks further back than 62 days, nor before the start date', function () {
+    Settings::set('attendance', ['start_date' => '2026-01-01']);
+    $e = cdEmployee();
+
+    foreach (range(1, 6) as $run) {
+        $this->artisan('hrm:attendance-close')->assertSuccessful();
+    }
+
+    $first = Attendance::query()->where('employee_id', $e->id)->orderBy('date')->first()->getRawOriginal('date');
+    expect($first)->toBe('2026-09-23') // 2026-11-24 - 62 days
+        ->and(Attendance::query()->where('employee_id', $e->id)->count())->toBe(62);
+});
+
+it('backfills the days one person\'s window gained, and never re-decides closed days', function () {
+    Settings::set('attendance', ['start_date' => '2026-11-01']);
+    $e = cdEmployee(['joining_date' => '2026-11-18']);
+    $other = cdEmployee();
+    foreach (range(1, 3) as $run) {
+        $this->artisan('hrm:attendance-close')->assertSuccessful();
+    }
+    expect(Attendance::query()->where('employee_id', $e->id)->count())->toBe(6); // 18th to 23rd
+    $closed = cdRow($other, '2026-11-10');
+    // A later shift change must not reach a day that is already closed.
+    shiftFor($other, ['start_time' => '07:00', 'end_time' => '11:00']);
+    $before = cdSnapshot();
+
+    // The joining date was entered wrongly: really the 2nd.
+    $e->forceFill(['joining_date' => '2026-11-02'])->save();
+    $this->artisan('hrm:attendance-close')->expectsOutput('attendance_backfill date=2026-11-02 written=1')
+        ->expectsOutput('attendance_backfill remaining=5')->assertSuccessful();
+    $this->artisan('hrm:attendance-close')->expectsOutput('attendance_backfill date=2026-11-16 written=1')->assertSuccessful();
+
+    expect(Attendance::query()->where('employee_id', $e->id)->count())->toBe(22)
+        ->and(cdRow($e, '2026-11-10')->status)->toBe('absent');
+    $unchanged = collect(cdSnapshot())->filter(fn ($r) => $r['employee_id'] === $other->id)->values()->all();
+    expect($unchanged)->toBe(collect($before)->filter(fn ($r) => $r['employee_id'] === $other->id)->values()->all())
+        ->and(cdRow($other, '2026-11-10')->getRawOriginal('shift_rules'))->toBe($closed->getRawOriginal('shift_rules'));
+});
+
+it('backfills a leaver set back to active and does not backfill a leaver without a last working day', function () {
+    Settings::set('attendance', ['start_date' => '2026-11-10']);
+    $gone = cdEmployee(['status' => 'inactive']);
+    foreach (range(1, 2) as $run) {
+        $this->artisan('hrm:attendance-close')->assertSuccessful();
+    }
+    expect(Attendance::query()->where('employee_id', $gone->id)->count())->toBe(0);
+
+    $gone->forceFill(['status' => 'active'])->save();
+    foreach (range(1, 2) as $run) {
+        $this->artisan('hrm:attendance-close')->assertSuccessful();
+    }
+    expect(Attendance::query()->where('employee_id', $gone->id)->count())->toBe(14); // 10th to 23rd
+});
+
+it('stays idle and writes nothing while the start date is unset, within a fixed query budget', function () {
+    Settings::set('attendance', ['start_date' => null]);
+    cdStaff(3);
+    cdCountedClose(); // warm-up: the settings are read once per process
+
+    $few = cdCountedClose();
+    cdStaff(40);
+    $many = cdCountedClose();
+
+    expect(Attendance::query()->count())->toBe(0)
+        ->and($many)->toBe($few)
+        ->and($few)->toBeLessThanOrEqual(7 * 6);
+});
+
+it('costs two extra queries when nothing older is missing', function () {
+    cdStaff(5);
+    Settings::set('attendance', ['start_date' => '2026-11-17']); // no backfill range at all
+    cdCountedClose();
+    $recentOnly = cdCountedClose();
+
+    Settings::set('attendance', ['start_date' => '2026-11-04']);
+    foreach (range(1, 2) as $run) {
+        $this->artisan('hrm:attendance-close')->assertSuccessful();
+    }
+    $rows = Attendance::query()->count();
+
+    expect(cdCountedClose())->toBe($recentOnly + 2)
+        ->and(Attendance::query()->count())->toBe($rows);
 });

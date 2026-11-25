@@ -146,7 +146,8 @@ class PunchIngestor
      *   - detach (the old ID): this employee's punches under the old ID, only on days whose attendance row is not closed
      *     (no row counts as not closed). Punches on closed days stay with the employee and those days are not flagged.
      *   - attach (the new ID): punches under the new ID that are unlinked (employee_id null) and dated on or after the
-     *     joining date. Punches linked to another employee are never taken.
+     *     joining date. Punches linked to another employee are never taken. Nothing is attached to a leaver without a
+     *     last working day (Leavers::withoutLastDay), as at ingestion.
      * Only the days actually changed are flagged for a rebuild, and never a manual day. Call inside the saving
      * transaction.
      */
@@ -163,8 +164,9 @@ class PunchIngestor
         $employeeId = (int) $employee->id;
         // employees.joining_date is NOT NULL, so there is always a lower bound.
         $joined = $employee->joining_date->format('Y-m-d');
+        $leftWithoutDate = Leavers::withoutLastDay($employee);
 
-        DB::transaction(function () use ($employeeId, $oldId, $newId, $joined): void {
+        DB::transaction(function () use ($employeeId, $oldId, $newId, $joined, $leftWithoutDate): void {
             $detached = [];
             $attached = [];
 
@@ -180,7 +182,8 @@ class PunchIngestor
                 $detach->update(['employee_id' => null]);
             }
 
-            if ($newId !== null) {
+            // A leaver without a last working day is given no punches (they stay unknown, as at ingestion).
+            if ($newId !== null && ! $leftWithoutDate) {
                 $attach = DevicePunch::query()
                     ->whereNull('employee_id')
                     ->where('device_user_id', $newId)
@@ -412,7 +415,10 @@ class PunchIngestor
         $map = [];
 
         foreach (array_chunk($pins, self::INSERT_CHUNK) as $chunk) {
-            $employees = Employee::query()->whereIn('device_user_id', $chunk)->sharedLock()->get(['id', 'device_user_id']);
+            // A leaver without a last working day is never linked: the punch stays unknown, so HR can give the ID to
+            // the person really using it (Raw Punches > Unknown IDs). Same rule as relink().
+            $employees = Leavers::exceptWithoutLastDay(Employee::query()->whereIn('device_user_id', $chunk))
+                ->sharedLock()->get(['id', 'device_user_id']);
 
             foreach ($employees as $employee) {
                 $map[(string) $employee->device_user_id] = $employee->id;

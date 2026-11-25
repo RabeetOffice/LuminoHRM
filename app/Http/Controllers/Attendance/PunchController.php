@@ -9,6 +9,7 @@ use App\Models\DevicePunch;
 use App\Models\Employee;
 use App\Models\User;
 use App\Support\Attendance\AttendanceClock;
+use App\Support\Attendance\Leavers;
 use App\Support\EmployeeAccess;
 use App\Support\EmployeeRoles;
 use App\Support\ListQuery;
@@ -150,7 +151,15 @@ class PunchController extends Controller
             throw ValidationException::withMessages(['device_user_id' => 'No unknown punches have this machine user ID.']);
         }
 
-        $holder = Employee::query()->where('device_user_id', $id)->first(['id', 'first_name', 'last_name']);
+        $holder = Employee::query()->where('device_user_id', $id)->first(['id', 'first_name', 'last_name', 'status', 'last_working_day']);
+
+        // A leaver without a last working day keeps the ID on their record, but their punches stay unknown: the ID has
+        // to be cleared on their form before it can be given to the person using it now.
+        if ($holder !== null && Leavers::withoutLastDay($holder)) {
+            throw ValidationException::withMessages([
+                'device_user_id' => "This machine user ID still belongs to {$holder->full_name}, who has left without a last working day. Clear it on their employee form first.",
+            ]);
+        }
 
         if ($holder !== null) {
             throw ValidationException::withMessages([

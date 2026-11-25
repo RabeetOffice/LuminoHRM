@@ -23,6 +23,7 @@ use Throwable;
  *   $rebuilder->rebuildPending();                      // rows marked needs_rebuild (by punch ingestion), oldest first
  *   $rebuilder->rebuildRange('2026-11-01', '2026-11-30', [$employee->id]);   // explicit, with the shift rules in force now
  *   $rebuilder->closeDay('2026-11-24');                // the nightly close for one past date
+ *   $rebuilder->daysWithMissingRows('2026-09-23', '2026-11-16');   // past days someone expected has no row (backfill)
  *
  * Rules kept here (the day rules themselves are in DayCalculator):
  *   - A manual row (is_manual) is never written, deleted or marked: not even its needs_rebuild flag is cleared. Pending
@@ -36,9 +37,11 @@ use Throwable;
  *     the start date. So moving the start date never deletes a day that has punches.
  *   - No row outside the employment window (before the joining date or after the last working day): a non-manual row
  *     there is deleted.
- *   - A day with no punches is recorded for an employee whose status is inactive, resigned or terminated only when a
- *     last working day is set (the date is then inside it); an existing row is kept up to date, a missing one is not
- *     created. Nor is such a row created for a date after today.
+ *   - A leaver without a last working day (Leavers::withoutLastDay: inactive, resigned or terminated with no last
+ *     working day): no automatic row is created or kept for any day on or after the current attendance day (one there
+ *     is deleted when rebuilt); before it, a day with no punches is never created, an existing row is kept up to date,
+ *     and closed history is left alone. Ingestion and relink do not link new punches to them. No punch-less row is
+ *     created for a date after today for anyone.
  *   - The shift rules: every decided row stores the rules it was decided with in shift_rules (a JSON snapshot of the
  *     shift's start, end, grace, half-day hours and weekly offs, plus the overtime minimum, the double-tap window and
  *     the employee's attendance-exempt flag at the time). A row that is already closed is decided again with that
@@ -63,9 +66,6 @@ use Throwable;
  */
 class AttendanceRebuilder
 {
-    /** Employee statuses for which no new no-punch day is created unless a last working day is set. */
-    private const LEAVING_STATUSES = ['inactive', 'resigned', 'terminated'];
-
     /** Default of settings('attendance.duplicate_punch_minutes') when the stored value is unusable. */
     private const DEFAULT_DUPLICATE_MINUTES = 5;
 
@@ -176,9 +176,9 @@ class AttendanceRebuilder
         $start = $this->startDate();
         $createMissing = $start !== null && $date >= $start;
 
-        $employees = ! $createMissing ? null : Employee::query()->with('shift')
+        $employees = ! $createMissing ? null : Leavers::exceptWithoutLastDay(Employee::query()->with('shift')
             ->where('joining_date', '<', $this->nextDay($date))
-            ->where(fn ($q) => $q->whereNull('last_working_day')->orWhere('last_working_day', '>=', $date))
+            ->where(fn ($q) => $q->whereNull('last_working_day')->orWhere('last_working_day', '>=', $date)))
             ->get()
             ->keyBy('id');
 
@@ -229,6 +229,81 @@ class AttendanceRebuilder
         $this->rebuildPending();
 
         return $written;
+    }
+
+    /**
+     * The past days from $from to $to (inclusive, "Y-m-d", oldest first) on which someone who should have a record has
+     * none: the days the close still has to create rows for (CloseAttendanceDay's backfill). Expected on a day =
+     * employed that day (joined, not past the last working day) and not a leaver without a last working day; every such
+     * person gets a row on every day once attendance has started (absent, weekend, holiday, exempt present, or a
+     * decided punch day). Two queries whatever the range or the number of people: the candidates, and one grouped count
+     * of the rows inside each person's window per date. Nothing before the attendance start date is ever missing, and
+     * nothing at all while it is unset (no query then).
+     *
+     * @return list<string>
+     */
+    public function daysWithMissingRows(string $from, string $to): array
+    {
+        $from = $this->date($from);
+        $to = $this->date($to);
+        $start = $this->startDate();
+
+        if ($start === null) {
+            return [];
+        }
+
+        $from = max($from, $start);
+        $to = min($to, $this->previousDay($this->clock->attendanceToday()));
+
+        if ($from > $to) {
+            return [];
+        }
+
+        // Query 1: who is expected at some point in the range (their window is clipped per day below).
+        $people = Leavers::exceptWithoutLastDay(Employee::query()->toBase()
+            ->where('joining_date', '<', $this->nextDay($to))
+            ->where(fn ($q) => $q->whereNull('last_working_day')->orWhere('last_working_day', '>=', $from)))
+            ->get(['id', 'joining_date', 'last_working_day']);
+
+        if ($people->isEmpty()) {
+            return [];
+        }
+
+        $expected = [];
+        foreach ($people as $person) {
+            $first = max($from, substr((string) $person->joining_date, 0, 10));
+            $last = $person->last_working_day !== null ? min($to, substr((string) $person->last_working_day, 0, 10)) : $to;
+
+            for ($day = $first; $day <= $last; $day = $this->nextDay($day)) {
+                $expected[$day] = ($expected[$day] ?? 0) + 1;
+            }
+        }
+
+        // Query 2: per date, the rows of people inside their window that day. Dates are compared as "Y-m-d" text (the
+        // first 10 characters), which works on every driver whatever a date column stores after it.
+        $present = Leavers::exceptWithoutLastDay(DB::table('attendances as a')
+            ->join('employees as e', 'e.id', '=', 'a.employee_id')
+            ->where('a.date', '>=', $from)
+            ->where('a.date', '<', $this->nextDay($to))
+            ->whereRaw('substr(a.date, 1, 10) >= substr(e.joining_date, 1, 10)')
+            ->where(fn ($q) => $q->whereNull('e.last_working_day')
+                ->orWhereRaw('substr(a.date, 1, 10) <= substr(e.last_working_day, 1, 10)')), 'e')
+            ->groupBy('a.date')
+            ->selectRaw('a.date as day, COUNT(*) as aggregate')
+            ->get()
+            ->mapWithKeys(fn (object $row) => [substr((string) $row->day, 0, 10) => (int) $row->aggregate])
+            ->all();
+
+        $days = [];
+        foreach ($expected as $day => $count) {
+            if (($present[$day] ?? 0) < $count) {
+                $days[] = $day;
+            }
+        }
+
+        sort($days);
+
+        return $days;
     }
 
     /**
@@ -330,8 +405,11 @@ class AttendanceRebuilder
      * Decides a day from times a person entered (a manual correction) rather than from punches: the entered values are
      * deliberate and taken literally, so neither machine-tap rule applies: no double-tap window (duplicatePunchMinutes
      * 0) and no "two punches less than an hour apart are one punch" rule (closePairRule false), so 09:00-09:40 is 40
-     * minutes worked (a half day once decided with closed-day rules). $closed true applies the closed-day rules (half
-     * day, early minutes, single-time flag). Used by ApplyManualCorrection and by the nightly close (finaliseManual).
+     * minutes worked (a half day once decided with closed-day rules). A single entered time keeps its role (DayInput::
+     * singleRole): a clock-in alone is the clock-in (late rule, flagged once closed), a clock-out alone the clock-out
+     * (never late), never re-decided by the shift midpoint. $closed true applies the closed-day rules (half day, early
+     * minutes, single-time flag). Used by ApplyManualCorrection, by correction-request approval (through it) and by the
+     * nightly close (finaliseManual).
      *
      * @param  array{start_time: string, end_time: string, grace_minutes: int, half_day_hours: float, weekly_offs: list<string>, overtime_min_minutes: int, attendance_exempt: bool}  $rules  from rulesFor()
      * @param  string|null  $clockIn  naive "Y-m-d H:i:s"
@@ -358,6 +436,13 @@ class AttendanceRebuilder
             duplicatePunchMinutes: 0, // entered times are deliberate, never a double tap
             dayCutoff: $this->clock->dayCutoff(),
             closePairRule: false, // nor a close pair: a short day entered by hand is a short day
+            // One time entered alone is what the person said it was: a clock-in stays the clock-in (late rule), a
+            // clock-out stays the clock-out (never late), whatever the shift midpoint.
+            singleRole: match (true) {
+                $clockIn !== null && $clockOut === null => 'in',
+                $clockIn === null && $clockOut !== null => 'out',
+                default => null,
+            },
         ));
     }
 
@@ -483,7 +568,10 @@ class AttendanceRebuilder
                 try {
                     $dayPunches = $punches[$key] ?? [];
 
-                    if (! $this->employedOn($employee, $date)) {
+                    // Outside the employment window; or a leaver without a last working day on or after the current
+                    // attendance day (no date says when they stopped, so they are treated as gone from now on; their
+                    // earlier days, closed history included, are left alone).
+                    if (! $this->employedOn($employee, $date) || ($date >= $today && $this->leftWithoutDate($employee))) {
                         if ($row !== null) {
                             $deletes[] = $row->id;
                         }
@@ -740,17 +828,7 @@ class AttendanceRebuilder
     /** settings('attendance.start_date') as "Y-m-d", or null (attendance not started / unusable value). */
     private function startDate(): ?string
     {
-        $value = settings('attendance.start_date');
-
-        if (! is_string($value) || $value === '') {
-            return null;
-        }
-
-        try {
-            return $this->date($value);
-        } catch (InvalidArgumentException) {
-            return null;
-        }
+        return AttendanceClock::startDate();
     }
 
     private function duplicateMinutes(): int
@@ -786,7 +864,7 @@ class AttendanceRebuilder
 
     private function leftWithoutDate(Employee $employee): bool
     {
-        return in_array($employee->status, self::LEAVING_STATUSES, true) && $employee->last_working_day === null;
+        return Leavers::withoutLastDay($employee);
     }
 
     private function rawDate(Attendance $row): string
@@ -803,6 +881,11 @@ class AttendanceRebuilder
         }
 
         return $parsed->format('Y-m-d');
+    }
+
+    private function previousDay(string $date): string
+    {
+        return (new \DateTimeImmutable($date.' 00:00:00', new \DateTimeZone('UTC')))->modify('-1 day')->format('Y-m-d');
     }
 
     private function nextDay(string $date): string

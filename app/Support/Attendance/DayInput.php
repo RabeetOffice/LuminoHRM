@@ -26,6 +26,10 @@ namespace App\Support\Attendance;
  *   closePairRule         true for machine punches: exactly two kept punches less than 60 minutes apart on a working
  *                         day are a single punch (a slow double tap or a forgotten punch). False for times a person
  *                         entered (a manual correction), which are taken literally: 09:00-09:40 is 40 minutes worked
+ *   singleRole            null for machine punches (one kept punch is a clock-in before the shift midpoint, a clock-out
+ *                         at or after it). 'in' or 'out' when a person entered exactly one time and said which it is:
+ *                         that one kept punch is then always the clock-in ('in': the late rule applies) or always the
+ *                         clock-out ('out': never late), whatever the midpoint. Ignored with two or more kept punches
  */
 final readonly class DayInput
 {
@@ -49,5 +53,6 @@ final readonly class DayInput
         public int $duplicatePunchMinutes = 0,
         public string $dayCutoff = '00:00',
         public bool $closePairRule = true,
+        public ?string $singleRole = null,
     ) {}
 }

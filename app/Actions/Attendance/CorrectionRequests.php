@@ -8,6 +8,7 @@ use App\Models\Attendance;
 use App\Models\AttendanceCorrection;
 use App\Models\Employee;
 use App\Models\User;
+use App\Support\Attendance\AttendanceRebuilder;
 use App\Support\Attendance\CorrectionEligibility;
 use App\Support\Attendance\CorrectionRouting;
 use App\Support\Audit\Audit;
@@ -33,6 +34,7 @@ class CorrectionRequests
         private readonly CorrectionEligibility $eligibility,
         private readonly CorrectionRouting $routing,
         private readonly ApplyManualCorrection $apply,
+        private readonly AttendanceRebuilder $rebuilder,
     ) {}
 
     /**
@@ -188,6 +190,21 @@ class CorrectionRequests
 
             if ($approve) {
                 $row = Attendance::query()->where('employee_id', $locked->employee_id)->onDate($date)->lockForUpdate()->first();
+
+                // A day still pending calculation (status null: punches stored, times not worked out yet) is worked out
+                // first, inside this transaction (the rebuild nests as a savepoint and takes the same row lock), so
+                // an empty requested side is resolved against the real recorded times, never against null.
+                if ($row !== null && ! $row->is_manual && $row->status === null) {
+                    try {
+                        $this->rebuilder->rebuild($locked->employee, $date);
+                    } catch (Throwable) {
+                        throw ValidationException::withMessages([
+                            'decision' => 'This day is still being calculated. Try again in a minute.',
+                        ]);
+                    }
+
+                    $row = Attendance::query()->where('employee_id', $locked->employee_id)->onDate($date)->lockForUpdate()->first();
+                }
 
                 // A request can only be made for a day that was not corrected by hand, so a manual day now means HR
                 // corrected it after the request: never overwrite that silently.

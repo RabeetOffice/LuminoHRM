@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\AttendanceRebuilder;
 use App\Support\Attendance\DayResult;
+use App\Support\Attendance\Leavers;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeRoles;
 use DateTimeImmutable;
@@ -55,9 +56,6 @@ class ApplyManualCorrection
 {
     /** The statuses a person may set by hand: every status except on_leave (only the Leave phase produces that). */
     public const OVERRIDE_STATUSES = ['present', 'late', 'half_day', 'absent', 'holiday', 'weekend'];
-
-    /** Employee statuses that cannot be corrected unless a last working day is set. */
-    private const LEAVING_STATUSES = ['inactive', 'resigned', 'terminated'];
 
     /** The columns an audit entry compares. */
     private const AUDITED = [
@@ -155,9 +153,9 @@ class ApplyManualCorrection
     {
         $from = $employee->joining_date->format('Y-m-d');
         $last = $employee->last_working_day?->format('Y-m-d');
-        $start = $this->startDate();
+        $start = AttendanceClock::startDate();
 
-        if (in_array($employee->status, self::LEAVING_STATUSES, true) && $last === null) {
+        if (Leavers::withoutLastDay($employee)) {
             return "{$employee->full_name} has left and has no last working day, so their attendance cannot be corrected.";
         }
 
@@ -251,8 +249,8 @@ class ApplyManualCorrection
 
         $row->fill([
             ...$values,
-            // The entered times are stored as entered: the calculator decides which one is the clock-in when only one
-            // is given, but a person said which it was.
+            // The entered times are stored as entered, and a single one keeps the role it was entered as (also in the
+            // calculation: decideEntered passes it as DayInput::singleRole).
             'clock_in' => $status === 'absent' ? null : $in,
             'clock_out' => $status === 'absent' ? null : $out,
             'shift_id' => $rules['shift_id'] ?? $row->shift_id,
@@ -365,20 +363,6 @@ class ApplyManualCorrection
         }
 
         return [$in, $out];
-    }
-
-    /** settings('attendance.start_date') as "Y-m-d", or null when unset or unusable. */
-    private function startDate(): ?string
-    {
-        $value = settings('attendance.start_date');
-
-        if (! is_string($value) || $value === '') {
-            return null;
-        }
-
-        $parsed = DateTimeImmutable::createFromFormat('!Y-m-d', trim($value));
-
-        return $parsed !== false && $parsed->format('Y-m-d') === trim($value) ? $parsed->format('Y-m-d') : null;
     }
 
     private function minutesBetween(string $from, string $to): int

@@ -255,3 +255,28 @@ it('never reads the clock or the database', function () {
 
     expect($source)->not->toMatch('/\b(now|today|Date::|Carbon|DB::|settings\(|AttendanceClock|Model|time\(\))/');
 });
+
+it('takes a single entered time in the role it was entered as, whatever the midpoint', function (array $times, array $overrides, array $expected) {
+    $result = (new DayCalculator)->calculate(dcInput($times, ['duplicatePunchMinutes' => 0, 'closePairRule' => false, ...$overrides]));
+
+    expect(dcRow($result))->toBe($expected);
+})->with([
+    'clock-in 14:00 only is a late clock-in (closed)' => [['14:00'], ['singleRole' => 'in'], ['late', '14:00:00', null, 0, 300, 0, 0, true]],
+    'clock-in 14:00 only, open day: late, not flagged yet' => [['14:00'], ['singleRole' => 'in', 'closed' => false], ['late', '14:00:00', null, 0, 300, 0, 0, false]],
+    'clock-in 09:05 only is on time' => [['09:05'], ['singleRole' => 'in'], ['present', '09:05:00', null, 0, 0, 0, 0, true]],
+    'clock-out 12:00 only is never late' => [['12:00'], ['singleRole' => 'out'], ['present', null, '12:00:00', 0, 0, 0, 0, true]],
+    'clock-out 08:30 only is never late' => [['08:30'], ['singleRole' => 'out'], ['present', null, '08:30:00', 0, 0, 0, 0, true]],
+    'clock-in on a weekend is recorded as the clock-in, not flagged' => [['14:00'], ['singleRole' => 'in', 'date' => DC_SATURDAY], ['weekend', '14:00:00', null, 0, 0, 0, 0, false]],
+    'clock-out on a weekend is recorded as the clock-out' => [['10:00'], ['singleRole' => 'out', 'date' => DC_SATURDAY], ['weekend', null, '10:00:00', 0, 0, 0, 0, false]],
+    'without a role a machine punch keeps the midpoint rule' => [['14:00'], [], ['present', null, '14:00:00', 0, 0, 0, 0, true]],
+]);
+
+it('ignores the single role when there are two times', function () {
+    $result = (new DayCalculator)->calculate(dcInput(['09:00', '18:00'], ['singleRole' => 'in']));
+
+    expect(dcRow($result))->toBe(['present', '09:00:00', '18:00:00', 540, 0, 0, 0, false]);
+});
+
+it('rejects an unknown single role', function () {
+    (new DayCalculator)->calculate(dcInput(['14:00'], ['singleRole' => 'middle']));
+})->throws(InvalidArgumentException::class);

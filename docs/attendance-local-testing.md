@@ -86,6 +86,12 @@ C:\php84\php.exe artisan hrm:attendance-close 2026-11-23
 Without a date it closes the previous 7 days. People without punches on a working day are now Absent, weekly offs
 show as Weekend, holidays as Holiday, and single punches are flagged for attention.
 
+Without a date it then also backfills older days that still miss records (up to 62 days back, never before the
+attendance start date): for example after setting the start date to a date weeks ago, moving a joining date earlier,
+or setting a leaver back to active. It does at most 10 such days per run and says `attendance_backfill remaining=N`
+when more are left; run it again (on a server the hourly run continues by itself). Days already closed are never
+re-decided by it. While the start date is empty it does nothing.
+
 ## Example: a week
 
 ```
