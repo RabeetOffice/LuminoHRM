@@ -92,7 +92,10 @@ describe('ready flag', () => {
             'Attendance',
             'Leave',
         ]);
-        expect(r[1].items[3].children?.map((c) => c.title)).toEqual(['Shifts']);
+        expect(r[1].items[3].children?.map((c) => c.title)).toEqual([
+            'Daily',
+            'Shifts',
+        ]);
         expect(r[1].items[4].children?.map((c) => c.title)).toEqual([
             'Holidays',
         ]);
@@ -447,5 +450,22 @@ describe('shifts and holidays', () => {
         );
         expect(child(r, 'Attendance', 'Shifts')).toBeUndefined();
         expect(child(r, 'Leave', 'Holidays')).toBeUndefined();
+    });
+});
+
+describe('daily attendance', () => {
+    test('is ready for anyone who may see team or all attendance', () => {
+        for (const permission of [
+            'attendance.view-all',
+            'attendance.view-team',
+        ]) {
+            const entry = filterNavigation(navigation, [permission])
+                .flatMap((g) => g.items)
+                .find((i) => i.title === 'Attendance')
+                ?.children?.find((c) => c.title === 'Daily');
+
+            expect(entry?.soon).toBe(false);
+            expect(toUrl(entry?.href ?? '')).toBe('/attendance/daily');
+        }
     });
 });

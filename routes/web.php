@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Attendance\DailyController;
 use App\Http\Controllers\Attendance\ShiftController;
 use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\BrandingMediaController;
@@ -99,6 +100,16 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // Organization chart. The controller checks view-all OR view-team (a plain Employee gets 403); the people come
     // only from EmployeeAccess::scope.
     Route::get('organization-chart', [OrganizationChartController::class, 'index'])->name('organization-chart.index');
+
+    // Attendance > Daily. The list: view-all or view-team (checked in the controller), scoped by EmployeeAccess. Manual
+    // correction and its removal: attendance.edit, and the controller checks the scope and the date (403).
+    Route::get('attendance/daily', [DailyController::class, 'index'])->name('attendance.daily');
+    Route::middleware('can:attendance.edit')->prefix('attendance/daily')->name('attendance.daily.')->group(function () {
+        Route::put('{employee}/{date}', [DailyController::class, 'update'])
+            ->whereNumber('employee')->where('date', '\d{4}-\d{2}-\d{2}')->name('update');
+        Route::delete('{employee}/{date}', [DailyController::class, 'reset'])
+            ->whereNumber('employee')->where('date', '\d{4}-\d{2}-\d{2}')->name('reset');
+    });
 
     // Attendance > Shifts (Admin, HR). The default shift is changed only through make-default.
     Route::middleware('can:attendance.edit')->prefix('attendance/shifts')->name('attendance.shifts.')->group(function () {

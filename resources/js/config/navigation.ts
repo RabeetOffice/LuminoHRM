@@ -24,6 +24,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { toUrl } from '@/lib/utils';
 import { dashboard } from '@/routes';
+import { daily } from '@/routes/attendance';
 import { index as shiftsIndex } from '@/routes/attendance/shifts';
 import { index as auditLogIndex } from '@/routes/audit-log';
 import { index as holidaysIndex } from '@/routes/holidays';
@@ -108,7 +109,7 @@ export const navigation: NavGroup[] = [
                 icon: Clock,
                 permission: ['attendance.view-all', 'attendance.view-team'],
                 children: [
-                    { title: 'Daily', href: '/attendance/daily', ...unready },
+                    { title: 'Daily', href: daily() },
                     {
                         title: 'Monthly',
                         href: '/attendance/monthly',
