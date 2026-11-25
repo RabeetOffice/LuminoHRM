@@ -133,6 +133,11 @@ function ApplyForm({
         attachment: null,
     });
     const { data, errors } = form;
+    // "days" (a short balance) is a server key that is not a field of the form.
+    const formError =
+        (errors as Partial<Record<string, string>>).days ??
+        errors.employee_id ??
+        errors.half;
     const halfDay = data.half !== null;
     const to = halfDay ? data.from_date : data.to_date;
     const preview = usePreview({
@@ -176,15 +181,17 @@ function ApplyForm({
             <DialogHeader>
                 <DialogTitle>Apply for leave</DialogTitle>
                 <DialogDescription>
-                    {employeeName
-                        ? `On behalf of ${employeeName}. `
-                        : ''}
+                    {employeeName ? `On behalf of ${employeeName}. ` : ''}
                     Weekly offs and holidays are not counted. The request is
                     reviewed before it is approved.
                 </DialogDescription>
             </DialogHeader>
 
-            <Field id="leave-type" label="Leave type" error={errors.leave_type_id}>
+            <Field
+                id="leave-type"
+                label="Leave type"
+                error={errors.leave_type_id}
+            >
                 <Select
                     value={data.leave_type_id}
                     onValueChange={(value) =>
@@ -223,7 +230,11 @@ function ApplyForm({
 
             {halfDay ? (
                 <div className="grid gap-5 sm:grid-cols-2">
-                    <Field id="leave-date" label="Date" error={errors.from_date}>
+                    <Field
+                        id="leave-date"
+                        label="Date"
+                        error={errors.from_date}
+                    >
                         <Input
                             {...fieldAria('leave-date', errors.from_date)}
                             type="date"
@@ -258,7 +269,11 @@ function ApplyForm({
                 </div>
             ) : (
                 <div className="grid gap-5 sm:grid-cols-2">
-                    <Field id="leave-from" label="From" error={errors.from_date}>
+                    <Field
+                        id="leave-from"
+                        label="From"
+                        error={errors.from_date}
+                    >
                         <Input
                             {...fieldAria('leave-from', errors.from_date)}
                             type="date"
@@ -324,9 +339,9 @@ function ApplyForm({
                 />
             </Field>
 
-            {(errors.days || errors.employee_id || errors.half) && (
+            {formError && (
                 <p role="alert" className="text-sm text-destructive">
-                    {errors.days ?? errors.employee_id ?? errors.half}
+                    {formError}
                 </p>
             )}
 

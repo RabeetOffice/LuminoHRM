@@ -41,6 +41,18 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // My Attendance: the signed-in person's own month (no person in the URL; an empty state when not linked).
     Route::get('my/attendance', [\App\Http\Controllers\Attendance\MyAttendanceController::class, 'show'])->name('my.attendance');
 
+    // My Leaves: the signed-in person's own balances and requests (no person in the URL; an empty state when not linked).
+    Route::get('my/leaves', [\App\Http\Controllers\Leave\MyLeaveController::class, 'show'])->name('my.leaves');
+
+    // Applying for leave (own record, or on behalf by HR / Admin), its live preview, the attachment and cancelling while
+    // open: any signed-in user; LeaveApplicationController / ApplyForLeave check the rights (out of reach = 403).
+    Route::prefix('leave/requests')->name('leave.requests.')->controller(\App\Http\Controllers\Leave\LeaveApplicationController::class)->group(function () {
+        Route::post('/', 'store')->middleware('throttle:30,1,leave-apply')->name('store');
+        Route::get('preview', 'preview')->middleware('throttle:60,1,leave-preview')->name('preview');
+        Route::get('{leaveRequest}/attachment', 'attachment')->whereNumber('leaveRequest')->name('attachment');
+        Route::post('{leaveRequest}/cancel', 'cancel')->whereNumber('leaveRequest')->name('cancel');
+    });
+
     // Overview > Calendar: holidays, approved leave (scoped by LeaveRouting) and birthdays, for every signed-in user.
     Route::get('calendar', [\App\Http\Controllers\Leave\CalendarController::class, 'index'])->name('calendar');
 

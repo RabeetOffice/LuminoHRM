@@ -250,3 +250,170 @@ export function dayHasEvents(day: CalendarDay): boolean {
 export function calendarAgenda(days: CalendarDay[]): CalendarDay[] {
     return days.filter(dayHasEvents);
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Applying and My Leaves (Task 5)
+// ---------------------------------------------------------------------------------------------------------------------
+
+export type LeaveStatus =
+    | 'pending'
+    | 'manager_approved'
+    | 'approved'
+    | 'rejected'
+    | 'cancelled';
+
+export type LeaveHalf = 'am' | 'pm';
+
+/** Whole half days, so 0.1 + 0.2 style drift never reaches a label. */
+const toHalves = (days: number) => Math.round(days * 2);
+
+/** A day amount with at most one decimal: 14 → "14", 9.5 → "9.5", -1.5 → "-1.5". */
+export function formatDayAmount(days: number): string {
+    const halves = toHalves(days);
+
+    return halves % 2 === 0 ? String(halves / 2) : (halves / 2).toFixed(1);
+}
+
+/** "1 day", "0.5 day", "2.5 days", "0 days". */
+export function formatLeaveDays(days: number): string {
+    const halves = toHalves(days);
+    const unit = halves === 1 || halves === 2 ? 'day' : 'days';
+
+    return `${formatDayAmount(days)} ${unit}`;
+}
+
+/** "Left after this: 6.5 days". */
+export function leftAfterLabel(available: number, asked: number): string {
+    return `Left after this: ${formatLeaveDays((toHalves(available) - toHalves(asked)) / 2)}`;
+}
+
+const MONTHS = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+] as const;
+
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+/** The parts of a "Y-m-d" string, or null when it is not one. */
+function dateParts(date: string): { y: number; m: number; d: number } | null {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+
+    if (!match) {
+        return null;
+    }
+
+    const [y, m, d] = [Number(match[1]), Number(match[2]), Number(match[3])];
+
+    return m >= 1 && m <= 12 && d >= 1 && d <= 31 ? { y, m, d } : null;
+}
+
+/** 0 = Sunday ... 6 = Saturday, by arithmetic (Sakamoto), never through Date. */
+export function weekdayOf(date: string): number | null {
+    const parts = dateParts(date);
+
+    if (!parts) {
+        return null;
+    }
+
+    const offsets = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    const y = parts.m < 3 ? parts.y - 1 : parts.y;
+
+    return (
+        (y +
+            Math.floor(y / 4) -
+            Math.floor(y / 100) +
+            Math.floor(y / 400) +
+            offsets[parts.m - 1] +
+            parts.d) %
+        7
+    );
+}
+
+/** "2026-12-01" → "Tue 1 Dec 2026"; anything else is returned as it came. */
+export function leaveDateLabel(date: string): string {
+    const parts = dateParts(date);
+    const weekday = weekdayOf(date);
+
+    if (!parts || weekday === null) {
+        return date;
+    }
+
+    return `${WEEKDAYS[weekday]} ${parts.d} ${MONTHS[parts.m - 1]} ${parts.y}`;
+}
+
+/**
+ * The dates of a request: "Tue 1 Dec 2026 – Thu 3 Dec 2026", "Tue 1 Dec 2026" for one full day, or
+ * "Tue 1 Dec 2026, first half" for a half day.
+ */
+export function leaveRangeLabel(
+    from: string,
+    to: string,
+    half: LeaveHalf | null,
+): string {
+    if (half) {
+        return `${leaveDateLabel(from)}, ${half === 'am' ? 'first half' : 'second half'}`;
+    }
+
+    return from === to
+        ? leaveDateLabel(from)
+        : `${leaveDateLabel(from)} – ${leaveDateLabel(to)}`;
+}
+
+/** The word for a request's status. */
+export function leaveStatusLabel(status: LeaveStatus): string {
+    switch (status) {
+        case 'pending':
+        case 'manager_approved':
+            return 'Pending';
+        case 'approved':
+            return 'Approved';
+        case 'rejected':
+            return 'Rejected';
+        case 'cancelled':
+            return 'Cancelled';
+    }
+}
+
+/** The StatusPill tone of a status: amber open, green approved, red rejected, grey cancelled. */
+export function leaveStatusTone(
+    status: LeaveStatus,
+): 'amber' | 'green' | 'red' | 'grey' {
+    switch (status) {
+        case 'pending':
+        case 'manager_approved':
+            return 'amber';
+        case 'approved':
+            return 'green';
+        case 'rejected':
+            return 'red';
+        case 'cancelled':
+            return 'grey';
+    }
+}
+
+/**
+ * Who an open request waits for: "Waiting for Ahmed" (the manager's first name) at the manager step, "Waiting for HR"
+ * at the final step, null once decided.
+ */
+export function leaveStageLabel(
+    stage: 'manager' | 'final' | null,
+    managerFirstName: string | null,
+): string | null {
+    if (stage === 'manager') {
+        return managerFirstName
+            ? `Waiting for ${managerFirstName}`
+            : 'Waiting for the manager';
+    }
+
+    return stage === 'final' ? 'Waiting for HR' : null;
+}

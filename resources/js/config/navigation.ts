@@ -31,7 +31,7 @@ import { index as auditLogIndex } from '@/routes/audit-log';
 import { index as holidaysIndex } from '@/routes/holidays';
 import { index as hrmSettingsIndex } from '@/routes/hrm-settings';
 import { index as leaveTypesIndex } from '@/routes/leave/types';
-import { attendance as myAttendance } from '@/routes/my';
+import { attendance as myAttendance, leaves as myLeaves } from '@/routes/my';
 import { index as organizationIndex } from '@/routes/organization';
 import { index as usersIndex } from '@/routes/users';
 
@@ -265,9 +265,8 @@ export const navigation: NavGroup[] = [
             },
             {
                 title: 'My Leaves',
-                href: '/my/leaves',
+                href: myLeaves(),
                 icon: CalendarRange,
-                ...unready,
             },
             {
                 title: 'My Payslips',

@@ -114,6 +114,7 @@ describe('ready flag', () => {
         expect(r[3].items.map((i) => i.title)).toEqual([
             'My Profile',
             'My Attendance',
+            'My Leaves',
         ]);
     });
 
@@ -311,7 +312,7 @@ describe('soon entries (default)', () => {
             false,
             false,
             false,
-            true,
+            false,
             true,
             true,
             true,
@@ -433,6 +434,7 @@ describe('soon entries (default)', () => {
             'Audit Log',
             'My Profile',
             'My Attendance',
+            'My Leaves',
         ]);
     });
 });
@@ -556,5 +558,16 @@ describe('my attendance', () => {
 
         expect(entry?.soon).toBe(false);
         expect(toUrl(entry?.href ?? '')).toBe('/my/attendance');
+    });
+});
+
+describe('my leaves', () => {
+    test('is ready for everyone, with no permission needed', () => {
+        const entry = filterNavigation(navigation, [])
+            .flatMap((g) => g.items)
+            .find((i) => i.title === 'My Leaves');
+
+        expect(entry?.soon).toBe(false);
+        expect(toUrl(entry?.href ?? '')).toBe('/my/leaves');
     });
 });
