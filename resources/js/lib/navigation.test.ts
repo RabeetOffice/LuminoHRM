@@ -84,7 +84,10 @@ describe('ready flag', () => {
             'System',
             'My Space',
         ]);
-        expect(r[0].items.map((i) => i.title)).toEqual(['Dashboard']);
+        expect(r[0].items.map((i) => i.title)).toEqual([
+            'Dashboard',
+            'Calendar',
+        ]);
         expect(r[1].items.map((i) => i.title)).toEqual([
             'Employees',
             'Organization Chart',
@@ -247,10 +250,18 @@ describe('soon entries (default)', () => {
 
     test('an unready entry the user may see comes back flagged soon', () => {
         const r = filterNavigation(navigation, ['employees.view-all']);
-        const calendar = r
+        const payslips = r
+            .flatMap((g) => g.items)
+            .find((i) => i.title === 'My Payslips');
+        expect(payslips?.soon).toBe(true);
+    });
+
+    test('the Calendar is ready for every signed-in user', () => {
+        const calendar = filterNavigation(navigation, [])
             .flatMap((g) => g.items)
             .find((i) => i.title === 'Calendar');
-        expect(calendar?.soon).toBe(true);
+        expect(calendar?.soon).toBe(false);
+        expect(toUrl(calendar?.href ?? '')).toBe('/calendar');
     });
 
     test('the Organization Chart is ready for anyone who may see employees', () => {
@@ -297,7 +308,7 @@ describe('soon entries (default)', () => {
         const soon = r.flatMap((g) => g.items).map((i) => i.soon);
         expect(soon).toEqual([
             false,
-            true,
+            false,
             false,
             false,
             true,
@@ -376,8 +387,8 @@ describe('soon entries (default)', () => {
     });
 
     test('search matches a soon entry by title', () => {
-        const r = filterNavigation(navigation, [], 'calendar');
-        expect(titlesOf(r)).toEqual([['Overview', ['Calendar']]]);
+        const r = filterNavigation(navigation, [], 'payslips');
+        expect(titlesOf(r)).toEqual([['My Space', ['My Payslips']]]);
         expect(r[0].items[0].soon).toBe(true);
     });
 
@@ -406,13 +417,14 @@ describe('soon entries (default)', () => {
         expect(entry?.permission).toBeUndefined();
     });
 
-    test('the ready entries today are exactly the nine built pages', () => {
+    test('the ready entries today are exactly the ten built pages', () => {
         const ready = navigation
             .flatMap((g) => g.items)
             .filter((i) => i.children === undefined && i.ready !== false)
             .map((i) => i.title);
         expect(ready).toEqual([
             'Dashboard',
+            'Calendar',
             'Employees',
             'Organization Chart',
             'Departments & Designations',

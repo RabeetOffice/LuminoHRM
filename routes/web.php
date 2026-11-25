@@ -41,6 +41,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // My Attendance: the signed-in person's own month (no person in the URL; an empty state when not linked).
     Route::get('my/attendance', [\App\Http\Controllers\Attendance\MyAttendanceController::class, 'show'])->name('my.attendance');
 
+    // Overview > Calendar: holidays, approved leave (scoped by LeaveRouting) and birthdays, for every signed-in user.
+    Route::get('calendar', [\App\Http\Controllers\Leave\CalendarController::class, 'index'])->name('calendar');
+
     // Departments & Designations. Authorisation is enforced here, on the server.
     Route::middleware('can:org.manage')->prefix('organization')->group(function () {
         Route::get('/', [DepartmentController::class, 'index'])->name('organization.index');

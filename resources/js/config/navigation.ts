@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { toUrl } from '@/lib/utils';
-import { dashboard } from '@/routes';
+import { calendar, dashboard } from '@/routes';
 import { daily, monthly, punches } from '@/routes/attendance';
 import { index as correctionsIndex } from '@/routes/attendance/corrections';
 import { index as shiftsIndex } from '@/routes/attendance/shifts';
@@ -78,12 +78,8 @@ export const navigation: NavGroup[] = [
         label: 'Overview',
         items: [
             { title: 'Dashboard', href: dashboard(), icon: LayoutGrid },
-            {
-                title: 'Calendar',
-                href: '/calendar',
-                icon: CalendarDays,
-                ...unready,
-            },
+            // Holidays, approved leave (as far as the viewer may see it) and birthdays: every signed-in user.
+            { title: 'Calendar', href: calendar(), icon: CalendarDays },
         ],
     },
     {
