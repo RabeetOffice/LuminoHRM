@@ -2,6 +2,8 @@
 
 namespace App\Support\Leave;
 
+use JsonSerializable;
+
 /**
  * One employee's balance for one leave type and year, as LeaveBalances computes it. Never stored.
  *
@@ -12,7 +14,7 @@ namespace App\Support\Leave;
  * For an unpaid type only used and pending mean anything: allocated, carried, adjustment, openingUsed and remaining
  * are 0, available is INF (never limited; never shown) and overdrawn is false. Every figure is a multiple of 0.5.
  */
-final readonly class BalanceLine
+final readonly class BalanceLine implements JsonSerializable
 {
     public function __construct(
         public int $typeId,
@@ -73,6 +75,16 @@ final readonly class BalanceLine
                 ? self::format($this->remaining).' of '.self::format($this->entitlement())
                 : self::format($this->used).' used',
         ];
+    }
+
+    /**
+     * json_encode() / Inertia props use toArray(): the raw object holds INF for an unpaid type, which JSON refuses.
+     *
+     * @return array<string, mixed>
+     */
+    public function jsonSerialize(): array
+    {
+        return $this->toArray();
     }
 
     /** A day amount with at most one decimal: 14 → "14", 9.5 → "9.5", -1.5 → "-1.5". */

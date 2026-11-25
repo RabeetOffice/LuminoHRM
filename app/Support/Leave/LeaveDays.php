@@ -43,9 +43,10 @@ final class LeaveDays
      * Counts a request's days. Pure: everything comes in as arguments.
      *
      * Rules, in this order: $to before $from → refusal REFUSAL_END_BEFORE_START; a half day ($half "am"/"pm") needs
-     * $from = $to, else REFUSAL_HALF_DAY_RANGE; any date outside the window → refusal LeavePlan::OUTSIDE_EMPLOYMENT
-     * (a key: the caller words it with the person's name); dates that are weekly offs or holidays are skipped; nothing
-     * left → REFUSAL_NOTHING_TO_COUNT. Full days are worth 1 (half "full"), a half day 0.5 (half "am"/"pm").
+     * $from = $to, else REFUSAL_HALF_DAY_RANGE; dates that are weekly offs or holidays are skipped; a COUNTED date
+     * outside the window → refusal LeavePlan::OUTSIDE_EMPLOYMENT (a key: the caller words it with the person's name;
+     * weekly offs and holidays outside the window do not refuse, they are simply not counted); nothing left →
+     * REFUSAL_NOTHING_TO_COUNT. Full days are worth 1 (half "full"), a half day 0.5 (half "am"/"pm").
      *
      * @param  string  $from  first date, "Y-m-d"
      * @param  string  $to  last date, "Y-m-d" (inclusive)
@@ -80,10 +81,6 @@ final class LeaveDays
             return LeavePlan::refused(self::REFUSAL_HALF_DAY_RANGE);
         }
 
-        if ($from < $windowFrom || ($windowTo !== null && $to > $windowTo)) {
-            return LeavePlan::refused(LeavePlan::OUTSIDE_EMPLOYMENT);
-        }
-
         $holidaySet = array_fill_keys($holidays, true);
         $days = [];
 
@@ -94,6 +91,11 @@ final class LeaveDays
 
             if (in_array(strtolower($d->format('l')), $weeklyOffsByDate[$date] ?? [], true)) {
                 continue;
+            }
+
+            // Only a COUNTED day outside the window refuses: offs and holidays outside it are simply not counted.
+            if ($date < $windowFrom || ($windowTo !== null && $date > $windowTo)) {
+                return LeavePlan::refused(LeavePlan::OUTSIDE_EMPLOYMENT);
             }
 
             $days[] = $half === null
@@ -114,7 +116,7 @@ final class LeaveDays
      * Weekly offs per date: the closed attendance row's shift_rules['weekly_offs'] when it has a usable snapshot, else
      * the employee's shift in force (Shift::forEmployee). Holidays in the range. Window: joining date to last working
      * day; a leaver without a last working day (Leavers::withoutLastDay) ends the day before
-     * AttendanceClock::attendanceToday(). A date outside it is refused with "These dates are outside {name}'s
+     * AttendanceClock::attendanceToday(). A counted date (not a weekly off or holiday) outside it is refused with "These dates are outside {name}'s
      * employment.". A fixed number of queries whatever the range (closed attendance rows in range, holidays in range,
      * the shift).
      *

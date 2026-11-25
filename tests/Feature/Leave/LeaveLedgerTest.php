@@ -79,6 +79,19 @@ it('says who is on leave on a date, with type, colour and half', function () {
         ->and(LeaveLedger::daysOn([], '2026-11-24'))->toBe([]);
 });
 
+it('reports a full row plus an am row on the same date as one full day of the full row\'s type', function () {
+    $e = Employee::factory()->create();
+    $request = approvedLeave($e, '2026-11-24', null, type: 'Sick');
+    LeaveDay::query()->create([
+        'leave_request_id' => $request->id, 'employee_id' => $e->id, 'leave_type_id' => leaveType('Annual')->id,
+        'date' => '2026-11-24', 'amount' => 0.5, 'half' => 'am',
+    ]);
+
+    expect(LeaveLedger::daysOn([$e->id], '2026-11-24'))->toBe([
+        $e->id => ['type' => 'Sick', 'colour' => leaveType('Sick')->colour, 'half' => 'full'],
+    ]);
+});
+
 it('rejects a malformed date', function () {
     LeaveLedger::unpaidDays(1, '2026-11-31', '2026-12-01');
 })->throws(InvalidArgumentException::class);

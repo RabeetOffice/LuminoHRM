@@ -47,6 +47,17 @@ it('counts the working days of the employee\'s own shift', function () {
         ->and($plan->dates())->not->toContain('2026-11-27');
 });
 
+it('does not refuse a weekend before the joining date (only counted days must be inside employment)', function () {
+    $e = ldlEmployee(['joining_date' => '2026-11-23']);
+    shiftFor($e, ['weekly_offs' => ['saturday', 'sunday']]);
+
+    $plan = LeaveDays::plan($e->fresh(), '2026-11-21', '2026-11-27', null);
+
+    expect($plan->refusal)->toBeNull()
+        ->and($plan->total)->toBe(5.0)
+        ->and($plan->dates())->toBe(['2026-11-23', '2026-11-24', '2026-11-25', '2026-11-26', '2026-11-27']);
+});
+
 it('uses the default shift for an employee without one', function () {
     Shift::default()->update(['weekly_offs' => ['sunday']]);
     $e = ldlEmployee(['shift_id' => null]);

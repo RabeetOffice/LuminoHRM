@@ -6,9 +6,11 @@ use App\Models\Employee;
 use App\Models\LeaveBalance;
 use App\Models\LeaveType;
 use App\Support\Attendance\AttendanceClock;
+use App\Support\Attendance\Leavers;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
+use LogicException;
 
 /**
  * The one place balances are worked out (resolve from the container: app(LeaveBalances::class)).
@@ -83,13 +85,20 @@ class LeaveBalances
     }
 
     /**
-     * ensureRow() for every active paid type. Does nothing for a year before the employee's joining year or after the
-     * year of their last working day.
+     * ensureRow() for every active paid type. Does nothing for a year before the employee's joining year, after the
+     * year of their last working day, or — for a leaver without a last working day (Leavers::withoutLastDay) — after
+     * the current leave year.
      */
     public function ensureYear(Employee $employee, int $year): void
     {
+        self::assertComplete($employee);
+
         $joinYear = (int) $employee->joining_date->format('Y');
         $lastYear = $employee->last_working_day !== null ? (int) $employee->last_working_day->format('Y') : null;
+
+        if ($lastYear === null && Leavers::withoutLastDay($employee)) {
+            $lastYear = (int) substr($this->clock->attendanceToday(), 0, 4);
+        }
 
         if ($year < $joinYear || ($lastYear !== null && $year > $lastYear)) {
             return;
@@ -104,20 +113,38 @@ class LeaveBalances
      * The employee's balance lines for $year: every active type, plus inactive types that have a balance row, leave
      * days or pending days that year; in sort_order.
      *
+     * $employee must be a COMPLETE Employee model (joining_date, last_working_day, status, shift_id, first/last name):
+     * pro-rating, the employment window and the pending recount read them. A model loaded with a narrow select() is
+     * refused with a LogicException naming the missing joining_date rather than failing later on null.
+     *
      * @return list<BalanceLine>
+     *
+     * @throws LogicException an employee model without joining_date
      */
     public function lines(Employee $employee, int $year): array
     {
-        return array_values($this->compute(new Collection([$employee]), $year, null, null)[$employee->id] ?? []);
+        return array_values($this->compute(new Collection([$employee]), $year, null, null, false)[$employee->id] ?? []);
     }
 
     /**
      * One balance line (any type, active or not). $ignoreRequestId leaves that open request out of pending (the
      * approval re-check: the request being approved must not reserve days against itself).
+     *
+     * Deciding money (submit / approve re-check) — MariaDB snapshot caveat: InnoDB's default isolation is REPEATABLE
+     * READ, so plain SELECTs inside a transaction read the snapshot taken at the transaction's FIRST read, not the
+     * latest committed rows. Two approvals running at once could each see the other's days as not yet taken. A caller
+     * that decides on this line inside a transaction must either
+     *   - lock the employee row (Employee::lockForUpdate()) as the FIRST statement of the transaction, so concurrent
+     *     deciders for the same person queue and each sees the other's committed work; or
+     *   - pass $locking = true: the balance rows, leave days and open requests are then read with sharedLock()
+     *     (LOCK IN SHARE MODE), which reads the latest committed versions and blocks writers to them until commit.
+     * SQLite (tests) ignores both locks; it serialises writers anyway.
+     *
+     * @throws LogicException an employee model without joining_date (see lines())
      */
-    public function line(Employee $employee, LeaveType $type, int $year, ?int $ignoreRequestId = null): BalanceLine
+    public function line(Employee $employee, LeaveType $type, int $year, ?int $ignoreRequestId = null, bool $locking = false): BalanceLine
     {
-        return $this->compute(new Collection([$employee]), $year, $type, $ignoreRequestId)[$employee->id][$type->id];
+        return $this->compute(new Collection([$employee]), $year, $type, $ignoreRequestId, $locking)[$employee->id][$type->id];
     }
 
     /**
@@ -126,25 +153,32 @@ class LeaveBalances
      * ≤ $year, grouped leave-day sums per employee / type / year, open requests (plus a fixed set for recounting
      * requests across a year boundary).
      *
+     * Every model must be a COMPLETE Employee (joining_date, last_working_day, status, shift_id, first/last name), as
+     * in lines(): load them with a plain Employee::query()->get(), not a narrow select().
+     *
      * @param  Collection<int, Employee>  $employees
      * @return array<int, array<int, BalanceLine>>
+     *
+     * @throws LogicException an employee model without joining_date
      */
     public function forEmployees(Collection $employees, int $year): array
     {
-        return $this->compute($employees, $year, null, null);
+        return $this->compute($employees, $year, null, null, false);
     }
 
     /**
      * @param  Collection<int, Employee>  $employees
      * @return array<int, array<int, BalanceLine>>
      */
-    private function compute(Collection $employees, int $year, ?LeaveType $onlyType, ?int $ignoreRequestId): array
+    private function compute(Collection $employees, int $year, ?LeaveType $onlyType, ?int $ignoreRequestId, bool $locking): array
     {
         $employees = $employees->keyBy('id');
 
         if ($employees->isEmpty()) {
             return [];
         }
+
+        $employees->each(fn (Employee $e) => self::assertComplete($e));
 
         $ids = $employees->keys()->map(fn ($id): int => (int) $id)->all();
         $types = $onlyType !== null
@@ -159,6 +193,7 @@ class LeaveBalances
         $rows = [];
         foreach (DB::table('leave_balances')
             ->whereIn('employee_id', $ids)->whereIn('leave_type_id', $typeIds)->where('year', '<=', $year)
+            ->when($locking, fn ($q) => $q->sharedLock())
             ->get(['employee_id', 'leave_type_id', 'year', 'allocated', 'adjustment', 'opening_used']) as $r) {
             $rows[(int) $r->employee_id][(int) $r->leave_type_id][(int) $r->year] = [
                 LeaveDays::halves($r->allocated), LeaveDays::halves($r->adjustment), LeaveDays::halves($r->opening_used),
@@ -172,11 +207,12 @@ class LeaveBalances
             ->where(fn ($q) => LeaveLedger::wholeDaysOnly($q, 'leave_days'))
             ->selectRaw('employee_id, leave_type_id, substr(date, 1, 4) as yr, sum(amount) as total')
             ->groupBy('employee_id', 'leave_type_id', DB::raw('substr(date, 1, 4)'))
+            ->when($locking, fn ($q) => $q->sharedLock())
             ->get() as $r) {
             $used[(int) $r->employee_id][(int) $r->leave_type_id][(int) $r->yr] = LeaveDays::halves($r->total);
         }
 
-        $pending = $this->pendingHalves($employees, $typeIds, min($year, $current), $year, $ignoreRequestId);
+        $pending = $this->pendingHalves($employees, $typeIds, min($year, $current), $year, $ignoreRequestId, $locking);
 
         $result = [];
 
@@ -283,7 +319,7 @@ class LeaveBalances
      * @param  list<int>  $typeIds
      * @return array<int, array<int, array<int, int>>>
      */
-    private function pendingHalves(Collection $employees, array $typeIds, int $fromYear, int $toYear, ?int $ignoreRequestId): array
+    private function pendingHalves(Collection $employees, array $typeIds, int $fromYear, int $toYear, ?int $ignoreRequestId, bool $locking = false): array
     {
         $requests = DB::table('leave_requests')
             ->whereIn('employee_id', $employees->keys()->all())
@@ -294,6 +330,7 @@ class LeaveBalances
             ->where('from_date', '<', sprintf('%04d-01-01', $toYear + 1))
             ->when($ignoreRequestId !== null, fn ($q) => $q->where('id', '!=', $ignoreRequestId))
             ->orderBy('id')
+            ->when($locking, fn ($q) => $q->sharedLock())
             ->get(['id', 'employee_id', 'leave_type_id', 'from_date', 'to_date', 'half', 'days']);
 
         $pending = [];
@@ -355,6 +392,20 @@ class LeaveBalances
         }
 
         return $quota;
+    }
+
+    /**
+     * Refuses an Employee model loaded without joining_date (a narrow select()), which would otherwise fail later as a
+     * call on null.
+     */
+    private static function assertComplete(Employee $employee): void
+    {
+        if (! array_key_exists('joining_date', $employee->getAttributes()) || $employee->getAttributes()['joining_date'] === null) {
+            throw new LogicException(
+                "LeaveBalances needs complete Employee models: employee [{$employee->getKey()}] was loaded without joining_date "
+                .'(load it with joining_date, last_working_day, status, shift_id and the names, e.g. a plain Employee::query()->get()).',
+            );
+        }
     }
 
     private function prorates(): bool

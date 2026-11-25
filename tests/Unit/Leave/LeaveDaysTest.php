@@ -109,9 +109,25 @@ dataset('counter table', [
         '2026-11-25', '2026-11-26', null, LD_WEEKEND, [], '2020-01-01', '2026-11-26',
         2.0, ['2026-11-25', '2026-11-26'], null,
     ],
-    'outside the window even when the outside dates are offs' => [
+    'an off day after the last working day does not refuse' => [
         '2026-11-27', '2026-11-28', null, LD_WEEKEND, [], '2020-01-01', '2026-11-27',
+        1.0, ['2026-11-27'], null,
+    ],
+    'joined Mon 23 Nov, Sat 21 - Fri 27 = 5 (weekend before joining is not counted)' => [
+        '2026-11-21', '2026-11-27', null, LD_WEEKEND, [], '2026-11-23', null,
+        5.0, ['2026-11-23', '2026-11-24', '2026-11-25', '2026-11-26', '2026-11-27'], null,
+    ],
+    'a holiday before joining does not refuse' => [
+        '2026-11-20', '2026-11-24', null, LD_WEEKEND, ['2026-11-20'], '2026-11-23', null,
+        2.0, ['2026-11-23', '2026-11-24'], null,
+    ],
+    'a counted day after the last working day refuses even with offs between' => [
+        '2026-11-27', '2026-11-30', null, LD_WEEKEND, [], '2020-01-01', '2026-11-27',
         0.0, [], LeavePlan::OUTSIDE_EMPLOYMENT,
+    ],
+    'only offs outside the window: nothing to count' => [
+        '2026-11-28', '2026-11-29', null, LD_WEEKEND, [], '2020-01-01', '2026-11-27',
+        0.0, [], LeaveDays::REFUSAL_NOTHING_TO_COUNT,
     ],
     'across 31 Dec → 4 Jan: Thu, Fri, Mon' => [
         '2026-12-31', '2027-01-04', null, LD_WEEKEND, [], '2020-01-01', null,

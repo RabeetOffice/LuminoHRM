@@ -372,6 +372,125 @@ it('lists active types in sort order, plus inactive ones with a row or days', fu
         ->and(lbSvc()->line($e, $old, 2025)->typeName)->toBe('Study');
 });
 
+// --- fix round: JSON, locking, complete models, leavers, boundaries ---------------------------------------------
+
+it('json_encodes an unpaid line object directly (no INF in the output)', function () {
+    $line = lbLine(lbEmployee(), 'Unpaid', 2026);
+
+    $decoded = json_decode(json_encode($line, JSON_THROW_ON_ERROR), true);
+
+    expect($line)->toBeInstanceOf(JsonSerializable::class)
+        ->and($decoded['available'])->toBeNull()
+        ->and($decoded['remaining'])->toBeNull()
+        ->and($decoded['unlimited'])->toBeTrue()
+        ->and($decoded)->toBe(json_decode(json_encode($line->toArray()), true))
+        ->and(json_encode([lbLine(lbEmployee(), 'Annual', 2026)]))->toBeString();
+});
+
+it('gives the same line with locking on (the approval re-check)', function () {
+    $e = lbEmployee();
+    lbRow($e, 'Annual', 2026, 14);
+    approvedLeave($e, '2026-11-23', '2026-11-24');
+    $open = leaveRequest($e, ['from_date' => '2026-12-07', 'to_date' => '2026-12-08', 'days' => 2]);
+    leaveRequest($e, ['from_date' => '2026-12-09', 'to_date' => '2026-12-09', 'days' => 1]);
+
+    $plain = lbSvc()->line($e, leaveType('Annual'), 2026, $open->id);
+    $locked = DB::transaction(fn () => lbSvc()->line($e, leaveType('Annual'), 2026, $open->id, locking: true));
+
+    expect($locked)->toEqual($plain)
+        ->and($locked->pending)->toBe(1.0)
+        ->and($locked->available)->toBe(11.0);
+});
+
+it('refuses an employee model loaded without joining_date with a clear message', function () {
+    $e = lbEmployee();
+    $narrow = Employee::query()->select(['id', 'first_name', 'last_name'])->findOrFail($e->id);
+
+    expect(fn () => lbSvc()->lines($narrow, 2026))->toThrow(LogicException::class, 'joining_date')
+        ->and(fn () => lbSvc()->forEmployees(collect([$narrow]), 2026))->toThrow(LogicException::class, 'joining_date')
+        ->and(fn () => lbSvc()->line($narrow, leaveType('Annual'), 2026))->toThrow(LogicException::class, 'joining_date');
+});
+
+it('creates no rows after the current leave year for a leaver without a last working day', function () {
+    $e = lbEmployee(['joining_date' => '2025-05-01', 'status' => 'resigned', 'last_working_day' => null]);
+
+    lbSvc()->ensureYear($e, 2027);
+    expect(LeaveBalance::query()->count())->toBe(0);
+
+    lbSvc()->ensureYear($e, 2026);
+    expect(LeaveBalance::query()->where('year', 2026)->count())->toBe(3);
+});
+
+it('ignores the balance rows of a type switched from paid to unpaid', function () {
+    $e = lbEmployee();
+    lbRow($e, 'Casual', 2026, 10, 2, 1);
+    approvedLeave($e, '2026-11-23', null, type: 'Casual');
+    leaveType('Casual', ['is_paid' => false, 'carry_forward' => false]);
+
+    $line = lbLine($e, 'Casual', 2026);
+
+    expect($line->isPaid)->toBeFalse()
+        ->and($line->allocated)->toBe(0.0)
+        ->and($line->adjustment)->toBe(0.0)
+        ->and($line->openingUsed)->toBe(0.0)
+        ->and($line->used)->toBe(1.0)
+        ->and($line->available)->toBe(INF)
+        ->and($line->toArray()['remaining'])->toBeNull();
+});
+
+it('lists an inactive type that only has pending days that year', function () {
+    $e = lbEmployee();
+    $retired = LeaveType::factory()->create(['name' => 'Retired', 'is_active' => false, 'sort_order' => 8]);
+    leaveRequest($e, ['leave_type_id' => $retired->id, 'from_date' => '2026-12-07', 'to_date' => '2026-12-07', 'days' => 1]);
+
+    $names = array_map(fn (BalanceLine $l): string => $l->typeName, lbSvc()->lines($e, 2026));
+
+    expect($names)->toContain('Retired')
+        ->and(array_map(fn (BalanceLine $l): string => $l->typeName, lbSvc()->lines($e, 2025)))->not->toContain('Retired');
+});
+
+it('carries nothing with carry forward on and a cap of 0', function () {
+    $e = lbEmployee();
+    leaveType('Annual', ['carry_forward' => true, 'carry_forward_cap' => 0]);
+    lbRow($e, 'Annual', 2025, 14);
+    lbRow($e, 'Annual', 2026, 14);
+
+    expect(lbLine($e, 'Annual', 2026)->carried)->toBe(0.0)
+        ->and(lbLine($e, 'Annual', 2026)->remaining)->toBe(14.0);
+});
+
+it('carries a half day (4.5)', function () {
+    $e = lbEmployee();
+    lbRow($e, 'Annual', 2025, 14);
+    lbRow($e, 'Annual', 2026, 14);
+    approvedLeave($e, '2025-09-01', '2025-09-05');      // 5
+    approvedLeave($e, '2025-09-08', '2025-09-11');      // 4
+    approvedLeave($e, '2025-09-12', null, 'am');        // 0.5 → remaining 4.5
+
+    expect(lbLine($e, 'Annual', 2025)->remaining)->toBe(4.5)
+        ->and(lbLine($e, 'Annual', 2026)->carried)->toBe(4.5)
+        ->and(lbLine($e, 'Annual', 2026)->remaining)->toBe(18.5);
+});
+
+it('gives a leaver the full quota in their final year (no pro-rating on leaving)', function () {
+    Settings::set('leave', ['prorate_new_joiners' => true]);
+    $e = lbEmployee(['joining_date' => '2024-03-01', 'status' => 'resigned', 'last_working_day' => '2026-03-31']);
+
+    expect(lbSvc()->allocationFor($e, leaveType('Annual'), 2026))->toBe(14.0)
+        ->and(lbLine($e, 'Annual', 2026)->allocated)->toBe(14.0);
+});
+
+it('counts leave dated before the joining date against the balance', function () {
+    Settings::set('leave', ['prorate_new_joiners' => true]);
+    $e = lbEmployee(['joining_date' => '2026-07-15']);
+    lbSvc()->ensureRow($e, leaveType('Annual'), 2026); // 7
+    approvedLeave($e, '2026-07-13', '2026-07-14');       // Mon-Tue before the start date
+
+    $line = lbLine($e, 'Annual', 2026);
+
+    expect($line->used)->toBe(2.0)->and($line->remaining)->toBe(5.0);
+});
+
 it('builds lines for many employees in a fixed number of queries', function () {
     $make = function (int $n): array {
         $ids = [];
