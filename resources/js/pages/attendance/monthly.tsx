@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/select';
 import {
     FLAG_MANUAL,
+    FLAG_OVERRIDDEN,
     cellStatus,
     formatCount,
     formatMinutes,
@@ -64,10 +65,19 @@ type Props = {
     employees: DataTablePagination & { data: GridRow[] };
     filters: { search: string; department_id: number | null };
     departments: { id: number; name: string }[];
+    /** The statuses that may be chosen by hand (ApplyManualCorrection::OVERRIDE_STATUSES). */
+    overrideStatuses: string[];
     can: { export: boolean; edit: boolean };
 };
 
-type Selected = { row: GridRow; day: GridDay; cell: GridCell };
+/** The day being corrected, and the grid position of the cell that opened it (focus returns there). */
+type Selected = {
+    row: GridRow;
+    day: GridDay;
+    cell: GridCell;
+    rowIndex: number;
+    dayIndex: number;
+};
 
 const ALL = 'all';
 
@@ -95,6 +105,7 @@ export default function Monthly({
     employees,
     filters,
     departments,
+    overrideStatuses,
     can,
 }: Props) {
     const { url } = usePage();
@@ -125,9 +136,29 @@ export default function Monthly({
             return;
         }
 
-        setSelected({ row, day, cell: row.cells[dayIndex] ?? null });
+        setSelected({
+            row,
+            day,
+            cell: row.cells[dayIndex] ?? null,
+            rowIndex,
+            dayIndex,
+        });
         setDialogOpen(true);
     }, []);
+
+    // When the dialog has closed, the focus goes back to the cell that opened it (it is not a Radix trigger).
+    const returnFocus = (event: Event) => {
+        if (!selected) {
+            return;
+        }
+
+        event.preventDefault();
+        tableRef.current
+            ?.querySelector<HTMLElement>(
+                `[data-row="${selected.rowIndex}"][data-col="${selected.dayIndex}"]`,
+            )
+            ?.focus();
+    };
 
     const position = (target: EventTarget): GridPosition | null => {
         if (!(target instanceof HTMLElement)) {
@@ -522,7 +553,13 @@ export default function Monthly({
                         clock_out: selected.cell?.[3] ?? null,
                         status: cellStatus(selected.cell),
                         is_manual: hasFlag(selected.cell, FLAG_MANUAL),
+                        status_overridden: hasFlag(
+                            selected.cell,
+                            FLAG_OVERRIDDEN,
+                        ),
                     }}
+                    overrideStatuses={overrideStatuses}
+                    onCloseAutoFocus={returnFocus}
                 />
             )}
         </>

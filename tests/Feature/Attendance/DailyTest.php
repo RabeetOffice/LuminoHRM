@@ -469,6 +469,25 @@ it('finalises an open-day clock-in-only correction at the nightly close with its
         ->and($row->clock_out)->toBeNull();
 });
 
+it('takes entered times literally: a short day is not a machine double tap', function () {
+    $e = dlEmployee();
+    $hr = userWithRole('hr');
+
+    // A closed day: 09:00-09:40 entered by hand is 40 minutes worked, a half day.
+    $this->actingAs($hr)->put("/attendance/daily/{$e->id}/2026-11-23", dlPayload(['clock_in' => '09:00', 'clock_out' => '09:40']))
+        ->assertSessionHasNoErrors();
+
+    expect(dlFind($e, '2026-11-23')->only(['status', 'worked_minutes', 'early_minutes', 'needs_attention', 'clock_out']))
+        ->toMatchArray(['status' => 'half_day', 'worked_minutes' => 40, 'early_minutes' => 500, 'needs_attention' => false])
+        ->and(dlFind($e, '2026-11-23')->clock_out->format('H:i'))->toBe('09:40');
+
+    // The open day with a clock-out is decided as a complete day: the same.
+    $this->actingAs($hr)->put("/attendance/daily/{$e->id}/2026-11-24", dlPayload(['clock_in' => '10:00', 'clock_out' => '10:30']))
+        ->assertSessionHasNoErrors();
+
+    expect(dlFind($e, '2026-11-24')->only(['status', 'worked_minutes']))->toBe(['status' => 'half_day', 'worked_minutes' => 30]);
+});
+
 it('writes the full rule snapshot on a manual save', function () {
     $e = dlEmployee(['attendance_exempt' => false]);
     Settings::set('attendance', ['overtime_min_minutes' => 30, 'duplicate_punch_minutes' => 3]);

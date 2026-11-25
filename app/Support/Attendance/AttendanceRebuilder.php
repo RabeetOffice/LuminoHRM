@@ -328,8 +328,10 @@ class AttendanceRebuilder
 
     /**
      * Decides a day from times a person entered (a manual correction) rather than from punches: the entered values are
-     * deliberate, so no double-tap window applies (duplicatePunchMinutes 0). $closed true applies the closed-day rules
-     * (half day, early minutes, single-time flag).
+     * deliberate and taken literally, so neither machine-tap rule applies: no double-tap window (duplicatePunchMinutes
+     * 0) and no "two punches less than an hour apart are one punch" rule (closePairRule false), so 09:00-09:40 is 40
+     * minutes worked (a half day once decided with closed-day rules). $closed true applies the closed-day rules (half
+     * day, early minutes, single-time flag). Used by ApplyManualCorrection and by the nightly close (finaliseManual).
      *
      * @param  array{start_time: string, end_time: string, grace_minutes: int, half_day_hours: float, weekly_offs: list<string>, overtime_min_minutes: int, attendance_exempt: bool}  $rules  from rulesFor()
      * @param  string|null  $clockIn  naive "Y-m-d H:i:s"
@@ -355,6 +357,7 @@ class AttendanceRebuilder
             onLeave: false,
             duplicatePunchMinutes: 0, // entered times are deliberate, never a double tap
             dayCutoff: $this->clock->dayCutoff(),
+            closePairRule: false, // nor a close pair: a short day entered by hand is a short day
         ));
     }
 

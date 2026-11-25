@@ -23,7 +23,8 @@ use InvalidArgumentException;
  *     punch, so the clock-in is the first tap of the first cluster and the clock-out the final tap of the last one;
  *   - two or more kept punches: clock-in = first, clock-out = last, the ones between are ignored;
  *   - exactly two kept punches less than 60 minutes apart on a working day: no real clock-out; decided by the
- *     single-punch rule on the first punch (never a half day);
+ *     single-punch rule on the first punch (never a half day). Machine punches only (closePairRule): times a person
+ *     entered by hand are taken literally;
  *   - one kept punch: before the shift midpoint it is the clock-in (the late rule applies); at or after the midpoint it
  *     is the clock-out (never late). Either way the status is present / late and, once closed, needs attention.
  *
@@ -92,7 +93,7 @@ final class DayCalculator
 
         // Exactly two kept punches less than an hour apart on a working day: no real clock-out (a slow double tap or a
         // forgotten punch). The day is decided by the single-punch rule on the first punch, never as a half day.
-        $closePair = $workingDay && count($kept) === 2
+        $closePair = $in->closePairRule && $workingDay && count($kept) === 2
             && $kept[1]->getTimestamp() - $kept[0]->getTimestamp() < self::CLOSE_PAIR_SECONDS;
 
         if ($closePair) {

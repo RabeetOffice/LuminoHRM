@@ -1,11 +1,13 @@
 <?php
 
+use App\Actions\Attendance\ApplyManualCorrection;
 use App\Models\Attendance;
 use App\Models\Department;
 use App\Models\Designation;
 use App\Models\Employee;
 use App\Models\Holiday;
 use App\Models\User;
+use App\Support\Attendance\MonthGrid;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
@@ -136,9 +138,9 @@ it('never lets a Manager reach people outside their team through search, departm
 it('renders the attendance/monthly page', function () {
     $admin = userWithRole('admin');
 
-    $response = $this->actingAs($admin)->get('/attendance/monthly')->assertOk();
-
-    expect($response->viewData('page')['component'])->toBe('attendance/monthly');
+    // component() also checks that the page file exists (inertia.testing.ensure_pages_exist).
+    $this->actingAs($admin)->get('/attendance/monthly')->assertOk()
+        ->assertInertia(fn ($p) => $p->component('attendance/monthly'));
 });
 
 it('falls back to 25 rows for a rows-per-page value it does not offer', function (string $value) {
@@ -217,6 +219,54 @@ it('says per row whether the viewer may correct it', function () {
     $boss = employeeFor($manager);
     mgPerson(['manager_id' => $boss->id]);
     expect(array_unique(array_values($canEdit(mgProps($this, $manager, 'month=2026-11')))))->toBe([false]);
+});
+
+it('lets the page offer a correction on exactly the days ApplyManualCorrection accepts', function () {
+    $hr = userWithRole('hr');
+    Settings::set('attendance', ['start_date' => '2026-11-04']);
+    $people = [
+        mgPerson(['last_name' => 'Steady']),
+        mgPerson(['last_name' => 'Joiner', 'joining_date' => '2026-11-10']),
+        mgPerson(['last_name' => 'Leaver', 'status' => 'resigned', 'last_working_day' => '2026-11-12']),
+        // Left with no last working day, shown because of a row this month: nothing can be corrected.
+        mgPerson(['last_name' => 'Gone', 'status' => 'terminated', 'last_working_day' => null]),
+        mgPerson(['last_name' => 'Early', 'joining_date' => '2026-10-01', 'status' => 'probation']),
+    ];
+    mgDay($people[3], '2026-11-05', 'present');
+
+    $props = mgProps($this, $hr, 'month=2026-11');
+    $correct = app(ApplyManualCorrection::class);
+
+    foreach ($people as $person) {
+        $row = mgRow($props, $person);
+        $person->refresh();
+
+        foreach ($props['days'] as $day) {
+            // The page's rule (monthly.tsx): can.edit && row.can_edit && inside the window && not in the future.
+            $inWindow = $row['window'] !== null && $day['day'] >= $row['window'][0] && $day['day'] <= $row['window'][1];
+            $offered = $props['can']['edit'] && $row['can_edit'] && $inWindow && ! $day['future'];
+            $accepted = ! $day['future'] && $correct->employmentRefusal($person, $day['date']) === null;
+
+            expect($offered)->toBe($accepted, "{$person->last_name} on {$day['date']}");
+        }
+    }
+
+    expect(mgRow($props, $people[3])['can_edit'])->toBeFalse();
+});
+
+it('marks a day whose status was chosen by hand, and sends the statuses that may be chosen', function () {
+    $admin = userWithRole('admin');
+    $e = mgPerson();
+    mgDay($e, '2026-11-02', 'absent', ['is_manual' => true, 'status_overridden' => true, 'clock_in' => null,
+        'clock_out' => null, 'worked_minutes' => 0]);
+    mgDay($e, '2026-11-03', 'present', ['is_manual' => true]);
+
+    $props = mgProps($this, $admin, 'month=2026-11');
+    $cells = mgRow($props, $e)['cells'];
+
+    expect($cells[1][1])->toBe(MonthGrid::FLAG_MANUAL | MonthGrid::FLAG_OVERRIDDEN)
+        ->and($cells[2][1])->toBe(MonthGrid::FLAG_MANUAL)
+        ->and($props['overrideStatuses'])->toBe(ApplyManualCorrection::OVERRIDE_STATUSES);
 });
 
 it('shows Admin everyone employed in the month, in name order', function () {
@@ -409,8 +459,8 @@ it('shows the whole window when the attendance start is not set', function () {
 
 // ---------------------------------------------------------------- performance
 
-it('reads a fixed number of queries whatever the number of days or people', function () {
-    $admin = userWithRole('admin');
+it('reads a fixed number of queries whatever the number of days or people', function (string $role) {
+    $admin = userWithRole($role); // HR also reads the privileged logins (one query), an Admin does not
     $count = function (string $month) use ($admin): int {
         $queries = 0;
         DB::listen(function () use (&$queries) {
@@ -442,4 +492,4 @@ it('reads a fixed number of queries whatever the number of days or people', func
     $march = $count('2026-03');
 
     expect($march)->toBe($february)->and($march)->toBeLessThanOrEqual(12);
-});
+})->with(['admin', 'hr']);

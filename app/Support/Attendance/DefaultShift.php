@@ -3,6 +3,7 @@
 namespace App\Support\Attendance;
 
 use App\Casts\ClockTime;
+use App\Http\Requests\ShiftRequest;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -11,7 +12,9 @@ use Illuminate\Support\Facades\DB;
  * entry), so it works in a migration whatever the Shift model later becomes.
  *
  * A setting that is unusable (hand-edited row: bad time, end not after start, unknown day name) falls back to the
- * value in config('hrm.defaults.attendance'), so the shift is always valid.
+ * value in config('hrm.defaults.attendance'), so the shift is always valid. So does a start less than 2 hours after
+ * the attendance day cutoff (ShiftRequest's rule: early clock-ins would land on the previous day): start and end then
+ * both take the config defaults.
  */
 final class DefaultShift
 {
@@ -62,7 +65,10 @@ final class DefaultShift
         $start = self::time(settings('attendance.shift_start'));
         $end = self::time(settings('attendance.shift_end'));
 
-        if ($start === null || $end === null || ClockTime::minutes($end) <= ClockTime::minutes($start)) {
+        $cutoff = ClockTime::minutes((new AttendanceClock)->dayCutoff());
+
+        if ($start === null || $end === null || ClockTime::minutes($end) <= ClockTime::minutes($start)
+            || ClockTime::minutes($start) - $cutoff < ShiftRequest::CUTOFF_MARGIN_MINUTES) {
             $start = self::time($defaults['shift_start'] ?? null) ?? '09:00';
             $end = self::time($defaults['shift_end'] ?? null) ?? '18:00';
         }

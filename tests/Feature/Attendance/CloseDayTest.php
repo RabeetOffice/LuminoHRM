@@ -141,6 +141,30 @@ it('finalises a manual row still open from its stored times with closed-day rule
         ->and($row->shift_rules)->toHaveKeys(['overtime_min_minutes', 'duplicate_punch_minutes', 'attendance_exempt']);
 });
 
+it('finalises a still-open manual row with a short day from its literal times, not as a machine double tap', function () {
+    $e = cdEmployee();
+    $manual = Attendance::factory()->create([
+        'employee_id' => $e->id, 'date' => '2026-11-23', 'is_manual' => true, 'closed' => false, 'status' => 'present',
+        'clock_in' => '2026-11-23 09:00:00', 'clock_out' => '2026-11-23 09:40:00', 'worked_minutes' => 40,
+    ]);
+
+    $this->artisan('hrm:attendance-close', ['date' => '2026-11-23'])->assertSuccessful();
+
+    expect(Attendance::query()->findOrFail($manual->id)->only(['status', 'worked_minutes', 'needs_attention', 'closed']))
+        ->toBe(['status' => 'half_day', 'worked_minutes' => 40, 'needs_attention' => false, 'closed' => true]);
+});
+
+it('still treats two machine punches less than an hour apart as one punch', function () {
+    $e = cdEmployee();
+    punch($e, '2026-11-23 09:00:00');
+    punch($e, '2026-11-23 09:40:00');
+
+    $this->artisan('hrm:attendance-close', ['date' => '2026-11-23'])->assertSuccessful();
+
+    expect(cdRow($e, '2026-11-23')->only(['status', 'worked_minutes', 'needs_attention']))
+        ->toBe(['status' => 'present', 'worked_minutes' => 0, 'needs_attention' => true]);
+});
+
 it('only marks a still-open manual override row closed', function () {
     $e = cdEmployee();
     $manual = Attendance::factory()->create([

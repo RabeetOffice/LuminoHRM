@@ -19,11 +19,20 @@ use Illuminate\Support\Carbon;
  * date is stored as "Y-m-d" (App\Casts\NaiveDate). clock_in / clock_out are naive machine times stored exactly as the
  * punches were (App\Casts\NaiveDateTime). Not audited by the model: manual corrections write their own entry.
  *
+ * shift_rules: the rules the day was decided with (AttendanceRebuilder, ApplyManualCorrection): the shift's times and
+ * rules, the settings in force (overtime_min_minutes, duplicate_punch_minutes) and whether the person was
+ * attendance_exempt. Rows written before those last three keys existed lack them; AttendanceRebuilder::rulesFor fills
+ * them from the current values.
+ *
+ * status_overridden: a manual row whose STATUS was chosen by hand (an ApplyManualCorrection override). The status is
+ * kept as given (minutes still come from the entered times), the nightly close only marks the row closed, and the
+ * correction dialogs start on that status. False for automatic rows and calculated corrections; a reset clears it.
+ *
  * @property int $id
  * @property int $employee_id
  * @property CarbonImmutable $date
  * @property int|null $shift_id
- * @property array{shift_id: int|null, name: string, start_time: string, end_time: string, grace_minutes: int, half_day_hours: float, weekly_offs: list<string>}|null $shift_rules the rules the day was decided with (AttendanceRebuilder)
+ * @property array{shift_id: int|null, name: string, start_time: string, end_time: string, grace_minutes: int, half_day_hours: float, weekly_offs: list<string>, overtime_min_minutes?: int, duplicate_punch_minutes?: int, attendance_exempt?: bool}|null $shift_rules see above
  * @property CarbonImmutable|null $clock_in
  * @property CarbonImmutable|null $clock_out
  * @property int $worked_minutes
@@ -32,7 +41,7 @@ use Illuminate\Support\Carbon;
  * @property int $overtime_minutes
  * @property string|null $status config('hrm.attendance.statuses'); null = pending calculation (not yet rebuilt)
  * @property bool $is_manual
- * @property bool $status_overridden a manual row whose status was chosen by hand (ApplyManualCorrection override)
+ * @property bool $status_overridden see above
  * @property bool $needs_attention
  * @property bool $needs_rebuild
  * @property bool $closed

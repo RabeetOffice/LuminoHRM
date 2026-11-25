@@ -163,6 +163,17 @@ it('falls back to the config defaults for unusable saved settings', function () 
     expect(Shift::default()->name)->toBe('General'); // created on demand when missing
 });
 
+it('falls back to the config default start when the saved start is too close after the day cutoff', function () {
+    DB::table('shifts')->delete();
+    Settings::set('attendance', ['shift_start' => '06:00', 'shift_end' => '15:00', 'day_cutoff_time' => '05:00']);
+
+    expect(DefaultShift::values())->toMatchArray(['start_time' => '09:00:00', 'end_time' => '18:00:00']);
+
+    // Two hours after the cutoff is enough: kept.
+    Settings::set('attendance', ['shift_start' => '07:00', 'shift_end' => '15:00', 'day_cutoff_time' => '05:00']);
+    expect(DefaultShift::values())->toMatchArray(['start_time' => '07:00:00', 'end_time' => '15:00:00']);
+});
+
 it('makes a hand-made shift called General the default instead of adding a second one', function () {
     DB::table('shifts')->delete();
     Shift::factory()->create(['name' => 'General', 'start_time' => '10:00', 'end_time' => '19:00']);

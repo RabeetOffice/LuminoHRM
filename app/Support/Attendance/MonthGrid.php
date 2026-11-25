@@ -22,7 +22,8 @@ use DateTimeZone;
  *   - code: P present, L late, H half day, A absent, V on leave, O holiday, W weekend, "-" pending calculation
  *     (attendances.status null);
  *   - flags: FLAG_MANUAL | FLAG_EARLY | FLAG_OVERTIME | FLAG_ATTENTION | FLAG_NEXT_DAY (the clock-out falls on a later
- *     calendar date than the attendance day, e.g. a night shift ending at 06:00);
+ *     calendar date than the attendance day, e.g. a night shift ending at 06:00) | FLAG_OVERRIDDEN (a manual row whose
+ *     status was chosen by hand, attendances.status_overridden: the correction dialog starts on that status);
  *   - in / out: "H:i" wall-clock times as recorded (or null); worked, late, early, overtime: minutes.
  *
  * The employment window of a person in this month is from max(joining date, settings('attendance.start_date') when
@@ -36,7 +37,7 @@ use DateTimeZone;
  * Reads: one query for the month's holidays, one query per 500 employees for their attendance rows; nothing per day
  * or per cell.
  *
- * @phpstan-type Stored array{status: string|null, in: string|null, out: string|null, next_day: bool, worked: int, late: int, early: int, overtime: int, manual: bool, attention: bool}
+ * @phpstan-type Stored array{status: string|null, in: string|null, out: string|null, next_day: bool, worked: int, late: int, early: int, overtime: int, manual: bool, attention: bool, overridden: bool}
  */
 final class MonthGrid
 {
@@ -61,6 +62,8 @@ final class MonthGrid
     public const FLAG_ATTENTION = 8;
 
     public const FLAG_NEXT_DAY = 16;
+
+    public const FLAG_OVERRIDDEN = 32;
 
     private const CHUNK = 500;
 
@@ -161,7 +164,7 @@ final class MonthGrid
                 ->betweenDates($this->first, $this->last)
                 ->toBase()
                 ->get(['employee_id', 'date', 'status', 'clock_in', 'clock_out', 'worked_minutes', 'late_minutes',
-                    'early_minutes', 'overtime_minutes', 'is_manual', 'needs_attention'])
+                    'early_minutes', 'overtime_minutes', 'is_manual', 'status_overridden', 'needs_attention'])
                 ->each(function (object $raw) use (&$stored): void {
                     $row = (array) $raw;
                     $stored[(int) $row['employee_id']][(int) substr((string) $row['date'], 8, 2)] = self::stored($row);
@@ -265,6 +268,7 @@ final class MonthGrid
             'overtime' => $int('overtime_minutes'),
             'manual' => (bool) ($row['is_manual'] ?? false),
             'attention' => (bool) ($row['needs_attention'] ?? false),
+            'overridden' => (bool) ($row['status_overridden'] ?? false),
         ];
     }
 
@@ -278,7 +282,8 @@ final class MonthGrid
             | ($row['early'] > 0 ? self::FLAG_EARLY : 0)
             | ($row['overtime'] > 0 ? self::FLAG_OVERTIME : 0)
             | ($row['attention'] ? self::FLAG_ATTENTION : 0)
-            | ($row['next_day'] ? self::FLAG_NEXT_DAY : 0);
+            | ($row['next_day'] ? self::FLAG_NEXT_DAY : 0)
+            | ($row['overridden'] ? self::FLAG_OVERRIDDEN : 0);
 
         return [
             $row['status'] === null ? self::PENDING : (self::CODES[$row['status']] ?? self::PENDING),

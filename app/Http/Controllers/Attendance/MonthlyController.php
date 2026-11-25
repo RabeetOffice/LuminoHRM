@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Attendance;
 
+use App\Actions\Attendance\ApplyManualCorrection;
 use App\Exports\MonthlyAttendanceExport;
 use App\Http\Controllers\Controller;
 use App\Models\Department;
@@ -12,7 +13,6 @@ use App\Support\Attendance\MonthGrid;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
-use App\Support\EmployeeRoles;
 use App\Support\ListQuery;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
@@ -34,14 +34,20 @@ use Symfony\Component\HttpFoundation\BinaryFileResponse;
  * no last working day is shown only in months where they have an attendance row. A missing or malformed month means
  * the current one; a month that has not started is refused (back to the current month).
  *
- * Per row, can_edit says whether this viewer may correct that person's days (see canEdit()); the page then allows it
- * only on days inside the employment window (which already starts at attendance.start_date) and not in the future.
- * Reads per page: the people (their designations and, for editors, their logins and roles), one query for their
- * attendance rows, one for holidays.
+ * Who may correct which day: the Daily screen's rule. Per row, can_edit = attendance.edit AND ApplyManualCorrection::
+ * mayCorrect (not your own record unless Admin; an Admin / HR login only by an Admin; the privileged logins are read
+ * once, as on the Daily screen) AND the person can be corrected inside this month's window at all. The page then
+ * allows a day only inside the employment window and not in the future. The window is exactly the span
+ * ApplyManualCorrection::employmentRefusal accepts (from max(joining date, attendance start date) to the last working
+ * day), except a leaver with no last working day, whom employmentRefusal refuses on every day: can_edit is false.
+ * Reads per page: the people (their designations), for a non-Admin editor the privileged logins (one query), one
+ * query for their attendance rows, one for holidays.
  */
 class MonthlyController extends Controller
 {
     private const PER_PAGE = 25;
+
+    public function __construct(private readonly ApplyManualCorrection $correct) {}
 
     /** Employee statuses of someone who has left (or is not working): see people(). */
     private const LEFT_STATUSES = ['inactive', 'resigned', 'terminated'];
@@ -64,8 +70,6 @@ class MonthlyController extends Controller
 
         $paginator = $this->people($user, $grid, $search, $departmentId)
             ->with('designation:id,name')
-            // What canEdit() needs, loaded once for the page (users, then their roles): no query per row.
-            ->when($mayEdit, fn (Builder $q) => $q->with('user:id,employee_id', 'user.roles'))
             ->paginate($perPage, ['*'], 'page', ListQuery::page($request, 'page'));
 
         if ($redirect = ListQuery::clampRedirect($request, ['page' => $paginator])) {
@@ -75,6 +79,11 @@ class MonthlyController extends Controller
         $people = $paginator->getCollection();
         $rows = $grid->rows($people);
         $current = MonthGrid::currentMonth($clock);
+
+        // Employees whose login is Admin or HR: one query, only when the viewer edits and is not an Admin (as on Daily).
+        $privileged = $mayEdit && ! $user->hasRole('admin')
+            ? array_flip(User::query()->role(['admin', 'hr'])->whereNotNull('employee_id')->pluck('employee_id')->all())
+            : [];
 
         return Inertia::render('attendance/monthly', [
             'month' => [
@@ -92,7 +101,9 @@ class MonthlyController extends Controller
                     'code' => $e->employee_code,
                     'designation' => $e->designation?->name,
                     'photo_url' => EmployeeFiles::photoUrl($e),
-                    'can_edit' => $mayEdit && $this->canEdit($user, $e),
+                    'can_edit' => $mayEdit
+                        && ApplyManualCorrection::mayCorrect($user, $e, isset($privileged[$e->id]))
+                        && $this->correctableWindow($e, $grid, $rows[$e->id]['window']),
                     ...$rows[$e->id],
                 ])->values()->all(),
                 'current_page' => $paginator->currentPage(),
@@ -106,6 +117,7 @@ class MonthlyController extends Controller
                 'search' => $search,
                 'department_id' => $departmentId,
             ],
+            'overrideStatuses' => ApplyManualCorrection::OVERRIDE_STATUSES,
             'departments' => Department::query()->orderBy('name')->orderBy('id')->get(['id', 'name'])->all(),
             'can' => [
                 'export' => $user->can('attendance.view-all'),
@@ -171,7 +183,7 @@ class MonthlyController extends Controller
     {
         return (new EmployeeAccess($user))->scope(Employee::query())
             ->select(['id', 'employee_code', 'first_name', 'last_name', 'department_id', 'designation_id', 'photo_path',
-                'joining_date', 'last_working_day', 'updated_at'])
+                'joining_date', 'last_working_day', 'status', 'updated_at'])
             ->search($search)
             ->when($departmentId !== null, fn (Builder $q) => $q->where('department_id', $departmentId))
             ->where('joining_date', '<=', $grid->last)
@@ -190,22 +202,25 @@ class MonthlyController extends Controller
     }
 
     /**
-     * Whether $user (who holds attendance.edit) may correct this person's days by hand, the rule of the Daily screen:
-     *   - nobody corrects their own record, except an Admin;
-     *   - a person whose login is privileged (Admin or HR) is corrected only by someone EmployeeRoles::mayTouchAccount
-     *     allows (an Admin).
-     * Days outside the employment window (before attendance.start_date, before joining, after leaving) and future days
-     * are refused by the page from the row's window. The employee's user and its roles must be eager-loaded.
+     * Whether ApplyManualCorrection accepts every day of the person's window this month (no query: employmentRefusal
+     * reads the employee and the cached settings). It refuses a contiguous span's outside only, so checking the first
+     * and the last day of the window covers every day in between; a leaver with no last working day is refused on all.
      *
-     * Implemented here for now; the Daily screen's fix round adds the same rule, to be shared once both have landed.
+     * @param  array{0: int, 1: int}|null  $window
      */
-    private function canEdit(User $user, Employee $employee): bool
+    private function correctableWindow(Employee $employee, MonthGrid $grid, ?array $window): bool
     {
-        if ($user->employee_id !== null && (int) $user->employee_id === (int) $employee->id && ! $user->hasRole('admin')) {
+        if ($window === null) {
             return false;
         }
 
-        return EmployeeRoles::mayTouchAccount($user, $employee->user);
+        foreach ($window as $day) {
+            if ($this->correct->employmentRefusal($employee, sprintf('%s-%02d', $grid->month, $day)) !== null) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /** department_id when it names an existing department; null for anything else (never an error). */

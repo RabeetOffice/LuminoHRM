@@ -65,6 +65,13 @@ export type CorrectionDialogProps = {
     current: CorrectionCurrent;
     /** The statuses that may be chosen, from the server (ApplyManualCorrection::OVERRIDE_STATUSES). */
     overrideStatuses?: readonly string[];
+    /**
+     * Where the focus goes when the dialog has closed. The dialog is opened
+     * without a Radix trigger, so a page that wants the focus back on the
+     * control that opened it (the monthly grid's cell) handles it here: call
+     * event.preventDefault() and focus that control.
+     */
+    onCloseAutoFocus?: (event: Event) => void;
 };
 
 /**
@@ -79,6 +86,7 @@ export function CorrectionDialog({
     date,
     current,
     overrideStatuses,
+    onCloseAutoFocus,
 }: CorrectionDialogProps) {
     const [busy, setBusy] = useState(false);
 
@@ -87,7 +95,10 @@ export function CorrectionDialog({
             open={open}
             onOpenChange={(next) => !next && !busy && onClose()}
         >
-            <DialogContent className="sm:max-w-lg">
+            <DialogContent
+                className="sm:max-w-lg"
+                onCloseAutoFocus={onCloseAutoFocus}
+            >
                 {/* Content unmounts when closed, so the form starts fresh each time it opens. */}
                 <CorrectionForm
                     employee={employee}

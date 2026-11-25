@@ -82,6 +82,8 @@ it('decides a day', function (array $punches, array $overrides, array $expected)
     'two punches 40 minutes apart (no real clock-out): present and flagged, not half day' => [['09:00', '09:40'], [], ['present', '09:00:00', null, 0, 0, 0, 0, true]],
     'two punches less than an hour apart, late first: late and flagged' => [['09:45', '10:30'], [], ['late', '09:45:00', null, 0, 45, 0, 0, true]],
     'two punches 59:59 apart: still the single-punch rule' => [['09:00', '09:59:59'], [], ['present', '09:00:00', null, 0, 0, 0, 0, true]],
+    'entered times (close-pair rule off): 09:00-09:40 is 40 minutes worked, a half day' => [['09:00', '09:40'], ['closePairRule' => false], ['half_day', '09:00:00', '09:40:00', 40, 0, 500, 0, false]],
+    'entered times on the open day: present, 40 minutes, no half day yet' => [['09:00', '09:40'], ['closePairRule' => false, 'closed' => false], ['present', '09:00:00', '09:40:00', 40, 0, 0, 0, false]],
     'two punches exactly an hour apart: not flagged' => [['09:00', '10:00'], [], ['half_day', '09:00:00', '10:00:00', 60, 0, 480, 0, false]],
     'three punches close together: only exactly two are flagged' => [['09:00', '09:10', '09:20'], [], ['half_day', '09:00:00', '09:20:00', 20, 0, 520, 0, false]],
     'punches between first and last are ignored' => [['09:00', '13:00', '14:00', '18:00'], [], ['present', '09:00:00', '18:00:00', 540, 0, 0, 0, false]],

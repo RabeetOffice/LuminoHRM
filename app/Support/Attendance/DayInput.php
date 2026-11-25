@@ -23,6 +23,9 @@ namespace App\Support\Attendance;
  *   dayCutoff             "H:i" (settings('attendance.day_cutoff_time')): validated only. It decided each punch's day
  *                         when the punch was stored; the calculator no longer filters by it, so changing the cutoff
  *                         later affects new punches only
+ *   closePairRule         true for machine punches: exactly two kept punches less than 60 minutes apart on a working
+ *                         day are a single punch (a slow double tap or a forgotten punch). False for times a person
+ *                         entered (a manual correction), which are taken literally: 09:00-09:40 is 40 minutes worked
  */
 final readonly class DayInput
 {
@@ -45,5 +48,6 @@ final readonly class DayInput
         public bool $onLeave = false,
         public int $duplicatePunchMinutes = 0,
         public string $dayCutoff = '00:00',
+        public bool $closePairRule = true,
     ) {}
 }

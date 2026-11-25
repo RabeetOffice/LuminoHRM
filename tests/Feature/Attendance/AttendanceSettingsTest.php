@@ -68,6 +68,27 @@ it('requires the day cutoff to stay at least 2 hours before the earliest shift s
     expect(settings('attendance.day_cutoff_time'))->toBe('05:30');
 });
 
+it('checks the cutoff against the settings shift start while no shift exists yet', function () {
+    $admin = userWithRole('admin');
+    DB::table('shifts')->delete();
+    Settings::set('attendance', ['shift_start' => '07:00', 'shift_end' => '16:00']);
+
+    $this->actingAs($admin)->put('/hrm-settings/attendance', ['day_cutoff_time' => '05:01'])
+        ->assertSessionHasErrors(['day_cutoff_time' => 'The day cutoff must be 05:00 or earlier: at least 2 hours before the default shift start (07:00).']);
+    expect(settings('attendance.day_cutoff_time'))->toBe('04:00');
+
+    $this->actingAs($admin)->put('/hrm-settings/attendance', ['day_cutoff_time' => '05:00'])->assertSessionHasNoErrors();
+
+    // The shift start moved too close to the stored cutoff: refused on the start.
+    $this->actingAs($admin)->put('/hrm-settings/attendance', ['shift_start' => '06:30'])
+        ->assertSessionHasErrors(['shift_start' => 'The default shift start must be 07:00 or later: at least 2 hours after the day cutoff (05:00).']);
+    $this->actingAs($admin)->put('/hrm-settings/attendance', ['shift_start' => '07:00'])->assertSessionHasNoErrors();
+
+    // Once a shift exists, the shifts decide and the legacy start is not checked.
+    shiftFor(null, ['name' => 'Late', 'start_time' => '10:00', 'end_time' => '18:00']);
+    $this->actingAs($admin)->put('/hrm-settings/attendance', ['shift_start' => '06:00'])->assertSessionHasNoErrors();
+});
+
 it('does not re-check an unchanged cutoff when another card of the group is saved', function () {
     $admin = userWithRole('admin');
     Settings::set('attendance', ['day_cutoff_time' => '06:00']);

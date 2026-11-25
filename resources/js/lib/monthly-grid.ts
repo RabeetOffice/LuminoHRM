@@ -55,6 +55,8 @@ export const FLAG_OVERTIME = 4;
 export const FLAG_ATTENTION = 8;
 /** The clock-out is on the next calendar day (a night shift). */
 export const FLAG_NEXT_DAY = 16;
+/** A manual row whose status was chosen by hand (attendances.status_overridden). */
+export const FLAG_OVERRIDDEN = 32;
 
 /** The server's one-letter codes; "-" is a day waiting to be calculated. */
 const CODE_STATUS: Record<string, AttendanceStatusValue> = {
