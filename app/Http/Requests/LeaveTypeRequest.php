@@ -66,6 +66,8 @@ class LeaveTypeRequest extends FormRequest
             'carry_forward_cap' => $carries ? $this->daysRule('carry-forward cap', 0.5) : ['nullable'],
             'is_active' => ['required', 'boolean'],
             'colour' => ['bail', 'required', 'string', Rule::in(config('hrm.leave.colours'))],
+            // Lowering the carry-forward cap or turning carry off: the save asks for this when people end overdrawn.
+            'confirm_overdrawn' => ['sometimes', 'boolean'],
         ];
     }
 

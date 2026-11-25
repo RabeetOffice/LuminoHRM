@@ -9,6 +9,7 @@ use App\Models\Designation;
 use App\Models\Employee;
 use App\Models\LeaveBalance;
 use App\Support\Attendance\AttendanceClock;
+use App\Support\Leave\LeaveBalances;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Scheduling\Schedule;
@@ -239,4 +240,32 @@ it('applies a recalculation that leaves a balance overdrawn and returns a warnin
 
     expect(alRows($e, 2026)['Annual'])->toBe(7.0)
         ->and($update->warnings())->toBe(['Annual 2026 is now overdrawn by 3 days.']);
+});
+
+it('also warns when a later year fed by the carry ends overdrawn after a joining-date recalculation', function () {
+    $e = allocEmployee(['joining_date' => '2026-01-01']);
+    $this->artisan('hrm:leave-allocate')->assertSuccessful(); // 2026 Annual 14
+    app(LeaveBalances::class)->ensureYear($e, 2027); // as approving 2027 leave would
+    approvedLeave($e, '2026-11-02', '2026-11-10'); // 9 of 14 in 2026: 5 left, 5 carried into 2027
+    approvedLeave($e, '2027-02-01', '2027-02-19'); // 19 in 2027: everything
+
+    $update = app(UpdateEmployee::class);
+    // Joining 1 Jul 2026: Annual 2026 becomes 7 → 7 − 9 = −2 (nothing carries), so 2027 ends 14 − 19 = −5.
+    $update->handle($e, ['joining_date' => '2026-07-01'], userWithRole('admin'), syncAccount: false);
+
+    expect($update->warnings())->toBe(['Annual 2026 is now overdrawn by 2 days.', 'Annual 2027 is now overdrawn by 5 days.']);
+});
+
+it('warns about a later year even when the recalculated year itself stays in credit', function () {
+    $e = allocEmployee(['joining_date' => '2026-01-01']);
+    $this->artisan('hrm:leave-allocate')->assertSuccessful();
+    app(LeaveBalances::class)->ensureYear($e, 2027); // as approving 2027 leave would
+    approvedLeave($e, '2026-11-02', '2026-11-03'); // 2 of 14 in 2026: 12 left, 5 carried
+    approvedLeave($e, '2027-02-01', '2027-02-19'); // 19 in 2027
+
+    $update = app(UpdateEmployee::class);
+    // Joining 1 Oct 2026: Annual 2026 becomes 3.5 → 1.5 left, 1.5 carried, 2027 ends 14 + 1.5 − 19 = −3.5.
+    $update->handle($e, ['joining_date' => '2026-10-01'], userWithRole('admin'), syncAccount: false);
+
+    expect($update->warnings())->toBe(['Annual 2027 is now overdrawn by 3.5 days.']);
 });

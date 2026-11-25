@@ -16,6 +16,7 @@ use App\Models\LeaveRequest;
 use App\Models\LeaveType;
 use App\Models\User;
 use App\Support\Attendance\AttendanceClock;
+use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
 use App\Support\Leave\LeaveBalances;
 use App\Support\Leave\LeaveDays;
@@ -29,7 +30,6 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Route;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -112,7 +112,13 @@ class LeaveRequestController extends Controller
             'types' => LeaveType::query()->orderBy('sort_order')->orderBy('id')->get(['id', 'name', 'colour', 'is_paid', 'is_active'])
                 ->map(fn (LeaveType $t) => ['id' => $t->id, 'name' => $t->name, 'colour' => $t->colour, 'is_paid' => (bool) $t->is_paid, 'is_active' => (bool) $t->is_active])
                 ->all(),
-            'departments' => Department::query()->orderBy('name')->orderBy('id')->get(['id', 'name'])
+            // A Manager (leave.approve-team) gets only the departments of the people they see, as on Balances.
+            'departments' => Department::query()
+                ->when(! $user->can('leave.approve-all'), fn (Builder $q) => $q->whereIn(
+                    'id',
+                    (new EmployeeAccess($user))->scope(Employee::query())->whereNotNull('department_id')->select('department_id'),
+                ))
+                ->orderBy('name')->orderBy('id')->get(['id', 'name'])
                 ->map(fn (Department $d) => ['id' => $d->id, 'name' => $d->name])->all(),
             'today' => $this->clock->attendanceToday(),
             'can' => ['apply_on_behalf' => $canApplyOnBehalf],
@@ -228,7 +234,7 @@ class LeaveRequestController extends Controller
                 'canceller' => $found->canceller?->name,
                 'cancelled_on' => $found->cancelled_at?->format('Y-m-d'),
                 'cancel_reason' => $found->cancel_reason,
-                'attachment_url' => $found->attachment_path !== null && Route::has('leave.requests.attachment')
+                'attachment_url' => $found->attachment_path !== null
                     ? route('leave.requests.attachment', ['leaveRequest' => $found->id], false) : null,
                 'is_own' => $isRequester,
                 'stage' => $stage,
@@ -377,6 +383,8 @@ class LeaveRequestController extends Controller
                 'cancel_approved' => $canCancelApproved,
             ],
             'cancel_range' => $cancelRange,
+            // The viewer's own request (withdrawing it asks no reason; someone else's mails the employee one).
+            'is_own' => $this->routing->isRequester($user, $r),
         ];
     }
 

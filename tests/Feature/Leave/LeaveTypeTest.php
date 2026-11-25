@@ -4,6 +4,7 @@ use App\Http\Controllers\Leave\LeaveTypeController;
 use App\Models\Employee;
 use App\Models\LeaveBalance;
 use App\Models\LeaveType;
+use Carbon\CarbonImmutable;
 use Spatie\Activitylog\Models\Activity;
 
 /** A complete valid payload for POST/PUT /leave/types, merged with $overrides. */
@@ -454,4 +455,40 @@ it('validates the active flag and guards the active action', function () {
         ->assertNotFound();
 
     expect($sick->fresh()->is_active)->toBeTrue();
+});
+
+// ---------------------------------------------------------------- final fix round: decision 6
+
+it('warns how many people would be overdrawn when the carry-forward cap is lowered, and saves on confirmation', function () {
+    $this->travelTo(CarbonImmutable::parse('2026-11-25 12:00:00', 'Asia/Karachi'));
+    $annual = leaveType('Annual'); // carry forward, cap 5
+    $short = Employee::factory()->create(['joining_date' => '2024-01-01']);
+    $fine = Employee::factory()->create(['joining_date' => '2024-01-01']);
+
+    foreach ([$short, $fine] as $e) {
+        LeaveBalance::query()->create(['employee_id' => $e->id, 'leave_type_id' => $annual->id, 'year' => 2025, 'allocated' => 14, 'adjustment' => 0, 'opening_used' => 0]);
+        LeaveBalance::query()->create(['employee_id' => $e->id, 'leave_type_id' => $annual->id, 'year' => 2026, 'allocated' => 14, 'adjustment' => 0, 'opening_used' => 0]);
+    }
+    approvedLeave($short, '2026-03-02', '2026-03-18'); // 17 of 19: 2 left, so a cap of 2 leaves −1
+    approvedLeave($fine, '2026-03-02', '2026-03-04');  // 3 used
+
+    $payload = ltPayload(['name' => 'Annual', 'yearly_quota' => 14, 'carry_forward' => true, 'carry_forward_cap' => 2, 'colour' => $annual->colour]);
+    $admin = userWithRole('admin');
+
+    $this->actingAs($admin)->put("/leave/types/{$annual->id}", $payload)
+        ->assertSessionHasErrors(['confirm_overdrawn' => '1 person would be overdrawn — save anyway?']);
+    expect((float) $annual->fresh()->carry_forward_cap)->toBe(5.0)
+        ->and(Activity::query()->where('log_name', 'leave')->where('description', 'Leave type updated')->count())->toBe(0);
+
+    // Turning carry off altogether: the same check.
+    $this->actingAs($admin)->put("/leave/types/{$annual->id}", [...$payload, 'carry_forward' => false, 'carry_forward_cap' => null])
+        ->assertSessionHasErrors(['confirm_overdrawn' => '1 person would be overdrawn — save anyway?']);
+
+    $this->actingAs($admin)->put("/leave/types/{$annual->id}", [...$payload, 'confirm_overdrawn' => true])
+        ->assertSessionHasNoErrors()->assertSessionHas('success', 'Leave type updated.');
+    expect((float) $annual->fresh()->carry_forward_cap)->toBe(2.0);
+
+    // Raising it again, or a lower cap nobody is short under, needs no confirmation.
+    $this->actingAs($admin)->put("/leave/types/{$annual->id}", [...$payload, 'carry_forward_cap' => 5])->assertSessionHasNoErrors();
+    $this->actingAs($admin)->put("/leave/types/{$annual->id}", [...$payload, 'carry_forward_cap' => 3])->assertSessionHasNoErrors();
 });

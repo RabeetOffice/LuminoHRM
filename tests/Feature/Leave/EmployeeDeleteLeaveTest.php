@@ -1,6 +1,7 @@
 <?php
 
 use App\Actions\Employees\DeleteEmployee;
+use App\Actions\Leave\AdjustBalance;
 use App\Exceptions\AccountRuleViolation;
 use App\Models\Employee;
 use App\Models\LeaveBalance;
@@ -93,4 +94,16 @@ it('re-checks leave requests inside the delete action', function () {
         ->toThrow(AccountRuleViolation::class, EDL_REQUESTS);
 
     expect(Employee::find($employee->id))->not->toBeNull();
+});
+
+it('blocks the delete while a balance row has an allocation HR changed by hand (M11)', function () {
+    $employee = Employee::factory()->create(['joining_date' => '2026-01-01']);
+    $admin = userWithRole('admin');
+    app(AdjustBalance::class)->handle($employee, leaveType('Annual'), 2026, 16, 0, 0, 'Agreed two extra days', false, $admin);
+
+    expect((new EmployeeAccess($admin))->deleteBlockers($employee))->toBe([EDL_ADJUSTMENTS]);
+
+    // An edit that put it back to the plain figure is still a hand-entered history: kept, as UpdateEmployee treats it.
+    app(AdjustBalance::class)->handle($employee, leaveType('Annual'), 2026, 14, 0, 0, 'Extra days withdrawn', false, $admin);
+    expect((new EmployeeAccess($admin))->deleteBlockers($employee))->toBe([EDL_ADJUSTMENTS]);
 });

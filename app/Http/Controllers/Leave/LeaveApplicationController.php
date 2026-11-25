@@ -114,9 +114,17 @@ class LeaveApplicationController extends Controller
         $found = $this->routing->findVisible($user, $leaveRequest);
         abort_if($found === null, 403);
 
+        // HR / Admin withdrawing someone else's request say why (the employee is mailed it); the requester need not.
+        $note = $request->input('note');
+        $note = is_string($note) && trim($note) !== '' ? trim($note) : null;
+
         try {
-            $apply->cancelOpen($user, $found);
+            $apply->cancelOpen($user, $found, $note);
         } catch (ValidationException $e) {
+            if (array_key_exists('note', $e->errors())) {
+                throw $e;
+            }
+
             return back()->with('error', (string) collect($e->errors())->flatten()->first());
         }
 

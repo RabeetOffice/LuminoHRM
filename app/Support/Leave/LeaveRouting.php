@@ -250,15 +250,26 @@ class LeaveRouting
     }
 
     /**
-     * Approved leave is cancelled by HR / Admin only (never the requester), and only while it still has leave days that
-     * may be removed (on or after earliestCancellableDate()).
+     * Approved leave is cancelled by HR / Admin (mayAdminister), never by the requester — except the only active Admin on
+     * their own leave (the same exception as deciding it: mayDecideFinal holds for a requester only then) — and only
+     * while it still has leave days that may be removed (on or after earliestCancellableDate()). The live rule: the list,
+     * the detail page and LeaveDecisions::cancelApproved all come here (LeaveDecisions::mayCancelApproved delegates).
      */
     public function canCancelApproved(User $user, LeaveRequest $request): bool
     {
+        return $this->mayCancelApprovedFrom($user, $request, $this->earliestCancellableDate($request));
+    }
+
+    /**
+     * canCancelApproved() with the earliest cancellable date already known ($earliest, the earliestCancellableDate()
+     * value; null = no day left), so a list can work the dates out in one query for every row.
+     */
+    public function mayCancelApprovedFrom(User $user, LeaveRequest $request, ?string $earliest): bool
+    {
         return $request->status === 'approved'
-            && ! $this->isRequester($user, $request)
+            && $earliest !== null
             && $this->mayAdminister($user, $request->employee)
-            && $this->earliestCancellableDate($request) !== null;
+            && (! $this->isRequester($user, $request) || $this->mayDecideFinal($user, $request));
     }
 
     /**
@@ -322,9 +333,10 @@ class LeaveRouting
         return $this->scope(LeaveRequest::query()->whereKey($id), $user)->first();
     }
 
+    /** Whether the user may see this request: findVisible() for a model in hand (the same scope). */
     public function canSee(User $user, LeaveRequest $request): bool
     {
-        return $this->scope(LeaveRequest::query()->whereKey($request->id), $user)->exists();
+        return $this->findVisible($user, (int) $request->id) !== null;
     }
 
     /**

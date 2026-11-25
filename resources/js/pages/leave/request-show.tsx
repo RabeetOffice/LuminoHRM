@@ -1,16 +1,15 @@
-import { Head, Link, router, usePage } from '@inertiajs/react';
+import { Head, Link, usePage } from '@inertiajs/react';
 import { ArrowLeft, Check, Paperclip, TriangleAlert, X } from 'lucide-react';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
-import LeaveApplicationController from '@/actions/App/Http/Controllers/Leave/LeaveApplicationController';
 import { Avatar } from '@/components/hrm/avatar';
-import { ConfirmDialog } from '@/components/hrm/confirm-dialog';
 import { PageHeader } from '@/components/hrm/page-header';
 import { StatusPill } from '@/components/hrm/status-pill';
 import { CancelApprovedDialog } from '@/components/leave/cancel-approved-dialog';
 import { DecisionDialog } from '@/components/leave/decision-dialog';
 import type { DecisionChoice } from '@/components/leave/decision-dialog';
 import { LeaveTypeBadge } from '@/components/leave/leave-type-badge';
+import { WithdrawRequestDialog } from '@/components/leave/withdraw-request-dialog';
 import { Button } from '@/components/ui/button';
 import { formatClockTime } from '@/lib/clock-time';
 import { formatDate } from '@/lib/format-date';
@@ -104,26 +103,11 @@ export default function LeaveRequestShow({
     const [decideOpen, setDecideOpen] = useState(false);
     const [cancelOpen, setCancelOpen] = useState(false);
     const [withdrawOpen, setWithdrawOpen] = useState(false);
-    const [busy, setBusy] = useState(false);
 
     const decide = (choice: DecisionChoice) => {
         setDecision(choice);
         setDecideOpen(true);
     };
-
-    const withdraw = () =>
-        router.post(
-            LeaveApplicationController.cancel(request.id).url,
-            {},
-            {
-                preserveScroll: true,
-                onStart: () => setBusy(true),
-                onFinish: () => {
-                    setBusy(false);
-                    setWithdrawOpen(false);
-                },
-            },
-        );
 
     const { can } = request;
 
@@ -517,16 +501,10 @@ export default function LeaveRequestShow({
                 today={today}
             />
 
-            <ConfirmDialog
+            <WithdrawRequestDialog
                 open={withdrawOpen}
                 onOpenChange={setWithdrawOpen}
-                title="Cancel this leave request?"
-                description={`The request for ${leaveRangeLabel(request.from, request.to, request.half)} will be withdrawn.`}
-                confirmLabel="Cancel request"
-                cancelLabel="Keep it"
-                destructive
-                processing={busy}
-                onConfirm={withdraw}
+                subject={request}
             />
         </>
     );

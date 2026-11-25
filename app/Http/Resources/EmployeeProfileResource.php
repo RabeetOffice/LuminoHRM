@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Mail\LeaveRequestSubmitted;
 use App\Models\Employee;
 use App\Models\LeaveRequest;
 use App\Models\Shift;
@@ -349,20 +350,13 @@ class EmployeeProfileResource extends JsonResource
         ];
     }
 
-    /** "Tue 1 Dec 2026", "Tue 1 Dec 2026 – Thu 3 Dec 2026" or "Tue 1 Dec 2026, first half" (read as text, no zone). */
+    /**
+     * "Tue 1 Dec 2026", "Tue 1 Dec 2026 – Thu 3 Dec 2026" or "Tue 1 Dec 2026, first half" (read as text, no zone): the
+     * one label the leave mails use (LeaveRequestSubmitted::dates).
+     */
     public static function leaveDates(string $from, string $to, ?string $half): string
     {
-        $label = function (string $date): string {
-            $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
-
-            return $parsed === false ? $date : $parsed->format('D j M Y');
-        };
-
-        if ($half !== null) {
-            return $label($from).', '.($half === 'am' ? 'first half' : 'second half');
-        }
-
-        return $from === $to ? $label($from) : $label($from).' – '.$label($to);
+        return LeaveRequestSubmitted::dates($from, $to, $half);
     }
 
     private function allows(string $group): bool

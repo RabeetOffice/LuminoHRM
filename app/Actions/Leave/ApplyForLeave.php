@@ -2,6 +2,7 @@
 
 namespace App\Actions\Leave;
 
+use App\Mail\LeaveRequestDecided;
 use App\Mail\LeaveRequestSubmitted;
 use App\Models\Employee;
 use App\Models\LeaveDay;
@@ -197,11 +198,21 @@ class ApplyForLeave
      * The requester (or someone who may administer the employee's leave) withdraws a request nobody has decided yet.
      * No leave days exist yet, so nothing is refunded.
      *
-     * @throws ValidationException a request that was decided meanwhile (key: decision)
+     * Someone other than the requester (HR / Admin) withdrawing it: the employee is mailed after the commit (outcome
+     * `withdrawn`, owner ruling M6) with $reason as the note (stored as cancel_reason; 5–500 characters when given, else
+     * "Withdrawn by {name}.").
+     *
+     * @throws ValidationException a request that was decided meanwhile (key: decision); a too short or long reason (note)
      */
-    public function cancelOpen(User $by, LeaveRequest $request): void
+    public function cancelOpen(User $by, LeaveRequest $request, ?string $reason = null): void
     {
-        DB::transaction(function () use ($by, $request): void {
+        $reason = $reason === null ? null : trim($reason);
+
+        if ($reason !== null && (mb_strlen($reason) < 5 || mb_strlen($reason) > 500)) {
+            throw ValidationException::withMessages(['note' => 'Say why the request is withdrawn (5 to 500 characters). The employee will see this.']);
+        }
+
+        $withdrawnFor = DB::transaction(function () use ($by, $request, $reason): ?LeaveRequest {
             $locked = LeaveRequest::query()->with(['employee', 'type'])->whereKey($request->id)->lockForUpdate()->firstOrFail();
 
             abort_unless($this->routing->isRequester($by, $locked) || $this->routing->mayAdminister($by, $locked->employee), 403);
@@ -212,10 +223,13 @@ class ApplyForLeave
 
             abort_unless($this->routing->canCancelOpen($by, $locked), 403);
 
+            $own = $this->routing->isRequester($by, $locked);
+
             $locked->fill([
                 'status' => 'cancelled',
                 'cancelled_by' => $by->id,
                 'cancelled_at' => now(),
+                'cancel_reason' => $own ? $reason : ($reason ?? "Withdrawn by {$by->name}."),
             ])->save();
 
             Audit::record('leave', 'Leave request cancelled', $locked->employee, [
@@ -226,8 +240,32 @@ class ApplyForLeave
                 'half' => $locked->half,
                 'days' => (float) $locked->days,
                 'step' => 'open',
+                ...array_filter([
+                    'on_behalf' => $own ? null : true,
+                    'note' => $locked->cancel_reason !== null ? Audit::clean($locked->cancel_reason, 500) : null,
+                ], fn ($v): bool => $v !== null),
             ], $by);
+
+            return $own ? null : $locked;
         });
+
+        if ($withdrawnFor !== null) {
+            $this->mailWithdrawn($withdrawnFor);
+        }
+    }
+
+    /** The employee's active login is told that HR / Admin withdrew their request (a queue failure is only reported). */
+    private function mailWithdrawn(LeaveRequest $request): void
+    {
+        try {
+            $user = User::query()->where('employee_id', $request->employee_id)->where('is_active', true)->first();
+
+            if ($user !== null) {
+                Mail::to($user)->queue(new LeaveRequestDecided($request, $user->name, 'withdrawn', $request->cancel_reason));
+            }
+        } catch (Throwable $e) {
+            report($e);
+        }
     }
 
     /** Own record, or someone whose leave this user may administer (HR / Admin, LeaveRouting::mayAdminister). */

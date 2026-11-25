@@ -4,14 +4,19 @@ namespace App\Http\Controllers\Leave;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\LeaveTypeRequest;
+use App\Models\Employee;
 use App\Models\LeaveBalance;
 use App\Models\LeaveRequest;
 use App\Models\LeaveType;
+use App\Support\Attendance\AttendanceClock;
+use App\Support\Leave\LeaveBalances;
+use App\Support\Leave\LeaveDays;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -27,7 +32,10 @@ use Inertia\Response;
  * audit always run.
  *
  * Carried days are derived when read, never frozen, so changing a type's carry-forward flag or cap changes the carried
- * days of every year, past ones included (plan open decision 6; owner default); nothing is rewritten here.
+ * days of every year, past ones included (plan open decision 6; owner default); nothing is rewritten here. Lowering the
+ * cap or turning carry off warns first (owner decision 6, final fix round): when it would leave anyone's current or next
+ * year overdrawn, the save is refused on `confirm_overdrawn` with "N people would be overdrawn — save anyway?" until the
+ * dialog sends the confirmation.
  */
 class LeaveTypeController extends Controller
 {
@@ -89,12 +97,13 @@ class LeaveTypeController extends Controller
         return back()->with('success', 'Leave type added.');
     }
 
-    public function update(LeaveTypeRequest $request, LeaveType $leaveType): RedirectResponse
+    public function update(LeaveTypeRequest $request, LeaveType $leaveType, LeaveBalances $balances): RedirectResponse
     {
         $attributes = $request->typeAttributes();
+        $confirmed = $request->boolean('confirm_overdrawn');
 
         try {
-            $refusal = DB::transaction(function () use ($leaveType, $attributes): ?string {
+            $refusal = DB::transaction(function () use ($leaveType, $attributes, $confirmed, $balances): ?string {
                 $locked = LeaveType::query()->whereKey($leaveType->getKey())->lockForUpdate()->firstOrFail();
 
                 if ($locked->is_system && $attributes['is_paid']) {
@@ -109,7 +118,23 @@ class LeaveTypeController extends Controller
                     return self::PAID_LOCKED_MESSAGE;
                 }
 
+                // Lowering the cap or turning carry off lowers carried days (derived): people may end overdrawn this
+                // year or next. Counted before and after the change (rolled back unless confirmed; decision 6).
+                $lowersCarry = $locked->is_paid && $locked->carry_forward
+                    && (! $attributes['carry_forward'] || LeaveDays::halves($attributes['carry_forward_cap']) < LeaveDays::halves($locked->carry_forward_cap));
+                $before = $lowersCarry && ! $confirmed ? $this->remainingByPerson($locked, $balances) : null;
+
                 $locked->fill($attributes)->save();
+
+                if ($before !== null) {
+                    $people = $this->newlyOverdrawn($before, $this->remainingByPerson($locked, $balances));
+
+                    if ($people > 0) {
+                        throw ValidationException::withMessages([
+                            'confirm_overdrawn' => ($people === 1 ? '1 person' : "{$people} people").' would be overdrawn — save anyway?',
+                        ]);
+                    }
+                }
 
                 return null;
             });
@@ -122,6 +147,59 @@ class LeaveTypeController extends Controller
         }
 
         return back()->with('success', 'Leave type updated.');
+    }
+
+    /**
+     * Remaining days of this type per person for the current and next leave year (employee id => year => remaining),
+     * for everyone with a balance row of the type from last year to next year. Fixed queries (LeaveBalances::forEmployees).
+     *
+     * @return array<int, array<int, float>>
+     */
+    private function remainingByPerson(LeaveType $type, LeaveBalances $balances): array
+    {
+        $current = (int) substr(app(AttendanceClock::class)->attendanceToday(), 0, 4);
+        $employees = Employee::query()
+            ->whereIn('id', LeaveBalance::query()->select('employee_id')->where('leave_type_id', $type->id)->whereBetween('year', [$current - 1, $current + 1]))
+            ->get();
+
+        if ($employees->isEmpty()) {
+            return [];
+        }
+
+        $remaining = [];
+
+        foreach ([$current, $current + 1] as $year) {
+            foreach ($balances->forEmployees($employees, $year) as $id => $lines) {
+                if (isset($lines[$type->id])) {
+                    $remaining[$id][$year] = $lines[$type->id]->remaining;
+                }
+            }
+        }
+
+        return $remaining;
+    }
+
+    /**
+     * People whose current or next year ends overdrawn after the change and lower than before.
+     *
+     * @param  array<int, array<int, float>>  $before
+     * @param  array<int, array<int, float>>  $after
+     */
+    private function newlyOverdrawn(array $before, array $after): int
+    {
+        $count = 0;
+
+        foreach ($after as $id => $years) {
+            foreach ($years as $year => $remaining) {
+                if ($remaining < 0 && $remaining < ($before[$id][$year] ?? 0.0)) {
+                    $count++;
+
+                    break;
+                }
+            }
+        }
+
+        return $count;
     }
 
     /**

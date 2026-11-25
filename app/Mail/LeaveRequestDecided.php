@@ -20,8 +20,10 @@ use InvalidArgumentException;
  *   approved | rejected  a decision on the request;
  *   cancelled            approved leave cancelled (HR from a date on, or a holiday covering every day of it: pass the
  *                        reason as the note);
- *   refunded             some days of approved leave went back to the balance (a holiday on a leave day);
- *   withdrawn            an OPEN request cancelled by the system (for example the employment ended), reason as note.
+ *   refunded             some days of approved leave went back to the balance (a holiday on a leave day, a day that
+ *                        became a weekly off, days trimmed before a later joining date);
+ *   withdrawn            an OPEN request cancelled by the system (for example the employment ended) or withdrawn by
+ *                        HR / Admin on the employee's behalf, reason as note.
  * The Days line is left out when the request holds no days.
  */
 class LeaveRequestDecided extends Mailable implements ShouldQueue

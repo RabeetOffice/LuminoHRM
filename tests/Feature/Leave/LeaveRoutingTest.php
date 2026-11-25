@@ -369,10 +369,10 @@ it('lets the requester or an administrator cancel an open request', function () 
         ->and($routing->canCancelOpen($user, leaveRequest($employee, ['status' => 'rejected'])))->toBeFalse();
 });
 
-it('lets only an administrator who is not the requester cancel approved leave that still has days', function () {
+it('lets only an administrator who is not the requester (or the sole Admin) cancel approved leave that still has days', function () {
     [$user, $employee] = lrPerson('employee');
     [$hrUser, $hrPerson] = lrPerson('hr');
-    [$adminUser] = lrPerson('admin');
+    [$adminUser, $adminPerson] = lrPerson('admin');
 
     $routing = lrRouting();
     $approved = approvedLeave($employee, '2026-12-01', '2026-12-02');
@@ -385,6 +385,13 @@ it('lets only an administrator who is not the requester cancel approved leave th
     $own = approvedLeave($hrPerson, '2026-12-07');
     expect($routing->canCancelApproved($hrUser, $own))->toBeFalse()
         ->and($routing->canCancelApproved($adminUser, $own))->toBeTrue();
+
+    // The only active Admin may cancel their own approved leave (the live rule, as LeaveDecisions::cancelApproved).
+    $adminOwn = approvedLeave($adminPerson, '2026-12-08');
+    expect(lrRouting()->canCancelApproved($adminUser, $adminOwn))->toBeTrue();
+    [$secondAdmin] = lrPerson('admin');
+    expect(lrRouting()->canCancelApproved($adminUser, $adminOwn))->toBeFalse()
+        ->and(lrRouting()->canCancelApproved($secondAdmin, $adminOwn))->toBeTrue();
 
     // No days left (all refunded): nothing to cancel.
     $approved->days()->delete();

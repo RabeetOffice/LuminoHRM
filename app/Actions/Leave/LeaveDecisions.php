@@ -54,18 +54,12 @@ class LeaveDecisions
     ) {}
 
     /**
-     * Whether $by may cancel this approved request now: it is approved and still has a removable day ($earliest, the
-     * LeaveRouting::earliestCancellableDate value), $by may administer the employee's leave, and $by is not the
-     * requester — except the only active Admin on their own leave (the same exception as deciding it:
-     * LeaveRouting::mayDecideFinal holds for a requester only in that case). The list, the detail page and the action
-     * all ask this.
+     * Whether $by may cancel this approved request now ($earliest: the LeaveRouting::earliestCancellableDate value).
+     * The rule lives in LeaveRouting::mayCancelApprovedFrom; kept here for older callers.
      */
     public static function mayCancelApproved(LeaveRouting $routing, User $by, LeaveRequest $request, ?string $earliest): bool
     {
-        return $request->status === 'approved'
-            && $earliest !== null
-            && $routing->mayAdminister($by, $request->employee)
-            && (! $routing->isRequester($by, $request) || $routing->mayDecideFinal($by, $request));
+        return $routing->mayCancelApprovedFrom($by, $request, $earliest);
     }
 
     /**

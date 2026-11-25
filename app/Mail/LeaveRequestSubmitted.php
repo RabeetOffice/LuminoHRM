@@ -9,7 +9,6 @@ use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
 
 /**
@@ -44,7 +43,8 @@ class LeaveRequestSubmitted extends Mailable implements ShouldQueue
 
         return new Content(markdown: 'mail.leave.submitted', with: [
             // Typed text goes through Markdown after Blade: escaped so a reason like "[x](https://…)" stays literal.
-            'recipientName' => self::plain($this->recipientName),
+            // Keys differ from the public properties: those are passed to the view too and would win, unescaped.
+            'greetName' => self::plain($this->recipientName),
             'employeeName' => self::plain($r->employee->full_name),
             'typeName' => self::plain($r->type->name),
             'dates' => self::dates($r->from_date->format('Y-m-d'), $r->to_date->format('Y-m-d'), $r->half),
@@ -91,11 +91,9 @@ class LeaveRequestSubmitted extends Mailable implements ShouldQueue
         return (string) preg_replace('/[\\\\`*_{}\[\]()#+\-.!|~=:]/', '\\\\$0', $oneLine);
     }
 
-    /** The request's detail page (Task 6); My Leaves until that route exists. */
+    /** The request's detail page. */
     private static function link(LeaveRequest $r): string
     {
-        return Route::has('leave.requests.show')
-            ? url(route('leave.requests.show', $r, false))
-            : url(route('my.leaves', [], false));
+        return url(route('leave.requests.show', $r, false));
     }
 }

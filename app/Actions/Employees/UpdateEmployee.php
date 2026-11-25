@@ -206,7 +206,8 @@ class UpdateEmployee
      *   - its `allocated` equals allocationFor under the OLD joining date (the value it was created with, as far as
      *     can be told now: the row does not store its creation value, so a row created under another quota or
      *     pro-rating setting no longer matches and is kept as it is, the safe side).
-     * A recalculated row that ends overdrawn is still saved (ruling C) and adds a warning (warnings()). Unpaid types have
+     * A recalculated row that ends overdrawn — or leaves a later year fed by its carry overdrawn, up to
+     * LeaveBalances::lastYearInUse() — is still saved (ruling C) and adds a warning (warnings()). Unpaid types have
      * no balance. One entry "Leave allocation recalculated" per row changed (subject the employee; year, type, old / new
      * allocated).
      */
@@ -241,6 +242,8 @@ class UpdateEmployee
             }
         }
 
+        $touched = []; // type id => [type, earliest recalculated year]
+
         foreach ($rows as $row) {
             $type = $row->type;
 
@@ -270,11 +273,20 @@ class UpdateEmployee
                 'attributes' => ['allocated' => LeaveDays::fromHalves(LeaveDays::halves($newAllocation))],
             ], $by);
 
-            $line = $balances->line($after, $type, (int) $row->year);
+            $touched[$type->id] ??= [$type, (int) $row->year];
+        }
 
-            if ($line->remaining < 0) {
-                $days = BalanceLine::format(abs($line->remaining));
-                $this->warnings[] = "{$type->name} {$row->year} is now overdrawn by {$days} ".($days === '1' ? 'day' : 'days').'.';
+        // The recalculated year, and every later year fed by its carry up to the last year in use (M1).
+        foreach ($touched as [$type, $from]) {
+            $last = max($from, $balances->lastYearInUse($after, $type) ?? $from);
+
+            for ($year = $from; $year <= $last; $year++) {
+                $line = $balances->line($after, $type, $year);
+
+                if ($line->remaining < 0) {
+                    $days = BalanceLine::format(abs($line->remaining));
+                    $this->warnings[] = "{$type->name} {$year} is now overdrawn by {$days} ".($days === '1' ? 'day' : 'days').'.';
+                }
             }
         }
     }

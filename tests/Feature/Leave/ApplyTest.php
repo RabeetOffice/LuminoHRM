@@ -1,6 +1,7 @@
 <?php
 
 use App\Actions\Leave\ApplyForLeave;
+use App\Mail\LeaveRequestDecided;
 use App\Mail\LeaveRequestSubmitted;
 use App\Models\Employee;
 use App\Models\Holiday;
@@ -701,4 +702,51 @@ it('says whose request was sent: own, or on behalf by name', function () {
 
     apApply($user, ['employee_id' => $me->id])->assertSessionHas('success', 'Leave request sent.');
     apApply($hr, ['employee_id' => $employee->id])->assertSessionHas('success', "Leave request sent for {$employee->full_name}.");
+});
+
+// ---------------------------------------------------------------- final fix round (M5, M6)
+
+it('escapes Markdown in the recipient name of the approver mail (the public property no longer overwrites it)', function () {
+    [, $employee] = apPerson();
+    $r = leaveRequest($employee, ['from_date' => '2026-12-01', 'to_date' => '2026-12-01']);
+
+    $html = (new LeaveRequestSubmitted($r, '[Ali](https://evil.example) **Khan**', false))->render();
+
+    expect($html)->not->toContain('href="https://evil.example"')
+        ->not->toContain('<strong>Khan</strong>')
+        ->toContain('[Ali](https://evil.example) **Khan**');
+});
+
+it('mails the employee when HR withdraws their open request, with the reason', function () {
+    [$hr] = apPerson('hr');
+    [$user, $employee] = apPerson();
+    $r = leaveRequest($employee, ['status' => 'manager_approved']);
+
+    $this->actingAs($hr)->post("/leave/requests/{$r->id}/cancel", ['note' => 'Dates clash with the audit week.'])
+        ->assertSessionHasNoErrors()->assertSessionHas('success');
+
+    $r->refresh();
+    expect($r->status)->toBe('cancelled')->and($r->cancel_reason)->toBe('Dates clash with the audit week.');
+    Mail::assertQueued(LeaveRequestDecided::class, fn ($m) => $m->hasTo($user->email)
+        && $m->outcome === 'withdrawn' && $m->note === 'Dates clash with the audit week.' && $m->request->is($r));
+
+    $entry = Activity::query()->where('description', 'Leave request cancelled')->sole();
+    expect($entry->properties['on_behalf'])->toBeTrue()->and($entry->properties['note'])->toBe('Dates clash with the audit week.');
+});
+
+it('sends no mail when the employee withdraws their own request, and refuses a too short reason from HR', function () {
+    [$hr] = apPerson('hr');
+    [$user, $employee] = apPerson();
+    $own = leaveRequest($employee);
+
+    $this->actingAs($user)->post("/leave/requests/{$own->id}/cancel")->assertSessionHas('success');
+    Mail::assertNotQueued(LeaveRequestDecided::class);
+
+    $other = leaveRequest($employee, ['from_date' => '2026-12-14', 'to_date' => '2026-12-14']);
+    $this->actingAs($hr)->post("/leave/requests/{$other->id}/cancel", ['note' => 'no'])->assertSessionHasErrors('note');
+    expect($other->fresh()->status)->toBe('pending');
+
+    // Without a reason HR's withdrawal still mails, saying who withdrew it.
+    $this->actingAs($hr)->post("/leave/requests/{$other->id}/cancel")->assertSessionHas('success');
+    Mail::assertQueued(LeaveRequestDecided::class, fn ($m) => $m->outcome === 'withdrawn' && $m->note === "Withdrawn by {$hr->name}.");
 });

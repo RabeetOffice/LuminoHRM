@@ -7,7 +7,9 @@ use App\Models\Employee;
 use App\Models\LeaveBalance;
 use App\Models\LeaveRequest;
 use App\Models\User;
+use App\Support\Leave\LeaveDays;
 use Illuminate\Database\Eloquent\Builder;
+use Spatie\Activitylog\Models\Activity;
 
 /**
  * The one place that decides who may see which employee, which groups of fields, and who may delete.
@@ -123,13 +125,35 @@ class EmployeeAccess
         return $blockers;
     }
 
-    /** Whether any of the employee's leave balance rows holds a hand-entered figure (a non-zero adjustment or opening used). */
+    /**
+     * Whether any of the employee's leave balance rows holds a hand-entered figure: a non-zero adjustment or opening
+     * used, or an `allocated` HR changed by hand (a "Leave balance adjusted" audit entry whose old and new allocated
+     * differ — the audit trail is the reliable record of that edit; comparing with allocationFor() would also flag rows
+     * created under an older quota or pro-rating setting).
+     */
     public static function hasLeaveBalanceAdjustments(int $employeeId): bool
     {
-        return LeaveBalance::query()
+        $figures = LeaveBalance::query()
             ->where('employee_id', $employeeId)
             ->where(fn (Builder $q) => $q->where('adjustment', '!=', 0)->orWhere('opening_used', '!=', 0))
             ->exists();
+
+        if ($figures) {
+            return true;
+        }
+
+        foreach (Activity::query()
+            ->where('log_name', 'leave')->where('description', 'Leave balance adjusted')
+            ->where('subject_type', (new Employee)->getMorphClass())->where('subject_id', $employeeId)
+            ->get(['properties']) as $entry) {
+            $p = $entry->properties;
+
+            if (LeaveDays::halves($p['old']['allocated'] ?? 0) !== LeaveDays::halves($p['attributes']['allocated'] ?? 0)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

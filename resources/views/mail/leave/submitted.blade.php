@@ -1,5 +1,5 @@
 <x-mail::message>
-Hello {{ $recipientName }},
+Hello {{ $greetName }},
 
 @if ($afterManager)
 {{ $employeeName }}'s leave request was approved by their manager and now waits for your decision.

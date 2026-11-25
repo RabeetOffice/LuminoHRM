@@ -498,3 +498,32 @@ it('exports one row per person with each paid type\'s figures as numbers, and au
 it('refuses the export to a Manager and an Employee', function (string $role) {
     $this->actingAs(blUser($role))->get('/leave/balances/export')->assertForbidden();
 })->with(['manager', 'employee']);
+
+it('needs a confirmation when a balance edit leaves less than the pending days (available, not remaining)', function () {
+    $hr = blUser('hr');
+    $e = blPerson(['first_name' => 'Sara']);
+    blRow($e, 'Annual', 2026, 14);
+    leaveRequest($e, ['from_date' => '2026-12-07', 'to_date' => '2026-12-09', 'days' => 3]); // 3 pending
+
+    // Remaining 2 stays positive, but available 2 − 3 = −1: the approval would be refused later.
+    blPut($hr, $e, 'Annual', 2026, ['allocated' => 2])
+        ->assertSessionHasErrors(['confirm_overdrawn' => 'This leaves Sara overdrawn by 1 day. Tick the box to confirm.']);
+    expect((float) LeaveBalance::query()->where('employee_id', $e->id)->value('allocated'))->toBe(14.0);
+
+    blPut($hr, $e, 'Annual', 2026, ['allocated' => 2, 'confirm_overdrawn' => true])->assertSessionHasNoErrors();
+});
+
+it('needs a confirmation when lowering a year overdraws a year two years on through the carry', function () {
+    $hr = blUser('hr');
+    $e = blPerson(['first_name' => 'Sara']);
+    blRow($e, 'Annual', 2025, 14);  // nothing used: 5 carries into 2026
+    blRow($e, 'Annual', 2026, 14);  // 14 + 5 − 14 used = 5 left: 5 carries into 2027
+    approvedLeave($e, '2026-03-02', '2026-03-15'); // 14 in 2026
+    blRow($e, 'Annual', 2027, 14);
+    approvedLeave($e, '2027-03-01', '2027-03-19'); // 19 in 2027: everything
+
+    // 2025 down to 0 left: 2026 ends 0, nothing carries, 2027 ends −5. 2026 itself is not overdrawn.
+    blPut($hr, $e, 'Annual', 2025, ['allocated' => 0])
+        ->assertSessionHasErrors(['confirm_overdrawn' => 'This leaves Sara overdrawn by 5 days in 2027. Tick the box to confirm.']);
+    blPut($hr, $e, 'Annual', 2025, ['allocated' => 0, 'confirm_overdrawn' => true])->assertSessionHasNoErrors();
+});

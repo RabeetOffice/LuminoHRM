@@ -279,3 +279,18 @@ it('shows the detail page: planned days while open, ledger days once approved, b
 
     $this->actingAs($otherManager)->get("/leave/requests/{$r->id}")->assertForbidden();
 });
+
+it('offers a Manager only the departments of their own team in the filter; HR every department (M7)', function () {
+    $sales = Department::factory()->create(['name' => 'Sales']);
+    $finance = Department::factory()->create(['name' => 'Finance']);
+    $legal = Department::factory()->create(['name' => 'Legal']);
+    [$managerUser, $manager] = rsPerson('manager', ['department_id' => $sales->id]);
+    rsPerson('employee', ['manager_id' => $manager->id, 'department_id' => $finance->id]);
+    rsPerson('employee', ['department_id' => $legal->id]);
+    [$hr] = rsPerson('hr');
+
+    $names = fn (User $u) => collect($this->actingAs($u)->get('/leave/requests?tab=all')->assertOk()->inertiaProps('departments'))->pluck('name')->all();
+
+    expect($names($managerUser))->toBe(['Finance', 'Sales'])
+        ->and($names($hr))->toContain('Legal', 'Finance', 'Sales');
+});

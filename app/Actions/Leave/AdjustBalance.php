@@ -23,11 +23,12 @@ use InvalidArgumentException;
  * employee; `old` / `attributes` of the three fields, the year, the type and the reason). Nothing is written or audited
  * when no figure changes. The dialog sends the figures it was opened with: if the locked row differs, STALE.
  *
- * Overdrawn (plan open decision 17): when the new remaining (LeaveBalances::line, the one formula) is below zero and the
- * caller did not confirm, a ValidationException on `confirm_overdrawn` rolls the save back. The same for the following
- * year of a carry-forward type when it has a row with leave taken or pending and its available falls below zero (and
- * lower than before) through the carry; that message names the year. A confirmed save skips these checks entirely (the
- * import confirms every row; it flags overdrawn rows in its preview).
+ * Overdrawn (plan open decision 17, final fix round M2): when the new available (remaining − pending, LeaveBalances::line,
+ * the one formula: what applying and approving check) is below zero and the caller did not confirm, a ValidationException
+ * on `confirm_overdrawn` rolls the save back. The same for every later year up to LeaveBalances::lastYearInUse() of a
+ * carry-forward type with leave taken or pending whose available falls below zero (and lower than before) through the
+ * carry; that message names the year. A confirmed save skips these checks entirely (the import confirms every row; it
+ * flags overdrawn rows in its preview).
  *
  * Who may (plan open decision 18): LeaveRouting::mayAdminister (leave.approve-all; never one's own balance unless Admin;
  * an Admin's or HR person's balance only by an Admin), checked again here so no caller can skip it. Paid types only:
@@ -138,9 +139,9 @@ class AdjustBalance
                 return $current;
             }
 
-            // Next year's carry (plan ruling B): lowering this year's figures of a carry-forward type can overdraw the
-            // following year when that year already has a row with leave taken or pending.
-            $nextBefore = ! $confirmOverdrawn ? $this->nextYearLine($employee, $type, $year) : null;
+            // Later years' carry (plan ruling B, final fix round M2): lowering this year's figures of a carry-forward type
+            // can overdraw any later year in use through the carry.
+            $laterBefore = ! $confirmOverdrawn ? $this->laterAvailable($employee, $type, $year) : [];
 
             if ($row === null) {
                 $this->balances->ensureRow($employee, $type, $year);
@@ -153,18 +154,18 @@ class AdjustBalance
             if (! $confirmOverdrawn) {
                 $line = $this->balances->line($employee, $type, $year);
 
-                if ($line->remaining < 0) {
+                if ($line->available < 0) {
                     throw ValidationException::withMessages([
-                        'confirm_overdrawn' => self::overdrawnMessage($employee, $line->remaining),
+                        'confirm_overdrawn' => self::overdrawnMessage($employee, $line->available),
                     ]);
                 }
 
-                if ($nextBefore !== null) {
-                    $nextAfter = $this->balances->line($employee, $type, $year + 1);
+                foreach ($laterBefore as $later => $before) {
+                    $after = $this->balances->line($employee, $type, $later)->available;
 
-                    if ($nextAfter->available < 0 && $nextAfter->available < $nextBefore->available) {
+                    if ($after < 0 && $after < $before) {
                         throw ValidationException::withMessages([
-                            'confirm_overdrawn' => self::overdrawnMessage($employee, $nextAfter->available, $year + 1),
+                            'confirm_overdrawn' => self::overdrawnMessage($employee, $after, $later),
                         ]);
                     }
                 }
@@ -209,19 +210,30 @@ class AdjustBalance
     }
 
     /**
-     * The following year's line when this year's edit can overdraw it through the carry: a carry-forward type, a row
-     * for $year + 1, and leave days or pending days in it. Null otherwise.
+     * The available days of every later year this edit can reach through the carry (a carry-forward type; years after
+     * $year up to LeaveBalances::lastYearInUse() with leave taken or pending), before the edit: year => available.
+     *
+     * @return array<int, float>
      */
-    private function nextYearLine(Employee $employee, LeaveType $type, int $year): ?BalanceLine
+    private function laterAvailable(Employee $employee, LeaveType $type, int $year): array
     {
-        if (! $type->carry_forward || ! LeaveBalance::query()
-            ->where('employee_id', $employee->id)->where('leave_type_id', $type->id)->where('year', $year + 1)->exists()) {
-            return null;
+        if (! $type->carry_forward) {
+            return [];
         }
 
-        $line = $this->balances->line($employee, $type, $year + 1);
+        $last = $this->balances->lastYearInUse($employee, $type) ?? $year;
+        $available = [];
 
-        return $line->used > 0 || $line->pending > 0 ? $line : null;
+        for ($later = $year + 1; $later <= $last; $later++) {
+            $line = $this->balances->line($employee, $type, $later);
+
+            // Only a year with leave taken or pending can end overdrawn by it (a bare row HR set short is HR's call).
+            if ($line->used > 0 || $line->pending > 0) {
+                $available[$later] = $line->available;
+            }
+        }
+
+        return $available;
     }
 
     /**

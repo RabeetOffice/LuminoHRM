@@ -2,9 +2,7 @@ import { Head, Link, router, usePage } from '@inertiajs/react';
 import { Check, Plus, X } from 'lucide-react';
 import { useId, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import LeaveApplicationController from '@/actions/App/Http/Controllers/Leave/LeaveApplicationController';
 import { Avatar } from '@/components/hrm/avatar';
-import { ConfirmDialog } from '@/components/hrm/confirm-dialog';
 import { DataTable } from '@/components/hrm/data-table';
 import type {
     DataTableColumn,
@@ -18,6 +16,7 @@ import { CancelApprovedDialog } from '@/components/leave/cancel-approved-dialog'
 import { DecisionDialog } from '@/components/leave/decision-dialog';
 import type { DecisionChoice } from '@/components/leave/decision-dialog';
 import { LeaveTypeBadge } from '@/components/leave/leave-type-badge';
+import { WithdrawRequestDialog } from '@/components/leave/withdraw-request-dialog';
 import { Button } from '@/components/ui/button';
 import {
     Dialog,
@@ -81,6 +80,8 @@ export type LeaveRequestRow = {
         cancel_approved: boolean;
     };
     cancel_range: { min: string; max: string; default: string } | null;
+    /** The viewer's own request. */
+    is_own: boolean;
 };
 
 type Option = { id: number; name: string };
@@ -147,7 +148,6 @@ export default function LeaveRequests({
         null,
     );
     const [withdrawOpen, setWithdrawOpen] = useState(false);
-    const [busy, setBusy] = useState(false);
     const [pickOpen, setPickOpen] = useState(false);
     const [picked, setPicked] = useState<number | null>(null);
     const [pickSearch, setPickSearch] = useState('');
@@ -174,25 +174,6 @@ export default function LeaveRequests({
     const decide = (row: LeaveRequestRow, decision: DecisionChoice) => {
         setDeciding({ row, decision });
         setDecideOpen(true);
-    };
-
-    const withdraw = () => {
-        if (!withdrawing) {
-            return;
-        }
-
-        router.post(
-            LeaveApplicationController.cancel(withdrawing.id).url,
-            {},
-            {
-                preserveScroll: true,
-                onStart: () => setBusy(true),
-                onFinish: () => {
-                    setBusy(false);
-                    setWithdrawOpen(false);
-                },
-            },
-        );
     };
 
     const columns: DataTableColumn<LeaveRequestRow>[] = [
@@ -562,20 +543,10 @@ export default function LeaveRequests({
                 today={today}
             />
 
-            <ConfirmDialog
+            <WithdrawRequestDialog
                 open={withdrawOpen}
                 onOpenChange={setWithdrawOpen}
-                title="Cancel this leave request?"
-                description={
-                    withdrawing
-                        ? `The request of ${withdrawing.employee.name} for ${leaveRangeLabel(withdrawing.from, withdrawing.to, withdrawing.half)} will be withdrawn.`
-                        : ''
-                }
-                confirmLabel="Cancel request"
-                cancelLabel="Keep it"
-                destructive
-                processing={busy}
-                onConfirm={withdraw}
+                subject={withdrawing}
             />
 
             {on_behalf && (

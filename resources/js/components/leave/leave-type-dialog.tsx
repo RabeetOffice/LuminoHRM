@@ -93,6 +93,9 @@ export function LeaveTypeDialog({ type, colours, onClose }: Props) {
         carry_forward_cap: type ? daysValue(type.carry_forward_cap) : '0',
         is_active: type?.is_active ?? true,
         colour: type?.colour ?? colours[0] ?? 'slate',
+        // Lowering the carry-forward cap (or turning carry off) can leave people overdrawn: the server says how many
+        // and asks for this confirmation before saving.
+        confirm_overdrawn: false,
     });
     const { data, errors } = form;
 
@@ -305,6 +308,37 @@ export function LeaveTypeDialog({ type, colours, onClose }: Props) {
                             </p>
                         )}
                     </div>
+
+                    {errors.confirm_overdrawn && (
+                        <div className="grid gap-1.5 rounded-lg border border-red-200 bg-red-50/60 p-3 dark:border-red-500/30 dark:bg-red-500/10">
+                            <p
+                                id="leave-type-confirm-error"
+                                role="alert"
+                                className="text-sm text-destructive"
+                            >
+                                {errors.confirm_overdrawn}
+                            </p>
+                            <div className="flex items-start gap-2">
+                                <Checkbox
+                                    id="leave-type-confirm"
+                                    checked={data.confirm_overdrawn}
+                                    onCheckedChange={(v) =>
+                                        form.setData(
+                                            'confirm_overdrawn',
+                                            v === true,
+                                        )
+                                    }
+                                    aria-describedby="leave-type-confirm-error"
+                                />
+                                <Label
+                                    htmlFor="leave-type-confirm"
+                                    className="leading-snug"
+                                >
+                                    Save anyway
+                                </Label>
+                            </div>
+                        </div>
+                    )}
 
                     <DialogFooter>
                         <Button
