@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+    FLAG_HALF_LEAVE,
+    FLAG_MANUAL,
     cellDetails,
     cellLabel,
     cellStatus,
@@ -154,5 +156,41 @@ describe('small formatters', () => {
         expect(inWindow([4, 25], 4)).toBe(true);
         expect(inWindow([4, 25], 26)).toBe(false);
         expect(inWindow(null, 1)).toBe(false);
+    });
+});
+
+describe('half-day leave', () => {
+    const present: GridCell = [
+        'P',
+        FLAG_HALF_LEAVE,
+        '13:30',
+        '18:00',
+        270,
+        0,
+        0,
+        0,
+    ];
+    const absent: GridCell = ['A', FLAG_HALF_LEAVE, null, null, 0, 0, 0, 0];
+
+    it('says so in the accessible name, after the worked half', () => {
+        expect(cellLabel(day('2026-11-02'), present, true)).toBe(
+            '2 Nov, Present, half-day leave, in 1:30 PM, out 6:00 PM',
+        );
+        expect(cellLabel(day('2026-11-03'), absent, true)).toBe(
+            '3 Nov, Absent, half-day leave',
+        );
+    });
+
+    it('adds a detail line, and none without the flag', () => {
+        expect(cellDetails(present)).toContain('Half-day leave');
+        expect(
+            cellDetails(['P', FLAG_MANUAL, '09:00', '18:00', 540, 0, 0, 0]),
+        ).not.toContain('Half-day leave');
+    });
+
+    it('formats half totals with one decimal', () => {
+        expect(formatCount(2.5)).toBe('2.5');
+        expect(formatCount(0.5)).toBe('0.5');
+        expect(formatCount(3)).toBe('3');
     });
 });

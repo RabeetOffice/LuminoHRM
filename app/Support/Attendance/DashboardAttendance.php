@@ -32,11 +32,14 @@ use Illuminate\Database\Eloquent\Builder;
  *              to be missing then.
  *   absent     a row today with status absent (only a manual correction can set it on the open day)
  *   pending    a row today with a null status (punches waiting to be calculated; never counted as present)
+ *   on_leave   a row today with status on_leave (a full day of approved leave; a half-day leave day is counted by its
+ *              worked half, present or absent, as everywhere else). Created before the nightly close by
+ *              AttendanceRebuilder::rebuildLeaveToday, every minute
  */
 final class DashboardAttendance
 {
-    /** Statuses drawn on the 30-day chart. Pending (null), leave, holidays and weekends are not. */
-    public const TREND_STATUSES = ['present', 'late', 'half_day', 'absent'];
+    /** Statuses drawn on the 30-day chart. Pending (null), holidays and weekends are not. */
+    public const TREND_STATUSES = ['present', 'late', 'half_day', 'absent', 'on_leave'];
 
     public const TREND_DAYS = 30;
 
@@ -58,7 +61,7 @@ final class DashboardAttendance
     }
 
     /**
-     * @return array{date: string, open: bool, started: bool, start_date: string|null, present: int, late: int, absent: int, pending: int, not_in: int|null, expected: int|null, holiday: bool, last_punch: array{date: string, time: string}|null}
+     * @return array{date: string, open: bool, started: bool, start_date: string|null, present: int, late: int, absent: int, pending: int, on_leave: int, not_in: int|null, expected: int|null, holiday: bool, last_punch: array{date: string, time: string}|null}
      */
     public function today(): array
     {
@@ -70,11 +73,13 @@ final class DashboardAttendance
         $late = 0;
         $absent = 0;
         $pending = 0;
+        $onLeave = 0;
 
         foreach ($rows as $row) {
             match ($row['status']) {
                 null => $pending++,
                 'absent' => $absent++,
+                'on_leave' => $onLeave++,
                 default => null,
             };
 
@@ -108,6 +113,7 @@ final class DashboardAttendance
             'late' => $late,
             'absent' => $absent,
             'pending' => $pending,
+            'on_leave' => $onLeave,
             'not_in' => $notIn,
             'expected' => $expected,
             'holiday' => $holiday,

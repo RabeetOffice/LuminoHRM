@@ -11,6 +11,7 @@ import { CorrectionDialog } from '@/components/attendance/correction-dialog';
 import {
     AttendanceStatusPill,
     STATUS_META,
+    halfLeaveLabel,
 } from '@/components/attendance/status-symbol';
 import type { AttendanceStatusValue } from '@/components/attendance/status-symbol';
 import { Avatar } from '@/components/hrm/avatar';
@@ -66,6 +67,8 @@ type DailyRow = {
     overtime_minutes: number;
     /** With no record: the open day's Holiday / Weekend for this person, else null. */
     status: AttendanceStatusValue;
+    /** Half-day leave: 'am' first half, 'pm' second half; the status is the worked half. */
+    leave_half: 'am' | 'pm' | null;
     is_manual: boolean;
     /** The manual row's status was chosen by hand. */
     status_overridden: boolean;
@@ -269,6 +272,11 @@ export default function Daily({
             <div className="grid gap-1">
                 <div className="flex flex-wrap items-center gap-1.5">
                     {pill}
+                    {halfLeaveLabel(row.leave_half) !== null && (
+                        <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-500/15 dark:text-blue-300">
+                            {halfLeaveLabel(row.leave_half)}
+                        </span>
+                    )}
                     {row.is_manual && (
                         <span
                             className="rounded-full border px-2 py-0.5 text-[11px] font-medium text-muted-foreground"

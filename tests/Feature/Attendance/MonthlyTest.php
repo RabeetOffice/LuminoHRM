@@ -509,3 +509,28 @@ it('lists only the departments of people in a manager scope, and every departmen
     expect(array_column(mgProps($this, userWithRole('admin'), 'month=2026-11')['departments'], 'id'))
         ->toContain($mine->id, $theirs->id);
 });
+
+// ---------------------------------------------------------------- half-day leave (Phase 4)
+
+it('marks half-day leave and counts it as halves', function () {
+    $admin = userWithRole('admin');
+    $e = mgPerson();
+    mgDay($e, '2026-11-02', 'present', ['leave_half' => 'am', 'clock_in' => '2026-11-02 13:30:00', 'clock_out' => '2026-11-02 18:00:00', 'worked_minutes' => 270]);
+    mgDay($e, '2026-11-03', 'absent', ['leave_half' => 'pm', 'clock_in' => '2026-11-03 09:00:00', 'clock_out' => '2026-11-03 11:00:00', 'worked_minutes' => 120]);
+    mgDay($e, '2026-11-04', 'on_leave', ['clock_in' => null, 'clock_out' => null, 'worked_minutes' => 0]);
+    mgDay($e, '2026-11-05', 'present', ['worked_minutes' => 540]);
+    // A manual row ignores a leftover half.
+    mgDay($e, '2026-11-06', 'present', ['is_manual' => true, 'leave_half' => 'am', 'worked_minutes' => 480]);
+
+    $row = mgRow(mgProps($this, $admin, 'month=2026-11'), $e);
+
+    expect($row['cells'][1])->toBe(['P', MonthGrid::FLAG_HALF_LEAVE, '13:30', '18:00', 270, 0, 0, 0])
+        ->and($row['cells'][2])->toBe(['A', MonthGrid::FLAG_HALF_LEAVE, '09:00', '11:00', 120, 0, 0, 0])
+        ->and($row['cells'][3][1] & MonthGrid::FLAG_HALF_LEAVE)->toBe(0)
+        ->and($row['cells'][5][1])->toBe(MonthGrid::FLAG_MANUAL)
+        ->and($row['totals'])->toBe([
+            'present' => 2.5, 'late' => 0, 'half_day' => 0, 'absent' => 0.5, 'on_leave' => 2, 'off' => 0,
+            'worked_minutes' => 270 + 120 + 540 + 480, 'late_minutes' => 0, 'overtime_minutes' => 0,
+            'equivalent' => 2.5, 'working_days' => 3,
+        ]);
+});

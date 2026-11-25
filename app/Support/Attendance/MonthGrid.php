@@ -23,7 +23,9 @@ use DateTimeZone;
  *     (attendances.status null);
  *   - flags: FLAG_MANUAL | FLAG_EARLY | FLAG_OVERTIME | FLAG_ATTENTION | FLAG_NEXT_DAY (the clock-out falls on a later
  *     calendar date than the attendance day, e.g. a night shift ending at 06:00) | FLAG_OVERRIDDEN (a manual row whose
- *     status was chosen by hand, attendances.status_overridden: the correction dialog starts on that status);
+ *     status was chosen by hand, attendances.status_overridden: the correction dialog starts on that status) |
+ *     FLAG_HALF_LEAVE (half-day leave, attendances.leave_half set on a non-manual row: the code describes the worked
+ *     half, P or A);
  *   - in / out: "H:i" wall-clock times as recorded (or null); worked, late, early, overtime: minutes.
  *
  * The employment window of a person in this month is from max(joining date, settings('attendance.start_date') when
@@ -33,11 +35,14 @@ use DateTimeZone;
  * Totals count only days inside the window with a decided status:
  *   present-equivalent = present + late + 0.5 x half day
  *   working days       = present + late + half day + absent      (on leave, holiday, weekend and pending are not)
+ * A half-day leave day counts half: present 0.5 + on leave 0.5 when the worked half was enough, absent 0.5 + on leave
+ * 0.5 when it was not; so it is half a working day. Totals are then halves (floats); whole values stay ints. A manual
+ * row ignores leave_half (a manual correction ignores leave).
  *
  * Reads: one query for the month's holidays, one query per 500 employees for their attendance rows; nothing per day
  * or per cell.
  *
- * @phpstan-type Stored array{status: string|null, in: string|null, out: string|null, next_day: bool, worked: int, late: int, early: int, overtime: int, manual: bool, attention: bool, overridden: bool}
+ * @phpstan-type Stored array{status: string|null, in: string|null, out: string|null, next_day: bool, worked: int, late: int, early: int, overtime: int, manual: bool, attention: bool, overridden: bool, half_leave: bool}
  */
 final class MonthGrid
 {
@@ -64,6 +69,9 @@ final class MonthGrid
     public const FLAG_NEXT_DAY = 16;
 
     public const FLAG_OVERRIDDEN = 32;
+
+    /** Half-day leave (attendances.leave_half): the code describes the worked half. */
+    public const FLAG_HALF_LEAVE = 64;
 
     private const CHUNK = 500;
 
@@ -164,7 +172,7 @@ final class MonthGrid
                 ->betweenDates($this->first, $this->last)
                 ->toBase()
                 ->get(['employee_id', 'date', 'status', 'clock_in', 'clock_out', 'worked_minutes', 'late_minutes',
-                    'early_minutes', 'overtime_minutes', 'is_manual', 'status_overridden', 'needs_attention'])
+                    'early_minutes', 'overtime_minutes', 'is_manual', 'status_overridden', 'needs_attention', 'leave_half'])
                 ->each(function (object $raw) use (&$stored): void {
                     $row = (array) $raw;
                     $stored[(int) $row['employee_id']][(int) substr((string) $row['date'], 8, 2)] = self::stored($row);
@@ -219,6 +227,9 @@ final class MonthGrid
         $totals['equivalent'] = $totals['present'] + $totals['late'] + $totals['half_day'] / 2;
         $totals['working_days'] = $totals['present'] + $totals['late'] + $totals['half_day'] + $totals['absent'];
 
+        // Halves from half-day leave are floats; a whole value is given back as an int (20.0 -> 20).
+        $totals = array_map(fn (int|float $v): int|float => is_float($v) && fmod($v, 1.0) === 0.0 ? (int) $v : $v, $totals);
+
         return ['window' => $window, 'cells' => array_values($cells), 'totals' => $totals];
     }
 
@@ -269,6 +280,8 @@ final class MonthGrid
             'manual' => (bool) ($row['is_manual'] ?? false),
             'attention' => (bool) ($row['needs_attention'] ?? false),
             'overridden' => (bool) ($row['status_overridden'] ?? false),
+            // A manual correction ignores leave: a half left on a manual row is not shown or counted.
+            'half_leave' => ! ($row['is_manual'] ?? false) && in_array($row['leave_half'] ?? null, ['am', 'pm'], true),
         ];
     }
 
@@ -283,7 +296,8 @@ final class MonthGrid
             | ($row['overtime'] > 0 ? self::FLAG_OVERTIME : 0)
             | ($row['attention'] ? self::FLAG_ATTENTION : 0)
             | ($row['next_day'] ? self::FLAG_NEXT_DAY : 0)
-            | ($row['overridden'] ? self::FLAG_OVERRIDDEN : 0);
+            | ($row['overridden'] ? self::FLAG_OVERRIDDEN : 0)
+            | ($row['half_leave'] ? self::FLAG_HALF_LEAVE : 0);
 
         return [
             $row['status'] === null ? self::PENDING : (self::CODES[$row['status']] ?? self::PENDING),
@@ -309,10 +323,16 @@ final class MonthGrid
             return; // pending: never counted
         }
 
-        match ($status) {
-            'holiday', 'weekend' => $totals['off']++,
-            default => $totals[$status]++,
-        };
+        if ($row['half_leave'] && ($status === 'present' || $status === 'absent')) {
+            // Half-day leave: half a day of leave, half a day as the worked half was decided.
+            $totals[$status] += 0.5;
+            $totals['on_leave'] += 0.5;
+        } else {
+            match ($status) {
+                'holiday', 'weekend' => $totals['off']++,
+                default => $totals[$status]++,
+            };
+        }
 
         $totals['worked_minutes'] += $row['worked'];
         $totals['late_minutes'] += $row['late'];

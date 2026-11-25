@@ -32,6 +32,7 @@ export type GridDay = {
     holiday: string | null;
 };
 
+/** Counts may be halves (half-day leave: 0.5 leave + 0.5 present or absent). */
 export type GridTotals = {
     present: number;
     late: number;
@@ -57,6 +58,11 @@ export const FLAG_ATTENTION = 8;
 export const FLAG_NEXT_DAY = 16;
 /** A manual row whose status was chosen by hand (attendances.status_overridden). */
 export const FLAG_OVERRIDDEN = 32;
+/**
+ * Half-day leave (attendances.leave_half): the code is the worked half
+ * (present or absent); the day counts 0.5 leave + 0.5 of that status.
+ */
+export const FLAG_HALF_LEAVE = 64;
 
 /** The server's one-letter codes; "-" is a day waiting to be calculated. */
 const CODE_STATUS: Record<string, AttendanceStatusValue> = {
@@ -164,6 +170,10 @@ export function cellDetails(cell: GridCell): string[] {
         lines.push(`Overtime ${formatMinutes(overtime)}`);
     }
 
+    if (hasFlag(cell, FLAG_HALF_LEAVE)) {
+        lines.push('Half-day leave');
+    }
+
     if (hasFlag(cell, FLAG_MANUAL)) {
         lines.push('Corrected by hand');
     }
@@ -193,6 +203,10 @@ export function cellLabel(
     }
 
     parts.push(statusMeta(cellStatus(cell)).label);
+
+    if (hasFlag(cell, FLAG_HALF_LEAVE)) {
+        parts.push('half-day leave');
+    }
 
     const [, , clockIn, clockOut] = cell;
 

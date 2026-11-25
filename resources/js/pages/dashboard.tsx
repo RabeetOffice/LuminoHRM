@@ -97,6 +97,7 @@ const SERIES_META: Record<TrendSeriesKey, { label: string; bar: string }> = {
     late: { label: 'Late', bar: 'bg-amber-400' },
     half_day: { label: 'Half Day', bar: 'bg-orange-400' },
     absent: { label: 'Absent', bar: 'bg-rose-500' },
+    on_leave: { label: 'On leave', bar: 'bg-blue-500' },
 };
 
 export default function Dashboard({
@@ -312,7 +313,7 @@ function PlaceholderCard({ title, note }: { title: string; note: string }) {
 }
 
 /**
- * Stacked bars per closed day (present, late, half day, absent), drawn with plain elements: no chart library. The
+ * Stacked bars per closed day (present, late, half day, absent, on leave), drawn with plain elements: no chart library. The
  * bars are decoration for sighted users; the same numbers are in a table for screen readers.
  */
 function TrendCard({ trend }: { trend: AttendanceTrend }) {

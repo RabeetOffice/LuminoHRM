@@ -195,6 +195,8 @@ export type AttendanceToday = {
     absent: number;
     /** Punches waiting to be calculated: never counted as present. */
     pending: number;
+    /** On a full day of approved leave today (a half-day leave day counts by its worked half). */
+    on_leave: number;
     /** Expected today with no punch yet; null before attendance has started. */
     not_in: number | null;
     expected: number | null;
@@ -230,7 +232,13 @@ export type MyMonthAttendance = {
     } | null;
 };
 
-export const TREND_SERIES = ['present', 'late', 'half_day', 'absent'] as const;
+export const TREND_SERIES = [
+    'present',
+    'late',
+    'half_day',
+    'absent',
+    'on_leave',
+] as const;
 
 export type TrendSeriesKey = (typeof TREND_SERIES)[number];
 
@@ -286,6 +294,7 @@ export function trendSeries(
             late: 0,
             half_day: 0,
             absent: 0,
+            on_leave: 0,
             total: 0,
         });
     }

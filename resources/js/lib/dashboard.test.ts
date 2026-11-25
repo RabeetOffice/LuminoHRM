@@ -13,6 +13,7 @@ import {
     personalAttendanceTiles,
     probationNote,
     shortDay,
+    TREND_SERIES,
     teamAttendanceTiles,
     trendMax,
     trendSeries,
@@ -164,6 +165,7 @@ describe('trendSeries', () => {
             late: 0,
             half_day: 3,
             absent: 1,
+            on_leave: 0,
             total: 4,
         });
         expect(series[1].total).toBe(0);
@@ -174,11 +176,21 @@ describe('trendSeries', () => {
         const series = trendSeries(days, [
             { date: '2026-11-24', status: 'present', count: 9 },
             { date: '2026-11-22', status: 'weekend', count: 5 },
-            { date: '2026-11-22', status: 'on_leave', count: 1 },
+            { date: '2026-11-22', status: 'holiday', count: 1 },
         ]);
 
         expect(series.map((d) => d.total)).toEqual([0, 0, 0]);
         expect(hasTrendData(series)).toBe(false);
+    });
+
+    test('charts full leave days as their own series', () => {
+        const series = trendSeries(days, [
+            { date: '2026-11-23', status: 'on_leave', count: 2 },
+            { date: '2026-11-23', status: 'present', count: 5 },
+        ]);
+
+        expect(TREND_SERIES).toContain('on_leave');
+        expect(series[2]).toMatchObject({ on_leave: 2, present: 5, total: 7 });
     });
 
     test('scale: the tallest bar, never below 1, and segment heights as percentages', () => {
@@ -210,6 +222,7 @@ const baseToday: AttendanceToday = {
     late: 2,
     absent: 0,
     pending: 0,
+    on_leave: 0,
     not_in: 3,
     expected: 10,
     holiday: false,

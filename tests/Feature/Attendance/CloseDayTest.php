@@ -398,8 +398,9 @@ it('closes the later days when one day of the catch-up fails', function () {
     Log::shouldHaveReceived('error')->with('Attendance day close failed', ['exception' => RuntimeException::class, 'date' => '2026-11-19'])->once();
 });
 
-// Measured: 10 queries to close a day of 55 employees, whether the close creates the rows or ingestion already made
-// pending ones (the updates are one bulk upsert per 200 rows, not one UPDATE per row).
+// Measured: 11 queries to close a day of 55 employees (10 before Phase 4; the leave days are one more read per batch),
+// whether the close creates the rows or ingestion already made pending ones (the updates are one bulk upsert per 200
+// rows, not one UPDATE per row).
 it('closes a day whose rows ingestion already created with the same queries as one it creates', function () {
     $staff = cdStaff(55);
     $this->travelTo(CarbonImmutable::parse('2026-12-01 04:30:00', 'Asia/Karachi'));
@@ -429,7 +430,7 @@ it('closes a day whose rows ingestion already created with the same queries as o
     }
     $existing = $queriesFor(fn () => $rebuilder->closeDay('2026-10-05'));
 
-    expect($existing)->toBe($created)->and($created)->toBeLessThanOrEqual(10)
+    expect($existing)->toBe($created)->and($created)->toBeLessThanOrEqual(11)
         ->and(Attendance::query()->where('date', '2026-10-05')->whereNull('status')->count())->toBe(0)
         ->and(Attendance::query()->where('date', '2026-10-05')->where('closed', true)->count())->toBe(55)
         ->and(Attendance::query()->where('date', '2026-10-05')->where('status', 'present')->count())->toBe(20);

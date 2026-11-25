@@ -1,5 +1,8 @@
 import { memo } from 'react';
-import { statusMeta } from '@/components/attendance/status-symbol';
+import {
+    HALF_LEAVE_MARK,
+    statusMeta,
+} from '@/components/attendance/status-symbol';
 import {
     Tooltip,
     TooltipContent,
@@ -8,6 +11,7 @@ import {
 import {
     FLAG_ATTENTION,
     FLAG_EARLY,
+    FLAG_HALF_LEAVE,
     FLAG_MANUAL,
     FLAG_OVERTIME,
     blankReason,
@@ -43,7 +47,8 @@ type Props = {
  * One person-day on the monthly grid: the status symbol from the shared status
  * table (status-symbol.tsx), a dot for early departure (bottom left) and for
  * overtime (bottom right), a "!" for a day that needs attention (top right),
- * and a ring for a day corrected by hand. Hover or keyboard focus shows the
+ * a small flag for half-day leave (top left, next to the worked half's
+ * symbol), and a ring for a day corrected by hand. Hover or keyboard focus shows the
  * times and minutes; the accessible name says it all in words, so nothing
  * depends on colour.
  *
@@ -76,6 +81,17 @@ export const DayCell = memo(function DayCell({
                     className="absolute -top-0.5 right-0.5 text-[10px] leading-none font-bold text-amber-600 dark:text-amber-400"
                 >
                     !
+                </span>
+            )}
+            {hasFlag(cell, FLAG_HALF_LEAVE) && (
+                <span
+                    aria-hidden="true"
+                    className={cn(
+                        'absolute -top-0.5 left-0.5 text-[10px] leading-none font-bold',
+                        HALF_LEAVE_MARK.symbolClass,
+                    )}
+                >
+                    {HALF_LEAVE_MARK.symbol}
                 </span>
             )}
             {hasFlag(cell, FLAG_EARLY) && (

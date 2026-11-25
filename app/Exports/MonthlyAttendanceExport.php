@@ -23,7 +23,11 @@ use PhpOffice\PhpSpreadsheet\Style\NumberFormat;
  *
  * Letters: P present, L late, HD half day, A absent, LV on leave, H holiday, W weekend; "…" pending calculation (a
  * row whose status is not worked out yet, never counted); "–" no record (also a day outside the employment window or
- * still to come). A key row under the table (after one blank row) says so.
+ * still to come). A half-day leave day gets "½" after the letter of its worked half ("P½" present, "A½" absent). A key
+ * row under the table (after one blank row) says so.
+ *
+ * Totals: a half-day leave day counts 0.5 present or absent + 0.5 on leave (MonthGrid), so the counts may be halves;
+ * they are written as numbers with at most one decimal (an int when whole).
  *
  * Names, codes and day letters are text cells (TextCells), so a name starting with "=" stays text. The totals (counts,
  * hours, minutes) are numeric cells, so Excel can sum them; a number is never read as a formula.
@@ -42,7 +46,10 @@ final class MonthlyAttendanceExport implements FromArray, WithCustomValueBinder,
     /** A day whose row is still pending calculation (status null). */
     public const PENDING = '…';
 
-    public const KEY = 'Key: P present · L late · HD half day · A absent · LV on leave · H holiday · W weekend · … pending calculation (not counted) · – no record';
+    /** Appended to the letter of a half-day leave day. */
+    public const HALF_LEAVE = '½';
+
+    public const KEY = 'Key: P present · L late · HD half day · A absent · LV on leave · H holiday · W weekend · ½ half-day leave · … pending calculation (not counted) · – no record';
 
     private const TOTALS = [
         'Present', 'Late', 'Half Day', 'Absent', 'On Leave', 'Weekend/Holiday', 'Present-equivalent', 'Working Days',
@@ -93,8 +100,9 @@ final class MonthlyAttendanceExport implements FromArray, WithCustomValueBinder,
                 ]),
                 ...array_map(fn (?array $cell) => self::letter($cell), $row['cells']),
                 // Numbers, so the totals can be summed in Excel.
-                (int) $t['present'], (int) $t['late'], (int) $t['half_day'], (int) $t['absent'], (int) $t['on_leave'], (int) $t['off'],
-                self::number($t['equivalent']), (int) $t['working_days'],
+                self::number($t['present']), (int) $t['late'], (int) $t['half_day'], self::number($t['absent']),
+                self::number($t['on_leave']), (int) $t['off'],
+                self::number($t['equivalent']), self::number($t['working_days']),
                 round($t['worked_minutes'] / 60, 2),
                 (int) $t['late_minutes'], (int) $t['overtime_minutes'],
             ];
@@ -161,12 +169,18 @@ final class MonthlyAttendanceExport implements FromArray, WithCustomValueBinder,
             return self::PENDING;
         }
 
-        return self::LETTERS[$cell[0]] ?? self::BLANK;
+        $letter = self::LETTERS[$cell[0]] ?? null;
+
+        if ($letter === null) {
+            return self::BLANK;
+        }
+
+        return ((int) $cell[1] & MonthGrid::FLAG_HALF_LEAVE) !== 0 ? $letter.self::HALF_LEAVE : $letter;
     }
 
-    /** 21 or 20.5: an int when whole. */
+    /** 21 or 20.5: an int when whole, else one decimal. */
     private static function number(int|float $value): int|float
     {
-        return fmod((float) $value, 1.0) === 0.0 ? (int) $value : (float) $value;
+        return fmod((float) $value, 1.0) === 0.0 ? (int) $value : round((float) $value, 1);
     }
 }

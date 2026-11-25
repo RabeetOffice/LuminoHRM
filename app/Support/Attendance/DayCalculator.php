@@ -10,8 +10,8 @@ use InvalidArgumentException;
  * The day rules, pure: one DayInput in, one DayResult out (or null). No database, no settings, no clock: everything it
  * needs is in the input, so the same input always gives the same result.
  *
- * Status precedence: holiday > weekend > on_leave > (exempt: present) > punches (half_day > late > present) > absent.
- * (A manual day never reaches the calculator: the rebuild skips it.)
+ * Status precedence: holiday > weekend > on_leave (full day) > half-day leave > (exempt: present) > punches
+ * (half_day > late > present) > absent. (A manual day never reaches the calculator: the rebuild skips it.)
  *
  * The day's punches:
  *   - the punches given ARE the day's (the rebuild groups them by punch_date, which the day cutoff decided when each
@@ -48,7 +48,18 @@ use InvalidArgumentException;
  *
  * Weekly off / holiday: status weekend / holiday, times recorded if there are punches, no late or early, worked minutes
  * count as overtime (same minimum), never flagged for attention. Exempt or on leave on a working day: present /
- * on_leave with no late, early or overtime and no attention flag; times and worked minutes are still recorded.
+ * on_leave with no late, early or overtime and no attention flag; times and worked minutes are still recorded. Full
+ * leave with punches stays on_leave (HR cancels the leave if the person really worked); it is recorded on an open day
+ * too, since approved leave is known in advance. onLeave and leaveHalf both set: onLeave.
+ *
+ * Half-day leave (leaveHalf 'am' / 'pm', on a working day; ignored on a holiday or weekly off, result leaveHalf null):
+ *   - the worked half must reach the half-day hours; lateness and early leaving are never counted (late 0, early 0);
+ *     overtime by the normal rule; leaveHalf is carried into the result;
+ *   - exempt: present;
+ *   - open day: no punches -> null (waits like any open day); punches -> present;
+ *   - closed day: two or more kept punches (after the double-tap and close-pair rules) and worked minutes at least
+ *     halfDayHours x 60 -> present; fewer minutes, or no punches -> absent; a single kept punch -> absent and needs
+ *     attention.
  */
 final class DayCalculator
 {
@@ -83,6 +94,10 @@ final class DayCalculator
 
         if ($in->singleRole !== null && $in->singleRole !== 'in' && $in->singleRole !== 'out') {
             throw new InvalidArgumentException("Not a single-time role [{$in->singleRole}].");
+        }
+
+        if ($in->leaveHalf !== null && $in->leaveHalf !== 'am' && $in->leaveHalf !== 'pm') {
+            throw new InvalidArgumentException("Not a leave half [{$in->leaveHalf}].");
         }
 
         // The cutoff is still validated (a caller passing garbage is a bug), but it no longer filters: the punches given
@@ -133,6 +148,13 @@ final class DayCalculator
                 overtimeMinutes: $worked >= $in->overtimeMinMinutes ? $worked : 0,
                 needsAttention: false,
             );
+        }
+
+        // Half-day leave on a working day (a full leave day wins). The status describes the worked half.
+        $half = $in->onLeave ? null : $in->leaveHalf;
+
+        if ($half !== null) {
+            return $this->halfLeave($in, $half, $first, $last, $onePunch, $clockIn, $clockOut, $worked, $end);
         }
 
         // Approved leave is known in advance, so it is recorded on an open day too.
@@ -192,6 +214,53 @@ final class DayCalculator
             earlyMinutes: $early,
             overtimeMinutes: $overtime,
             needsAttention: $in->closed && $onePunch,
+        );
+    }
+
+    /**
+     * A working day with half-day leave: the worked half needs the half-day hours. Never late, never early; overtime by
+     * the normal rule. Null on an open day without punches (it waits).
+     */
+    private function halfLeave(
+        DayInput $in,
+        string $half,
+        ?DateTimeImmutable $first,
+        ?DateTimeImmutable $last,
+        bool $onePunch,
+        ?string $clockIn,
+        ?string $clockOut,
+        int $worked,
+        DateTimeImmutable $end,
+    ): ?DayResult {
+        if ($first === null && ! $in->closed) {
+            return null;
+        }
+
+        if ($in->isExempt) {
+            return new DayResult('present', $clockIn, $clockOut, $worked, 0, 0, 0, false, $half);
+        }
+
+        $overtime = 0;
+
+        if ($first !== null && $last !== null) {
+            $overtimeFrom = $first > $end ? $first : $end;
+            $after = $last > $overtimeFrom ? $this->minutes($overtimeFrom, $last) : 0;
+            $overtime = $after >= $in->overtimeMinMinutes ? $after : 0;
+        }
+
+        $enough = $last !== null && $worked >= $in->halfDayHours * 60;
+
+        return new DayResult(
+            // An open day with punches is present (the worked half is decided when the day is closed).
+            status: ! $in->closed || $enough ? 'present' : 'absent',
+            clockIn: $clockIn,
+            clockOut: $clockOut,
+            workedMinutes: $worked,
+            lateMinutes: 0,
+            earlyMinutes: 0,
+            overtimeMinutes: $overtime,
+            needsAttention: $in->closed && $onePunch,
+            leaveHalf: $half,
         );
     }
 

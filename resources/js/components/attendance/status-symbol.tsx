@@ -104,6 +104,30 @@ export const STATUS_META: Record<
     },
 };
 
+/**
+ * The half-day leave mark (attendances.leave_half): drawn next to the symbol
+ * of the worked half (present or absent), on the monthly grid, in its legend
+ * and on the Daily list. Same blue as On Leave.
+ */
+export const HALF_LEAVE_MARK = {
+    label: 'Half-day leave',
+    symbol: '⚑',
+    symbolClass: 'text-blue-600 dark:text-blue-400',
+} as const;
+
+/** "½ leave (first half)" / "½ leave (second half)"; null for no half. */
+export function halfLeaveLabel(half: string | null | undefined): string | null {
+    if (half === 'am') {
+        return '½ leave (first half)';
+    }
+
+    if (half === 'pm') {
+        return '½ leave (second half)';
+    }
+
+    return null;
+}
+
 /** The metadata for a status; null (pending) and unknown values give "Pending". */
 export function statusMeta(status: string | null | undefined): StatusMeta {
     return status !== null &&

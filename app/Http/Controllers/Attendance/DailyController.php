@@ -303,6 +303,9 @@ class DailyController extends Controller
             'early_minutes' => (int) ($a->early_minutes ?? 0),
             'overtime_minutes' => (int) ($a->overtime_minutes ?? 0),
             'status' => $a->status ?? $offDay,
+            // Half-day leave ('am' first half, 'pm' second half): the status describes the worked half. A manual row
+            // ignores leave, so a half left on one is not shown.
+            'leave_half' => $a !== null && ! $a->is_manual && in_array($a->leave_half, ['am', 'pm'], true) ? $a->leave_half : null,
             'is_manual' => (bool) ($a->is_manual ?? false),
             'status_overridden' => (bool) ($a->status_overridden ?? false),
             'needs_attention' => (bool) ($a->needs_attention ?? false),

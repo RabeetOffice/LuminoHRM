@@ -401,3 +401,34 @@ it('reads a fixed number of queries whatever the number of people and days', fun
     // Measured: 10 queries for the whole request; the bound leaves a margin of 2.
     expect($large)->toBe($small)->and($large)->toBeLessThanOrEqual(12);
 });
+
+// ---------------------------------------------------------------- leave (Phase 4)
+
+it('charts on leave days and counts today\'s full leave', function () {
+    $a = daEmployee();
+    $b = daEmployee();
+    $c = daEmployee();
+    daRow($a, '2026-11-23', ['status' => 'on_leave', 'clock_in' => null, 'clock_out' => null, 'worked_minutes' => 0]);
+    daRow($b, '2026-11-23', ['status' => 'present', 'leave_half' => 'am']); // half-day leave: counted by its worked half
+    daRow($a, '2026-11-24', ['status' => 'on_leave', 'clock_in' => null, 'clock_out' => null, 'worked_minutes' => 0]);
+    daRow($b, '2026-11-24', ['status' => 'present', 'leave_half' => 'pm']);
+    daRow($c, '2026-11-24', ['status' => 'on_leave', 'clock_in' => null, 'clock_out' => null, 'worked_minutes' => 0]);
+
+    $props = daProps($this->actingAs(userWithRole('admin'))->get('/dashboard')->assertOk());
+
+    expect(daTrend($props))->toBe(['2026-11-23' => ['on_leave' => 1, 'present' => 1]])
+        ->and($props['attendanceToday']['on_leave'])->toBe(2)
+        // People on leave have a row: never "not in yet".
+        ->and($props['attendanceToday']['not_in'])->toBe(0)
+        ->and(DashboardAttendance::TREND_STATUSES)->toContain('on_leave');
+});
+
+it('counts only the manager\'s team on leave today', function () {
+    [$managerUser, , $a, , $outsider] = daTeam();
+    daRow($a, '2026-11-24', ['status' => 'on_leave', 'clock_in' => null, 'clock_out' => null, 'worked_minutes' => 0]);
+    daRow($outsider, '2026-11-24', ['status' => 'on_leave', 'clock_in' => null, 'clock_out' => null, 'worked_minutes' => 0]);
+
+    $props = daProps($this->actingAs($managerUser)->get('/dashboard')->assertOk());
+
+    expect($props['attendanceToday']['on_leave'])->toBe(1);
+});

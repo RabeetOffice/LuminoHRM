@@ -280,3 +280,49 @@ it('ignores the single role when there are two times', function () {
 it('rejects an unknown single role', function () {
     (new DayCalculator)->calculate(dcInput(['14:00'], ['singleRole' => 'middle']));
 })->throws(InvalidArgumentException::class);
+
+/*
+| Phase 4: approved leave. leaveHalf 'am' / 'pm' = half-day leave (the worked half needs the 4 h half-day threshold,
+| never late or early); onLeave = a full leave day. Rows: status, in, out, worked, late, early, overtime, attention,
+| leaveHalf.
+*/
+
+it('decides a day with approved leave', function (array $punches, array $overrides, array $expected) {
+    $result = (new DayCalculator)->calculate(dcInput($punches, $overrides));
+
+    expect($result)->not->toBeNull()
+        ->and([...dcRow($result), $result->leaveHalf])->toBe($expected);
+})->with([
+    // Half-day leave, closed working day
+    'half leave, two punches at the threshold: present, late 0 though the clock-in is late' => [['13:30', '17:30'], ['leaveHalf' => 'am'], ['present', '13:30:00', '17:30:00', 240, 0, 0, 0, false, 'am']],
+    'half leave, first half worked, leaves at 13:00: present, no early minutes' => [['09:00', '13:00'], ['leaveHalf' => 'pm'], ['present', '09:00:00', '13:00:00', 240, 0, 0, 0, false, 'pm']],
+    'half leave, two punches below the threshold: absent' => [['09:00', '12:59'], ['leaveHalf' => 'pm'], ['absent', '09:00:00', '12:59:00', 239, 0, 0, 0, false, 'pm']],
+    'half leave, one punch: absent and flagged' => [['14:00'], ['leaveHalf' => 'am'], ['absent', null, '14:00:00', 0, 0, 0, 0, true, 'am']],
+    'half leave, one late clock-in punch: absent and flagged, never late' => [['10:00'], ['leaveHalf' => 'pm'], ['absent', '10:00:00', null, 0, 0, 0, 0, true, 'pm']],
+    'half leave, two punches under an hour apart: the close-pair rule makes it one punch' => [['13:30', '14:00'], ['leaveHalf' => 'am'], ['absent', null, '13:30:00', 0, 0, 0, 0, true, 'am']],
+    'half leave, a double tap is one punch (the midpoint rule gives its role)' => [['13:30', '13:32'], ['leaveHalf' => 'am'], ['absent', null, '13:30:00', 0, 0, 0, 0, true, 'am']],
+    'half leave, no punches: absent' => [[], ['leaveHalf' => 'am'], ['absent', null, null, 0, 0, 0, 0, false, 'am']],
+    'half leave, overtime by the normal rule' => [['14:00', '19:00'], ['leaveHalf' => 'am'], ['present', '14:00:00', '19:00:00', 300, 0, 0, 60, false, 'am']],
+    'half leave, entered times taken literally' => [['13:30', '14:00'], ['leaveHalf' => 'am', 'closePairRule' => false], ['absent', '13:30:00', '14:00:00', 30, 0, 0, 0, false, 'am']],
+    // Open day
+    'half leave, open day with punches: present, never late' => [['12:45'], ['leaveHalf' => 'am', 'closed' => false], ['present', '12:45:00', null, 0, 0, 0, 0, false, 'am']],
+    'half leave, open day, short pair: present (decided at the close)' => [['09:00', '11:00'], ['leaveHalf' => 'pm', 'closed' => false], ['present', '09:00:00', '11:00:00', 120, 0, 0, 0, false, 'pm']],
+    // Holiday, weekly off, exempt, full leave
+    'half leave on a holiday: holiday, no leave half' => [[], ['leaveHalf' => 'am', 'isHoliday' => true], ['holiday', null, null, 0, 0, 0, 0, false, null]],
+    'half leave on a weekly off: weekend, no leave half' => [[], ['leaveHalf' => 'pm', 'date' => DC_SATURDAY], ['weekend', null, null, 0, 0, 0, 0, false, null]],
+    'exempt with half leave: present, leave half kept' => [[], ['leaveHalf' => 'am', 'isExempt' => true], ['present', null, null, 0, 0, 0, 0, false, 'am']],
+    'full leave and a half both set: full leave' => [[], ['onLeave' => true, 'leaveHalf' => 'am'], ['on_leave', null, null, 0, 0, 0, 0, false, null]],
+    'full leave with punches: on leave, times recorded, not flagged' => [['09:30', '18:00'], ['onLeave' => true], ['on_leave', '09:30:00', '18:00:00', 510, 0, 0, 0, false, null]],
+    'full leave on an open day without punches: on leave' => [[], ['onLeave' => true, 'closed' => false], ['on_leave', null, null, 0, 0, 0, 0, false, null]],
+    'full leave, single punch on a closed day: on leave, not flagged' => [['09:00'], ['onLeave' => true], ['on_leave', '09:00:00', null, 0, 0, 0, 0, false, null]],
+    'no leave: leave half null' => [['09:00', '18:00'], [], ['present', '09:00:00', '18:00:00', 540, 0, 0, 0, false, null]],
+]);
+
+it('waits on an open half-leave day without punches', function () {
+    expect((new DayCalculator)->calculate(dcInput([], ['closed' => false, 'leaveHalf' => 'am'])))->toBeNull()
+        ->and((new DayCalculator)->calculate(dcInput([], ['closed' => false, 'leaveHalf' => 'pm', 'isExempt' => true])))->toBeNull();
+});
+
+it('rejects an unknown leave half', function () {
+    (new DayCalculator)->calculate(dcInput([], ['leaveHalf' => 'full']));
+})->throws(InvalidArgumentException::class);

@@ -129,7 +129,7 @@ it('names the file after the month and writes one row per employee with letters 
     // Header, one employee, a blank row, the key.
     expect($rows)->toHaveCount(4)
         ->and($rows[2][0])->toBeNull()
-        ->and($rows[3][0])->toBe('Key: P present · L late · HD half day · A absent · LV on leave · H holiday · W weekend · … pending calculation (not counted) · – no record');
+        ->and($rows[3][0])->toBe('Key: P present · L late · HD half day · A absent · LV on leave · H holiday · W weekend · ½ half-day leave · … pending calculation (not counted) · – no record');
     expect(array_slice($rows[0], 0, 6))->toBe(['Employee Code', 'Name', 'Department', 'Designation', '01 Sun', '02 Mon'])
         ->and(array_slice($rows[0], 4 + 30))->toBe([
             'Present', 'Late', 'Half Day', 'Absent', 'On Leave', 'Weekend/Holiday', 'Present-equivalent', 'Working Days',
@@ -272,4 +272,26 @@ it('runs no query per employee or per day', function () {
     $march = $count('2026-03');
 
     expect($march)->toBe($february)->and($march)->toBeLessThanOrEqual(10);
+});
+
+// ---------------------------------------------------------------- half-day leave (Phase 4)
+
+it('writes half-day leave as P½ / A½ and the halves in numeric totals', function () {
+    $admin = userWithRole('admin');
+    $e = mePerson(['employee_code' => 'LD-0002']);
+    meDay($e, '2026-11-02', 'present', ['leave_half' => 'am', 'worked_minutes' => 270]);
+    meDay($e, '2026-11-03', 'absent', ['leave_half' => 'pm', 'worked_minutes' => 120]);
+    meDay($e, '2026-11-04', 'on_leave', ['worked_minutes' => 0, 'clock_in' => null, 'clock_out' => null]);
+    meDay($e, '2026-11-05', 'present', ['worked_minutes' => 540]);
+
+    $sheet = meSheet($this->actingAs($admin)->get('/attendance/monthly/export?month=2026-11')->assertOk());
+    $line = $sheet->toArray(null, false, false)[1];
+
+    expect(array_slice($line, 4, 6))->toBe(['–', 'P½', 'A½', 'LV', 'P', '–'])
+        // Present, Late, Half Day, Absent, On Leave, Weekend/Holiday, Present-equivalent, Working Days.
+        ->and(array_slice($line, 4 + 30, 8))->toBe([1.5, 0, 0, 0.5, 2, 0, 1.5, 2]);
+
+    foreach (['AI', 'AL', 'AM'] as $column) {
+        expect($sheet->getCell($column.'2')->getDataType())->toBe(DataType::TYPE_NUMERIC);
+    }
 });

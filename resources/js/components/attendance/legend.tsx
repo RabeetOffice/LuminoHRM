@@ -1,5 +1,6 @@
 import {
     ATTENDANCE_STATUSES,
+    HALF_LEAVE_MARK,
     STATUS_META,
 } from '@/components/attendance/status-symbol';
 import { cn } from '@/lib/utils';
@@ -8,7 +9,7 @@ import { cn } from '@/lib/utils';
  * The key to the monthly grid: every status symbol from the shared status
  * table, the blank mark, and the markers drawn on a cell (early departure and
  * overtime dots, the ring of a day corrected by hand, the "!" of a day that
- * needs attention).
+ * needs attention, the small flag of a half-day leave day).
  */
 export function AttendanceLegend({ className }: { className?: string }) {
     return (
@@ -41,6 +42,18 @@ export function AttendanceLegend({ className }: { className?: string }) {
                     –
                 </span>
                 Not yet / pending / no record
+            </li>
+            <li className="flex items-center gap-1.5">
+                <span
+                    aria-hidden="true"
+                    className={cn(
+                        'w-3 text-center text-[10px] leading-none font-bold',
+                        HALF_LEAVE_MARK.symbolClass,
+                    )}
+                >
+                    {HALF_LEAVE_MARK.symbol}
+                </span>
+                {HALF_LEAVE_MARK.label} (with the worked half)
             </li>
             <li className="flex items-center gap-1.5">
                 <span

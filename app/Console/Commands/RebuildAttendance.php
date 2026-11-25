@@ -9,7 +9,8 @@ use Illuminate\Console\Command;
 
 /**
  * Every minute (routes/console.php): decides again the attendance days that punch ingestion marked needs_rebuild,
- * in batches of 500 for at most about 45 seconds.
+ * in batches of 500 for at most about 45 seconds; then creates today's rows for people on approved leave today who have
+ * none yet (AttendanceRebuilder::rebuildLeaveToday), so they show as On Leave before the nightly close.
  *
  * By hand, for days already closed (for example after changing someone's shift):
  *   php artisan hrm:attendance-rebuild --from=2026-11-01 --to=2026-11-30 --employee=12 --employee=LD-0007
@@ -52,6 +53,10 @@ class RebuildAttendance extends Command
             } while ($done >= 500 && microtime(true) - $started < 45);
 
             $this->output->writeln("attendance_rebuild pending={$total}");
+
+            // Today's approved leave without a row yet, so it shows as On Leave before the nightly close.
+            $leave = $rebuilder->rebuildLeaveToday();
+            $this->output->writeln("attendance_rebuild leave_today={$leave}");
 
             return self::SUCCESS;
         }

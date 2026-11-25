@@ -18,7 +18,8 @@ namespace App\Support\Attendance;
  *   closed                the day is over (only then is a missing working day Absent, a half day decided, early
  *                         minutes counted and a single punch flagged)
  *   overtimeMinMinutes    overtime shorter than this is not recorded
- *   onLeave               approved leave covers the day; always false until the Leave phase supplies it
+ *   onLeave               approved leave covers the whole day (a full leave day, or an approved first half and second
+ *                         half on the same date): status on_leave, times recorded, no markers. Wins over leaveHalf
  *   duplicatePunchMinutes punches less than this many minutes after the previous punch form one cluster (a double tap) (settings('attendance.duplicate_punch_minutes'); 0 = keep every distinct punch)
  *   dayCutoff             "H:i" (settings('attendance.day_cutoff_time')): validated only. It decided each punch's day
  *                         when the punch was stored; the calculator no longer filters by it, so changing the cutoff
@@ -30,6 +31,10 @@ namespace App\Support\Attendance;
  *                         at or after it). 'in' or 'out' when a person entered exactly one time and said which it is:
  *                         that one kept punch is then always the clock-in ('in': the late rule applies) or always the
  *                         clock-out ('out': never late), whatever the midpoint. Ignored with two or more kept punches
+ *   leaveHalf             'am' (first half) or 'pm' (second half) when approved half-day leave covers one half of the day,
+ *                         else null. The worked half must reach halfDayHours: present when it does, absent when it does
+ *                         not (fewer minutes, a single punch, or no punches once closed); never late, never early. Ignored
+ *                         on a holiday or weekly off and when onLeave is true
  */
 final readonly class DayInput
 {
@@ -54,5 +59,6 @@ final readonly class DayInput
         public string $dayCutoff = '00:00',
         public bool $closePairRule = true,
         public ?string $singleRole = null,
+        public ?string $leaveHalf = null,
     ) {}
 }
