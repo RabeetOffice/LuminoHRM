@@ -174,6 +174,36 @@ it('exports every employee of the month, not one page, and honours search and de
         ->and($search)->toHaveCount(2);
 });
 
+it('blanks the days after a mid-month leaver\'s last working day and does not count them', function () {
+    $admin = userWithRole('admin');
+    $e = mePerson(['last_name' => 'Leaver', 'status' => 'resigned', 'last_working_day' => '2026-11-12']);
+    meDay($e, '2026-11-11', 'present', ['worked_minutes' => 540]);
+    meDay($e, '2026-11-12', 'late', ['worked_minutes' => 500, 'late_minutes' => 15]);
+    meDay($e, '2026-11-13', 'present', ['worked_minutes' => 540]);
+    meDay($e, '2026-11-16', 'absent', ['worked_minutes' => 0, 'clock_in' => null, 'clock_out' => null]);
+
+    $rows = meSheet($this->actingAs($admin)->get('/attendance/monthly/export?month=2026-11'))->toArray(null, false, false);
+
+    expect($rows)->toHaveCount(2);
+    $line = $rows[1];
+    expect(array_slice($line, 4 + 10, 6))->toBe(['P', 'L', '–', '–', '–', '–'])
+        ->and(array_slice($line, 4 + 30))->toBe(['1', '1', '0', '0', '0', '0', '2', '2', '17.33', '15', '0']);
+});
+
+it('leaves out a leaver with no last working day unless they have an attendance row in the month', function () {
+    $admin = userWithRole('admin');
+    mePerson(['last_name' => 'Stays']);
+    $gone = mePerson(['last_name' => 'Gone', 'status' => 'terminated', 'last_working_day' => null]);
+    meDay($gone, '2026-10-20', 'present');
+
+    $october = meSheet($this->actingAs($admin)->get('/attendance/monthly/export?month=2026-10'))->toArray(null, false, false);
+    $november = meSheet($this->actingAs($admin)->get('/attendance/monthly/export?month=2026-11'))->toArray(null, false, false);
+
+    expect(array_column(array_slice($october, 1), 1))->toHaveCount(2)
+        ->and(array_column(array_slice($november, 1), 1))->toHaveCount(1)
+        ->and($november[1][1])->toEndWith('Stays');
+});
+
 it('writes one audit entry with the month, count and filters and no row data', function () {
     $admin = userWithRole('admin');
     mePerson(['first_name' => 'Ada', 'last_name' => 'Lovelace']);

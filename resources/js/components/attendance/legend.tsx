@@ -7,7 +7,8 @@ import { cn } from '@/lib/utils';
 /**
  * The key to the monthly grid: every status symbol from the shared status
  * table, the blank mark, and the markers drawn on a cell (early departure and
- * overtime dots, the ring of a day corrected by hand).
+ * overtime dots, the ring of a day corrected by hand, the "!" of a day that
+ * needs attention).
  */
 export function AttendanceLegend({ className }: { className?: string }) {
     return (
@@ -61,6 +62,15 @@ export function AttendanceLegend({ className }: { className?: string }) {
                     className="size-3.5 rounded-sm ring-2 ring-primary/70 ring-inset"
                 />
                 Corrected by hand
+            </li>
+            <li className="flex items-center gap-1.5">
+                <span
+                    aria-hidden="true"
+                    className="w-3 text-center text-xs leading-none font-bold text-amber-600 dark:text-amber-400"
+                >
+                    !
+                </span>
+                Needs attention
             </li>
         </ul>
     );

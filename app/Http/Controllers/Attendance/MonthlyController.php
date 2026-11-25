@@ -12,6 +12,7 @@ use App\Support\Attendance\MonthGrid;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
+use App\Support\EmployeeRoles;
 use App\Support\ListQuery;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
@@ -28,14 +29,22 @@ use Symfony\Component\HttpFoundation\BinaryFileResponse;
  * GET /attendance/monthly?month=YYYY-MM&search=&department_id=&page=  (attendance.view-all or attendance.view-team)
  * GET /attendance/monthly/export?month=YYYY-MM&search=&department_id= (attendance.view-all, route middleware)
  *
- * People: EmployeeAccess::scope, narrowed further for a viewer without attendance.view-all to their direct reports
- * (a Manager's own days are on My Attendance), and to people employed at some point in the month. A missing or
- * malformed month means the current one; a month that has not started is refused (back to the current month).
- * Reads per page: the people (and their designations), one query for their attendance rows, one for holidays.
+ * People: EmployeeAccess::scope unchanged, as on the Daily screen (a Manager sees their own row and their direct
+ * reports), limited to people employed at some point in the month. A leaver (inactive / resigned / terminated) with
+ * no last working day is shown only in months where they have an attendance row. A missing or malformed month means
+ * the current one; a month that has not started is refused (back to the current month).
+ *
+ * Per row, can_edit says whether this viewer may correct that person's days (see canEdit()); the page then allows it
+ * only on days inside the employment window (which already starts at attendance.start_date) and not in the future.
+ * Reads per page: the people (their designations and, for editors, their logins and roles), one query for their
+ * attendance rows, one for holidays.
  */
 class MonthlyController extends Controller
 {
     private const PER_PAGE = 25;
+
+    /** Employee statuses of someone who has left (or is not working): see people(). */
+    private const LEFT_STATUSES = ['inactive', 'resigned', 'terminated'];
 
     public function index(Request $request, AttendanceClock $clock): Response|RedirectResponse
     {
@@ -51,8 +60,12 @@ class MonthlyController extends Controller
         $departmentId = $this->departmentId($request);
         $perPage = $this->perPage($request);
 
+        $mayEdit = $user->can('attendance.edit');
+
         $paginator = $this->people($user, $grid, $search, $departmentId)
             ->with('designation:id,name')
+            // What canEdit() needs, loaded once for the page (users, then their roles): no query per row.
+            ->when($mayEdit, fn (Builder $q) => $q->with('user:id,employee_id', 'user.roles'))
             ->paginate($perPage, ['*'], 'page', ListQuery::page($request, 'page'));
 
         if ($redirect = ListQuery::clampRedirect($request, ['page' => $paginator])) {
@@ -79,6 +92,7 @@ class MonthlyController extends Controller
                     'code' => $e->employee_code,
                     'designation' => $e->designation?->name,
                     'photo_url' => EmployeeFiles::photoUrl($e),
+                    'can_edit' => $mayEdit && $this->canEdit($user, $e),
                     ...$rows[$e->id],
                 ])->values()->all(),
                 'current_page' => $paginator->currentPage(),
@@ -95,7 +109,7 @@ class MonthlyController extends Controller
             'departments' => Department::query()->orderBy('name')->orderBy('id')->get(['id', 'name'])->all(),
             'can' => [
                 'export' => $user->can('attendance.view-all'),
-                'edit' => $user->can('attendance.edit'),
+                'edit' => $mayEdit,
             ],
         ]);
     }
@@ -155,23 +169,43 @@ class MonthlyController extends Controller
      */
     private function people(User $user, MonthGrid $grid, string $search, ?int $departmentId): Builder
     {
-        $query = (new EmployeeAccess($user))->scope(Employee::query());
-
-        if (! $user->can('attendance.view-all')) {
-            // Team view: direct reports only.
-            $query->where('manager_id', $user->employee_id ?? 0);
-        }
-
-        return $query
+        return (new EmployeeAccess($user))->scope(Employee::query())
             ->select(['id', 'employee_code', 'first_name', 'last_name', 'department_id', 'designation_id', 'photo_path',
                 'joining_date', 'last_working_day', 'updated_at'])
             ->search($search)
             ->when($departmentId !== null, fn (Builder $q) => $q->where('department_id', $departmentId))
             ->where('joining_date', '<=', $grid->last)
             ->where(fn (Builder $q) => $q->whereNull('last_working_day')->orWhere('last_working_day', '>=', $grid->first))
+            // A leaver with no last working day recorded: only in months where they have attendance (one subquery).
+            ->where(fn (Builder $q) => $q
+                ->whereNotIn('status', self::LEFT_STATUSES)
+                ->orWhereNotNull('last_working_day')
+                ->orWhereExists(fn ($sub) => $sub->selectRaw('1')
+                    ->from('attendances')
+                    ->whereColumn('attendances.employee_id', 'employees.id')
+                    ->whereBetween('attendances.date', [$grid->first, $grid->last])))
             ->orderBy('last_name')
             ->orderBy('first_name')
             ->orderBy('id');
+    }
+
+    /**
+     * Whether $user (who holds attendance.edit) may correct this person's days by hand, the rule of the Daily screen:
+     *   - nobody corrects their own record, except an Admin;
+     *   - a person whose login is privileged (Admin or HR) is corrected only by someone EmployeeRoles::mayTouchAccount
+     *     allows (an Admin).
+     * Days outside the employment window (before attendance.start_date, before joining, after leaving) and future days
+     * are refused by the page from the row's window. The employee's user and its roles must be eager-loaded.
+     *
+     * Implemented here for now; the Daily screen's fix round adds the same rule, to be shared once both have landed.
+     */
+    private function canEdit(User $user, Employee $employee): bool
+    {
+        if ($user->employee_id !== null && (int) $user->employee_id === (int) $employee->id && ! $user->hasRole('admin')) {
+            return false;
+        }
+
+        return EmployeeRoles::mayTouchAccount($user, $employee->user);
     }
 
     /** department_id when it names an existing department; null for anything else (never an error). */

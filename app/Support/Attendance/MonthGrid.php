@@ -21,7 +21,8 @@ use DateTimeZone;
  * [code, flags, in, out, worked, late, early, overtime]:
  *   - code: P present, L late, H half day, A absent, V on leave, O holiday, W weekend, "-" pending calculation
  *     (attendances.status null);
- *   - flags: FLAG_MANUAL | FLAG_EARLY | FLAG_OVERTIME | FLAG_ATTENTION;
+ *   - flags: FLAG_MANUAL | FLAG_EARLY | FLAG_OVERTIME | FLAG_ATTENTION | FLAG_NEXT_DAY (the clock-out falls on a later
+ *     calendar date than the attendance day, e.g. a night shift ending at 06:00);
  *   - in / out: "H:i" wall-clock times as recorded (or null); worked, late, early, overtime: minutes.
  *
  * The employment window of a person in this month is from max(joining date, settings('attendance.start_date') when
@@ -35,7 +36,7 @@ use DateTimeZone;
  * Reads: one query for the month's holidays, one query per 500 employees for their attendance rows; nothing per day
  * or per cell.
  *
- * @phpstan-type Stored array{status: string|null, in: string|null, out: string|null, worked: int, late: int, early: int, overtime: int, manual: bool, attention: bool}
+ * @phpstan-type Stored array{status: string|null, in: string|null, out: string|null, next_day: bool, worked: int, late: int, early: int, overtime: int, manual: bool, attention: bool}
  */
 final class MonthGrid
 {
@@ -58,6 +59,8 @@ final class MonthGrid
     public const FLAG_OVERTIME = 4;
 
     public const FLAG_ATTENTION = 8;
+
+    public const FLAG_NEXT_DAY = 16;
 
     private const CHUNK = 500;
 
@@ -248,11 +251,14 @@ final class MonthGrid
     private static function stored(array $row): array
     {
         $int = fn (string $key): int => is_numeric($row[$key] ?? null) ? (int) $row[$key] : 0;
+        $out = $row['clock_out'] ?? null;
 
         return [
             'status' => is_string($row['status'] ?? null) ? $row['status'] : null,
             'in' => self::time($row['clock_in'] ?? null),
-            'out' => self::time($row['clock_out'] ?? null),
+            'out' => self::time($out),
+            // Both are naive "Y-m-d..." text: compare the date parts as text, no time zone involved.
+            'next_day' => is_string($out) && strlen($out) >= 10 && substr($out, 0, 10) > substr((string) ($row['date'] ?? ''), 0, 10),
             'worked' => $int('worked_minutes'),
             'late' => $int('late_minutes'),
             'early' => $int('early_minutes'),
@@ -271,7 +277,8 @@ final class MonthGrid
         $flags = ($row['manual'] ? self::FLAG_MANUAL : 0)
             | ($row['early'] > 0 ? self::FLAG_EARLY : 0)
             | ($row['overtime'] > 0 ? self::FLAG_OVERTIME : 0)
-            | ($row['attention'] ? self::FLAG_ATTENTION : 0);
+            | ($row['attention'] ? self::FLAG_ATTENTION : 0)
+            | ($row['next_day'] ? self::FLAG_NEXT_DAY : 0);
 
         return [
             $row['status'] === null ? self::PENDING : (self::CODES[$row['status']] ?? self::PENDING),

@@ -6,7 +6,8 @@ import { formatClockTime } from '@/lib/clock-time';
  * One day of one person on the monthly grid, as the server sends it
  * (App\Support\Attendance\MonthGrid): null when there is nothing to show, else
  * [code, flags, in, out, worked, late, early, overtime]. Times are "H:i"
- * wall-clock strings, the four numbers are minutes.
+ * wall-clock strings (FLAG_NEXT_DAY: the clock-out is on the next calendar
+ * day), the four numbers are minutes.
  */
 export type GridCell =
     | [
@@ -52,6 +53,8 @@ export const FLAG_MANUAL = 1;
 export const FLAG_EARLY = 2;
 export const FLAG_OVERTIME = 4;
 export const FLAG_ATTENTION = 8;
+/** The clock-out is on the next calendar day (a night shift). */
+export const FLAG_NEXT_DAY = 16;
 
 /** The server's one-letter codes; "-" is a day waiting to be calculated. */
 const CODE_STATUS: Record<string, AttendanceStatusValue> = {
@@ -112,6 +115,13 @@ export function shortDate(date: string): string {
     return `${Number(match[2])} ${MONTH_SHORT[Number(match[1]) - 1] ?? ''}`;
 }
 
+/** "6:00 AM", or "6:00 AM (next day)" for a clock-out after midnight. */
+function clockOutText(cell: GridCell, clockOut: string): string {
+    const time = formatClockTime(clockOut);
+
+    return hasFlag(cell, FLAG_NEXT_DAY) ? `${time} (next day)` : time;
+}
+
 /** Why a blank cell is blank, in words. */
 export function blankReason(day: GridDay, inWindow: boolean): string {
     if (day.future) {
@@ -132,7 +142,7 @@ export function cellDetails(cell: GridCell): string[] {
 
     if (clockIn !== null || clockOut !== null) {
         lines.push(
-            `In ${clockIn ? formatClockTime(clockIn) : '—'}, out ${clockOut ? formatClockTime(clockOut) : '—'}`,
+            `In ${clockIn ? formatClockTime(clockIn) : '—'}, out ${clockOut ? clockOutText(cell, clockOut) : '—'}`,
         );
     }
 
@@ -189,7 +199,7 @@ export function cellLabel(
     }
 
     if (clockOut) {
-        parts.push(`out ${formatClockTime(clockOut)}`);
+        parts.push(`out ${clockOutText(cell, clockOut)}`);
     }
 
     if (hasFlag(cell, FLAG_EARLY)) {
@@ -204,6 +214,10 @@ export function cellLabel(
         parts.push('corrected by hand');
     }
 
+    if (hasFlag(cell, FLAG_ATTENTION)) {
+        parts.push('needs attention');
+    }
+
     return parts.join(', ');
 }
 
@@ -213,6 +227,49 @@ export function inWindow(
     day: number,
 ): boolean {
     return window !== null && day >= window[0] && day <= window[1];
+}
+
+/** A cell position on the grid: row index (person) and column index (day). */
+export type GridPosition = { row: number; col: number };
+
+/**
+ * Where a key press moves the focus on a grid of `rows` x `cols` cells (the
+ * roving tab stop): arrows by one, Home / End to the first / last day of the
+ * row, Ctrl+Home / Ctrl+End to the first / last cell of the grid. Null for a
+ * key the grid does not handle. Moves stop at the edges.
+ */
+export function moveGridFocus(
+    from: GridPosition,
+    key: string,
+    ctrl: boolean,
+    rows: number,
+    cols: number,
+): GridPosition | null {
+    if (rows < 1 || cols < 1) {
+        return null;
+    }
+
+    const clamp = (row: number, col: number): GridPosition => ({
+        row: Math.min(Math.max(row, 0), rows - 1),
+        col: Math.min(Math.max(col, 0), cols - 1),
+    });
+
+    switch (key) {
+        case 'ArrowLeft':
+            return clamp(from.row, from.col - 1);
+        case 'ArrowRight':
+            return clamp(from.row, from.col + 1);
+        case 'ArrowUp':
+            return clamp(from.row - 1, from.col);
+        case 'ArrowDown':
+            return clamp(from.row + 1, from.col);
+        case 'Home':
+            return ctrl ? clamp(0, 0) : clamp(from.row, 0);
+        case 'End':
+            return ctrl ? clamp(rows - 1, cols - 1) : clamp(from.row, cols - 1);
+        default:
+            return null;
+    }
 }
 
 /** "YYYY-MM" from a year and a 1-based month. */

@@ -1,6 +1,7 @@
 import { Head, router, usePage } from '@inertiajs/react';
 import { ChevronLeft, ChevronRight, Download } from 'lucide-react';
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { FocusEvent, KeyboardEvent } from 'react';
 import { CorrectionDialog } from '@/components/attendance/correction-dialog';
 import { DayCell } from '@/components/attendance/day-cell';
 import { AttendanceLegend } from '@/components/attendance/legend';
@@ -24,8 +25,14 @@ import {
     hasFlag,
     inWindow,
     monthValue,
+    moveGridFocus,
 } from '@/lib/monthly-grid';
-import type { GridCell, GridDay, GridTotals } from '@/lib/monthly-grid';
+import type {
+    GridCell,
+    GridDay,
+    GridPosition,
+    GridTotals,
+} from '@/lib/monthly-grid';
 import { nextTableUrl } from '@/lib/table-query';
 import { cn } from '@/lib/utils';
 import { monthly } from '@/routes/attendance';
@@ -37,6 +44,8 @@ type GridRow = {
     code: string;
     designation: string | null;
     photo_url: string | null;
+    /** The viewer may correct this person's days (worked out on the server). */
+    can_edit: boolean;
     /** First and last day number inside the employment window this month (null: none). */
     window: [number, number] | null;
     cells: GridCell[];
@@ -91,6 +100,88 @@ export default function Monthly({
     const { url } = usePage();
     const [selected, setSelected] = useState<Selected | null>(null);
     const [dialogOpen, setDialogOpen] = useState(false);
+    // The grid's single tab stop (roving tabindex).
+    const [active, setActive] = useState<GridPosition>({ row: 0, col: 0 });
+    const tableRef = useRef<HTMLTableElement>(null);
+
+    // The latest rows and days, read by the one stable cell callback below.
+    const latest = useRef({ rows: employees.data, days });
+    useEffect(() => {
+        latest.current = { rows: employees.data, days };
+    }, [employees.data, days]);
+
+    const rowCount = employees.data.length;
+    const colCount = days.length;
+    const tabStop: GridPosition = {
+        row: Math.min(active.row, Math.max(rowCount - 1, 0)),
+        col: Math.min(active.col, Math.max(colCount - 1, 0)),
+    };
+
+    const activate = useCallback((rowIndex: number, dayIndex: number) => {
+        const row = latest.current.rows[rowIndex];
+        const day = latest.current.days[dayIndex];
+
+        if (!row || !day) {
+            return;
+        }
+
+        setSelected({ row, day, cell: row.cells[dayIndex] ?? null });
+        setDialogOpen(true);
+    }, []);
+
+    const position = (target: EventTarget): GridPosition | null => {
+        if (!(target instanceof HTMLElement)) {
+            return null;
+        }
+
+        const row = Number(target.dataset.row);
+        const col = Number(target.dataset.col);
+
+        return target.dataset.row === undefined ||
+            Number.isNaN(row) ||
+            Number.isNaN(col)
+            ? null
+            : { row, col };
+    };
+
+    // A click or Tab onto a cell makes it the tab stop.
+    const onGridFocus = (event: FocusEvent<HTMLTableSectionElement>) => {
+        const at = position(event.target);
+
+        if (at && (at.row !== active.row || at.col !== active.col)) {
+            setActive(at);
+        }
+    };
+
+    // Arrows, Home / End (Ctrl: whole grid) move the focus between cells.
+    // Enter and Space are left to the cell (a button when it can be corrected).
+    const onGridKeyDown = (event: KeyboardEvent<HTMLTableSectionElement>) => {
+        const from = position(event.target);
+
+        if (!from) {
+            return;
+        }
+
+        const to = moveGridFocus(
+            from,
+            event.key,
+            event.ctrlKey || event.metaKey,
+            rowCount,
+            colCount,
+        );
+
+        if (!to) {
+            return;
+        }
+
+        event.preventDefault();
+        setActive(to);
+        tableRef.current
+            ?.querySelector<HTMLElement>(
+                `[data-row="${to.row}"][data-col="${to.col}"]`,
+            )
+            ?.focus();
+    };
 
     const year = Number(month.value.slice(0, 4));
     const monthNumber = Number(month.value.slice(5, 7));
@@ -127,17 +218,14 @@ export default function Monthly({
         }).filter(([, value]) => value !== '' && value !== null),
     );
 
-    const select = (row: GridRow, day: GridDay, cell: GridCell) => {
-        setSelected({ row, day, cell });
-        setDialogOpen(true);
-    };
-
     const filtering = filters.search !== '' || filters.department_id !== null;
 
     const grid = (
         <div className="overflow-x-auto overscroll-x-contain">
             <table
-                aria-label={`Attendance, ${month.label}`}
+                ref={tableRef}
+                role="grid"
+                aria-label={`Attendance, ${month.label}. Use the arrow keys to move between days.`}
                 className="w-max min-w-full border-separate border-spacing-0 text-sm"
             >
                 <thead>
@@ -188,8 +276,8 @@ export default function Monthly({
                         </th>
                     </tr>
                 </thead>
-                <tbody>
-                    {employees.data.map((row) => (
+                <tbody onFocus={onGridFocus} onKeyDown={onGridKeyDown}>
+                    {employees.data.map((row, rowIndex) => (
                         <tr key={row.id} className="group">
                             <th
                                 scope="row"
@@ -215,7 +303,10 @@ export default function Monthly({
                                 const cell = row.cells[index] ?? null;
                                 const employed = inWindow(row.window, day.day);
                                 const editable =
-                                    can.edit && employed && !day.future;
+                                    can.edit &&
+                                    row.can_edit &&
+                                    employed &&
+                                    !day.future;
 
                                 return (
                                     <td
@@ -227,15 +318,17 @@ export default function Monthly({
                                         )}
                                     >
                                         <DayCell
+                                            rowIndex={rowIndex}
+                                            dayIndex={index}
                                             day={day}
                                             cell={cell}
                                             inWindow={employed}
-                                            onSelect={
-                                                editable
-                                                    ? () =>
-                                                          select(row, day, cell)
-                                                    : undefined
+                                            editable={editable}
+                                            tabbable={
+                                                tabStop.row === rowIndex &&
+                                                tabStop.col === index
                                             }
+                                            onActivate={activate}
                                         />
                                     </td>
                                 );
@@ -266,7 +359,7 @@ export default function Monthly({
             <div className="flex min-w-0 flex-1 flex-col gap-6 p-4 md:p-6">
                 <PageHeader
                     title="Monthly Attendance"
-                    subtitle="Everyone's days for one month. Hover or focus a day for times and minutes."
+                    subtitle="Everyone's days for one month. Hover or focus a day for times and minutes; the arrow keys move between days."
                     actions={
                         can.export && (
                             <Button asChild variant="outline">

@@ -7,6 +7,7 @@ import {
     formatMinutes,
     inWindow,
     monthValue,
+    moveGridFocus,
     shortDate,
 } from './monthly-grid';
 import type { GridCell, GridDay } from './monthly-grid';
@@ -79,6 +80,66 @@ describe('cellDetails', () => {
             'Needs attention',
         ]);
         expect(cellDetails(null)).toEqual([]);
+    });
+});
+
+describe('next-day clock-out and needs attention', () => {
+    const night: GridCell = ['P', 16 | 8, '21:00', '06:00', 540, 0, 0, 0];
+
+    it('says "(next day)" in the label and the details', () => {
+        expect(cellLabel(day('2026-11-02'), night, true)).toBe(
+            '2 Nov, Present, in 9:00 PM, out 6:00 AM (next day), needs attention',
+        );
+        expect(cellDetails(night)[0]).toBe(
+            'In 9:00 PM, out 6:00 AM (next day)',
+        );
+    });
+
+    it('does not say it for a same-day clock-out', () => {
+        expect(
+            cellLabel(
+                day('2026-11-02'),
+                ['P', 0, '09:00', '18:00', 540, 0, 0, 0],
+                true,
+            ),
+        ).toBe('2 Nov, Present, in 9:00 AM, out 6:00 PM');
+    });
+});
+
+describe('moveGridFocus', () => {
+    const at = (row: number, col: number) => ({ row, col });
+
+    it('moves by one with the arrows and stops at the edges', () => {
+        expect(moveGridFocus(at(1, 1), 'ArrowRight', false, 3, 30)).toEqual(
+            at(1, 2),
+        );
+        expect(moveGridFocus(at(1, 1), 'ArrowLeft', false, 3, 30)).toEqual(
+            at(1, 0),
+        );
+        expect(moveGridFocus(at(1, 1), 'ArrowUp', false, 3, 30)).toEqual(
+            at(0, 1),
+        );
+        expect(moveGridFocus(at(1, 1), 'ArrowDown', false, 3, 30)).toEqual(
+            at(2, 1),
+        );
+        expect(moveGridFocus(at(0, 0), 'ArrowLeft', false, 3, 30)).toEqual(
+            at(0, 0),
+        );
+        expect(moveGridFocus(at(2, 29), 'ArrowDown', false, 3, 30)).toEqual(
+            at(2, 29),
+        );
+    });
+
+    it('jumps with Home / End along the row, with Ctrl across the grid', () => {
+        expect(moveGridFocus(at(1, 5), 'Home', false, 3, 30)).toEqual(at(1, 0));
+        expect(moveGridFocus(at(1, 5), 'End', false, 3, 30)).toEqual(at(1, 29));
+        expect(moveGridFocus(at(1, 5), 'Home', true, 3, 30)).toEqual(at(0, 0));
+        expect(moveGridFocus(at(1, 5), 'End', true, 3, 30)).toEqual(at(2, 29));
+    });
+
+    it('ignores other keys and an empty grid', () => {
+        expect(moveGridFocus(at(0, 0), 'Enter', false, 3, 30)).toBeNull();
+        expect(moveGridFocus(at(0, 0), 'ArrowRight', false, 0, 30)).toBeNull();
     });
 });
 

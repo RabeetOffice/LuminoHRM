@@ -5,6 +5,7 @@ use App\Models\Department;
 use App\Models\Designation;
 use App\Models\Employee;
 use App\Models\Holiday;
+use App\Models\User;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
@@ -36,6 +37,13 @@ function mgDay(Employee $e, string $date, ?string $status, array $attrs = []): A
         'closed' => true,
         ...$attrs,
     ]);
+}
+
+/** Links a new login with $role to an existing employee. */
+function mgLogin(Employee $e, string $role): void
+{
+    $user = User::factory()->create(['employee_id' => $e->id]);
+    $user->assignRole($role);
 }
 
 /** The page props of GET /attendance/monthly?$query for $user. */
@@ -74,7 +82,7 @@ it('sends guests to the sign-in page', function () {
     $this->get('/attendance/monthly')->assertRedirect('/login');
 });
 
-it('shows a Manager their direct reports only, and nothing about anyone else', function () {
+it('shows a Manager their own row and their direct reports, and nothing about anyone else', function () {
     $manager = userWithRole('manager');
     $boss = employeeFor($manager);
     $report = mgPerson(['manager_id' => $boss->id, 'first_name' => 'Rita']);
@@ -86,10 +94,129 @@ it('shows a Manager their direct reports only, and nothing about anyone else', f
     $response = $this->actingAs($manager)->get('/attendance/monthly?month=2026-11')->assertOk();
     $props = $response->viewData('page')['props'];
 
-    expect(array_column($props['employees']['data'], 'id'))->toBe([$report->id])
-        ->and($props['employees']['total'])->toBe(1)
+    expect(array_column($props['employees']['data'], 'id'))->toEqualCanonicalizing([$boss->id, $report->id])
+        ->and($props['employees']['total'])->toBe(2)
         ->and($props['can'])->toBe(['export' => false, 'edit' => false]);
     expect(json_encode($props))->not->toContain('Outsider');
+});
+
+it('never lets a Manager reach people outside their team through search, department, page or rows per page', function () {
+    $manager = userWithRole('manager');
+    $boss = employeeFor($manager);
+    $dept = Department::factory()->create();
+    $report = mgPerson(['manager_id' => $boss->id, 'first_name' => 'Rita', 'department_id' => $dept->id,
+        'designation_id' => Designation::factory()->create(['department_id' => $dept->id])->id]);
+    mgPerson(['first_name' => 'Zed', 'last_name' => 'Outsider', 'department_id' => $dept->id,
+        'designation_id' => Designation::factory()->create(['department_id' => $dept->id])->id]);
+    for ($i = 1; $i <= 30; $i++) {
+        mgPerson(['first_name' => 'Other', 'last_name' => sprintf('Outsider%02d', $i)]);
+    }
+
+    $ids = fn (array $props) => array_column($props['employees']['data'], 'id');
+
+    $search = mgProps($this, $manager, 'search=Outsider');
+    expect($ids($search))->toBe([])->and($search['employees']['total'])->toBe(0);
+
+    $department = mgProps($this, $manager, 'department_id='.$dept->id);
+    expect($ids($department))->toBe([$report->id])->and($department['employees']['total'])->toBe(1);
+
+    $wide = mgProps($this, $manager, 'per_page=50');
+    expect($ids($wide))->toEqualCanonicalizing([$boss->id, $report->id])->and($wide['employees']['total'])->toBe(2);
+
+    // A page past the end goes back to the last page in scope, never to someone else's rows.
+    $this->actingAs($manager)->get('/attendance/monthly?page=2')->assertRedirect();
+    $tiny = mgProps($this, $manager, 'per_page=10&page=1');
+    expect($ids($tiny))->toEqualCanonicalizing([$boss->id, $report->id]);
+
+    foreach ([$search, $department, $wide, $tiny] as $props) {
+        expect(json_encode($props['employees']))->not->toContain('Outsider');
+    }
+});
+
+it('renders the attendance/monthly page', function () {
+    $admin = userWithRole('admin');
+
+    $response = $this->actingAs($admin)->get('/attendance/monthly')->assertOk();
+
+    expect($response->viewData('page')['component'])->toBe('attendance/monthly');
+});
+
+it('falls back to 25 rows for a rows-per-page value it does not offer', function (string $value) {
+    $admin = userWithRole('admin');
+
+    expect(mgProps($this, $admin, 'per_page='.$value)['employees']['per_page'])->toBe(25);
+})->with(['1000', '7', '0', '-10', 'abc', '25.5']);
+
+it('leaves out a leaver with no last working day in months where they have no attendance row', function (string $status) {
+    $admin = userWithRole('admin');
+    $active = mgPerson(['last_name' => 'Active']);
+    $probation = mgPerson(['last_name' => 'Probation', 'status' => 'probation']);
+    $gone = mgPerson(['last_name' => 'Gone', 'status' => $status, 'last_working_day' => null]);
+    mgDay($gone, '2026-10-15', 'present');
+
+    $october = array_column(mgProps($this, $admin, 'month=2026-10')['employees']['data'], 'id');
+    $november = mgProps($this, $admin, 'month=2026-11');
+
+    expect($october)->toContain($gone->id)->toContain($active->id)
+        ->and(array_column($november['employees']['data'], 'id'))->toEqualCanonicalizing([$active->id, $probation->id])
+        ->and($november['employees']['total'])->toBe(2);
+})->with(['inactive', 'resigned', 'terminated']);
+
+it('flags a clock-out on the next calendar day', function () {
+    $admin = userWithRole('admin');
+    $e = mgPerson();
+    mgDay($e, '2026-11-02', 'present', ['clock_in' => '2026-11-02 21:00:00', 'clock_out' => '2026-11-03 06:00:00',
+        'worked_minutes' => 540]);
+    mgDay($e, '2026-11-03', 'present', ['clock_in' => '2026-11-03 09:00:00', 'clock_out' => '2026-11-03 18:00:00',
+        'worked_minutes' => 540]);
+
+    $cells = mgRow(mgProps($this, $admin, 'month=2026-11'), $e)['cells'];
+
+    expect($cells[1])->toBe(['P', 16, '21:00', '06:00', 540, 0, 0, 0])
+        ->and($cells[2][1])->toBe(0);
+});
+
+// ---------------------------------------------------------------- who may correct which row
+
+it('says per row whether the viewer may correct it', function () {
+    $admin = userWithRole('admin');
+    $adminSelf = employeeFor($admin, ['last_name' => 'AdminSelf']);
+    $hr = userWithRole('hr');
+    $hrSelf = employeeFor($hr, ['last_name' => 'HrSelf']);
+    $otherHr = userWithRole('hr');
+    $otherHrRow = employeeFor($otherHr, ['last_name' => 'OtherHr']);
+    $otherAdmin = userWithRole('admin');
+    $otherAdminRow = employeeFor($otherAdmin, ['last_name' => 'OtherAdmin']);
+    $managerUser = userWithRole('manager');
+    $managerRow = employeeFor($managerUser, ['last_name' => 'ManagerRow']);
+    $plain = mgPerson(['last_name' => 'Plain']);
+
+    $canEdit = fn (array $props) => collect($props['employees']['data'])->mapWithKeys(fn ($r) => [$r['id'] => $r['can_edit']])->all();
+
+    $byAdmin = $canEdit(mgProps($this, $admin, 'month=2026-11'));
+    expect($byAdmin)->toEqual([
+        $adminSelf->id => true, // an Admin may correct their own record
+        $hrSelf->id => true,
+        $managerRow->id => true,
+        $otherAdminRow->id => true,
+        $otherHrRow->id => true,
+        $plain->id => true,
+    ]);
+
+    $byHr = $canEdit(mgProps($this, $hr, 'month=2026-11'));
+    expect($byHr)->toEqual([
+        $adminSelf->id => false, // privileged login: Admin only
+        $hrSelf->id => false,    // own record
+        $managerRow->id => true,
+        $otherAdminRow->id => false,
+        $otherHrRow->id => false,
+        $plain->id => true,
+    ]);
+
+    $manager = userWithRole('manager');
+    $boss = employeeFor($manager);
+    mgPerson(['manager_id' => $boss->id]);
+    expect(array_unique(array_values($canEdit(mgProps($this, $manager, 'month=2026-11')))))->toBe([false]);
 });
 
 it('shows Admin everyone employed in the month, in name order', function () {
@@ -294,7 +421,8 @@ it('reads a fixed number of queries whatever the number of days or people', func
         return $queries;
     };
 
-    $first = mgPerson();
+    // Logins are linked so the per-row edit rule (whose account is privileged) is part of the count.
+    $first = employeeFor(userWithRole('hr'), ['joining_date' => '2025-01-01']);
     foreach (['2026-02-02', '2026-03-02', '2026-03-31'] as $date) {
         mgDay($first, $date, 'present');
     }
@@ -302,12 +430,16 @@ it('reads a fixed number of queries whatever the number of days or people', func
     $february = $count('2026-02');
 
     $people = Employee::factory()->count(9)->create(['joining_date' => '2025-01-01']);
-    foreach ($people as $e) {
+    foreach ($people as $i => $e) {
+        mgLogin($e, ['admin', 'hr', 'manager', 'employee'][$i % 4]);
         for ($d = 1; $d <= 31; $d++) {
             mgDay($e, sprintf('2026-03-%02d', $d), 'present');
         }
     }
+    // A leaver with no last working day: the extra condition is one subquery, not a query per person.
+    $gone = mgPerson(['status' => 'resigned']);
+    mgDay($gone, '2026-03-05', 'present');
     $march = $count('2026-03');
 
-    expect($march)->toBe($february)->and($march)->toBeLessThanOrEqual(10);
+    expect($march)->toBe($february)->and($march)->toBeLessThanOrEqual(12);
 });
