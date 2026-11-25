@@ -175,6 +175,8 @@ All money columns `bigInteger` paisa.
 
 ## 7. Open decisions (defaults chosen; owner may change)
 
+**Owner, 25 Nov 2026:** day pay on the calendar-days basis confirmed; all other defaults below approved ("go ahead with these").
+
 1. Rounding: every computed amount half up to the whole rupee; entered amounts whole rupees.
 2. Day-pay basis default calendar days (already the settings default); proration always by calendar days.
 3. Unpaid leave from the leave ledger on every pay-window day; absences, half days and lates from attendance from the attendance start date; per-date cap of one day; unpaid leave on a day off not deducted.
