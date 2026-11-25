@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import {
     attendanceBannerLine,
+    attendanceDayQualifier,
     barPercent,
+    dayPhrase,
     dashboardTiles,
     formatDays,
     formatLongDate,
@@ -14,8 +16,13 @@ import {
     teamAttendanceTiles,
     trendMax,
     trendSeries,
+    weekdayDay,
 } from '@/lib/dashboard';
-import type { AttendanceToday, MyMonthAttendance } from '@/lib/dashboard';
+import type {
+    AttendanceDay,
+    AttendanceToday,
+    MyMonthAttendance,
+} from '@/lib/dashboard';
 
 describe('greetingFor', () => {
     test.each([
@@ -236,7 +243,91 @@ describe('attendanceBannerLine', () => {
     });
 });
 
+// 02:00 on Wed 25 Nov with the 04:00 cutoff: the figures are still Tuesday's.
+const afterMidnight: AttendanceDay = {
+    date: '2026-11-24',
+    calendar_date: '2026-11-25',
+    differs: true,
+    cutoff: '04:00',
+};
+
+const sameDay: AttendanceDay = {
+    date: '2026-11-24',
+    calendar_date: '2026-11-24',
+    differs: false,
+    cutoff: '04:00',
+};
+
+describe('the attendance day label', () => {
+    test('weekdayDay reads the text date (no Date), across months, years and leap days', () => {
+        expect(weekdayDay('2026-11-24')).toBe('Tue 24 Nov');
+        expect(weekdayDay('2026-11-25')).toBe('Wed 25 Nov');
+        expect(weekdayDay('2026-01-01')).toBe('Thu 1 Jan');
+        expect(weekdayDay('2024-02-29')).toBe('Thu 29 Feb');
+        expect(weekdayDay('2027-03-01')).toBe('Mon 1 Mar');
+        expect(weekdayDay('2000-12-31')).toBe('Sun 31 Dec');
+        expect(weekdayDay('nonsense')).toBe('nonsense');
+    });
+
+    test('a qualifier only when the attendance day is not the calendar date', () => {
+        expect(attendanceDayQualifier(afterMidnight)).toBe(
+            'Figures for Tue 24 Nov — the day closes at 4:00 AM',
+        );
+        expect(
+            attendanceDayQualifier({ ...afterMidnight, cutoff: '05:30' }),
+        ).toBe('Figures for Tue 24 Nov — the day closes at 5:30 AM');
+        expect(attendanceDayQualifier(sameDay)).toBeNull();
+        expect(attendanceDayQualifier(undefined)).toBeNull();
+    });
+
+    test('"today" becomes the day when they differ', () => {
+        expect(dayPhrase(sameDay)).toBe('today');
+        expect(dayPhrase(undefined)).toBe('today');
+        expect(dayPhrase(afterMidnight)).toBe('on Tue 24 Nov');
+    });
+
+    test('the banner and the tiles say the day instead of "today"', () => {
+        expect(attendanceBannerLine(baseToday, afterMidnight)).toBe(
+            '7 present on Tue 24 Nov · last punch received 1:05 PM',
+        );
+        expect(attendanceBannerLine(baseToday, sameDay)).toBe(
+            '7 present today · last punch received 1:05 PM',
+        );
+
+        const tiles = teamAttendanceTiles(baseToday, afterMidnight);
+        expect(tiles.present).toEqual({
+            label: 'Present',
+            value: '7',
+            note: 'Clocked in on Tue 24 Nov',
+        });
+        expect(tiles.absent.note).toBe('of 10 expected on Tue 24 Nov');
+        expect(tiles.late.label).toBe('Late');
+        expect(
+            teamAttendanceTiles({ ...baseToday, late: 0 }, afterMidnight).late
+                .note,
+        ).toBe('Nobody late on Tue 24 Nov');
+
+        // Same day: the tiles keep their own "... Today" labels.
+        expect(teamAttendanceTiles(baseToday, sameDay).present.label).toBe(
+            undefined,
+        );
+    });
+});
+
 describe('teamAttendanceTiles', () => {
+    test('a day nobody is expected (a weekend) says so instead of "0 of 0"', () => {
+        const weekend = { ...baseToday, expected: 0, not_in: 0 };
+
+        expect(teamAttendanceTiles(weekend).absent).toEqual({
+            label: 'Not in yet',
+            value: '0',
+            note: 'Nobody expected today',
+        });
+        expect(teamAttendanceTiles(weekend, afterMidnight).absent.note).toBe(
+            'Nobody expected on Tue 24 Nov',
+        );
+    });
+
     test('open day: "Not in yet" out of the expected people', () => {
         const tiles = teamAttendanceTiles(baseToday);
 

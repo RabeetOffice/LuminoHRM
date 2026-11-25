@@ -8,6 +8,7 @@ import {
     WalletCards,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { formatClockTime } from '@/lib/clock-time';
 
 export type TileColor = 'green' | 'blue' | 'rose' | 'amber' | 'violet' | 'teal';
 
@@ -325,30 +326,95 @@ export function formatDays(value: number): string {
     return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
-/** "7:00 AM" from "07:00" (wall-clock text, no Date). */
-function twelveHour(time: string): string {
-    const match = /^(\d{2}):(\d{2})/.exec(time);
+/**
+ * Which attendance day the "today" figures belong to, as the server sends it. After midnight and before the day
+ * cutoff the figures are still the previous attendance day's: `differs` is true and the page says so.
+ */
+export type AttendanceDay = {
+    /** The attendance day ("Y-m-d"). */
+    date: string;
+    /** The calendar date in the company's zone ("Y-m-d"). */
+    calendar_date: string;
+    differs: boolean;
+    /** The day cutoff, "H:i". */
+    cutoff: string;
+};
+
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/**
+ * "Wed 25 Nov" from "2026-11-25", read as text. The weekday is worked out from the numbers (Sakamoto's method), so
+ * the date never passes through Date and cannot move with a time zone.
+ */
+export function weekdayDay(date: string): string {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
 
     if (!match) {
-        return time;
+        return date;
     }
 
-    const hours = Number(match[1]);
-    const twelve = hours % 12 === 0 ? 12 : hours % 12;
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const offsets = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    const offset = offsets[month - 1];
 
-    return `${twelve}:${match[2]} ${hours < 12 ? 'AM' : 'PM'}`;
+    if (offset === undefined || day < 1 || day > 31) {
+        return date;
+    }
+
+    const year = Number(match[1]) - (month < 3 ? 1 : 0);
+    const weekday =
+        (year +
+            Math.floor(year / 4) -
+            Math.floor(year / 100) +
+            Math.floor(year / 400) +
+            offset +
+            day) %
+        7;
+
+    return `${WEEKDAYS[weekday]} ${shortDay(date)}`;
+}
+
+/**
+ * "today", or "on Wed 25 Nov" when the figures belong to an attendance day that is not the calendar date (after
+ * midnight, before the cutoff). Without the server's day it is "today".
+ */
+export function dayPhrase(day?: AttendanceDay | null): string {
+    return day?.differs ? `on ${weekdayDay(day.date)}` : 'today';
+}
+
+/**
+ * The qualifier shown with the figures when the attendance day is not the calendar date:
+ * "Figures for Wed 25 Nov — the day closes at 4:00 AM". Null when it is the calendar date.
+ */
+export function attendanceDayQualifier(
+    day?: AttendanceDay | null,
+): string | null {
+    if (!day?.differs) {
+        return null;
+    }
+
+    const closes = formatClockTime(day.cutoff);
+
+    return closes
+        ? `Figures for ${weekdayDay(day.date)} — the day closes at ${closes}`
+        : `Figures for ${weekdayDay(day.date)}`;
 }
 
 /**
  * The banner line: "4 present today · last punch received 9:05 AM". The punch part is left out when there are no
- * punches, and names the day when the latest punch is not from today ("... received 22 Nov, 6:01 PM").
+ * punches, and names the day when the latest punch is not from the attendance day ("... received 22 Nov, 6:01 PM").
+ * When the attendance day is not the calendar date, "today" becomes the day ("4 present on Wed 25 Nov").
  */
-export function attendanceBannerLine(today: AttendanceToday): string {
-    const parts = [`${today.present} present today`];
+export function attendanceBannerLine(
+    today: AttendanceToday,
+    day?: AttendanceDay | null,
+): string {
+    const parts = [`${today.present} present ${dayPhrase(day)}`];
     const punch = today.last_punch;
 
     if (punch) {
-        const time = twelveHour(punch.time);
+        const time = formatClockTime(punch.time) || punch.time;
         parts.push(
             punch.date === today.date
                 ? `last punch received ${time}`
@@ -372,11 +438,15 @@ export type AttendanceTileKey = 'present' | 'absent' | 'late';
 /**
  * The three attendance tiles for people who see a team or the company. The dashboard shows the open day, so the
  * second tile is "Not in yet" (expected today, no punch yet); it reads "Absent Today" only for a closed day. Before
- * attendance has started nobody can be said to be missing: "–" with a short hint.
+ * attendance has started nobody can be said to be missing: "–" with a short hint. When the attendance day is not the
+ * calendar date (after midnight, before the cutoff) "today" is replaced by that day in labels and notes.
  */
 export function teamAttendanceTiles(
     today: AttendanceToday,
+    day?: AttendanceDay | null,
 ): Record<AttendanceTileKey, TileFigure> {
+    const when = dayPhrase(day);
+    const differs = day?.differs === true;
     const pending =
         today.pending > 0 ? ` · ${today.pending} being calculated` : '';
 
@@ -391,10 +461,14 @@ export function teamAttendanceTiles(
                 : 'Attendance has not started',
         };
     } else if (today.open) {
-        let note = `of ${today.expected ?? 0} expected today`;
+        const expected = today.expected ?? 0;
+        let note =
+            expected === 0
+                ? `Nobody expected ${when}`
+                : `of ${expected} expected ${when}`;
 
         if (today.holiday) {
-            note = 'Holiday today';
+            note = `Holiday ${when}`;
         } else if (today.absent > 0) {
             note = `${today.absent} marked absent`;
         }
@@ -402,24 +476,27 @@ export function teamAttendanceTiles(
         absent = { label: 'Not in yet', value: String(today.not_in), note };
     } else {
         absent = {
-            label: 'Absent Today',
+            label: differs ? 'Absent' : 'Absent Today',
             value: String(today.not_in + today.absent),
             note: `of ${today.expected ?? 0} expected`,
         };
     }
 
-    return {
-        present: {
-            value: String(today.present),
-            note: `Clocked in today${pending}`,
-        },
-        absent,
-        late: {
-            value: String(today.late),
-            note:
-                today.late === 0 ? 'Nobody late today' : 'After the grace time',
-        },
+    const present: TileFigure = {
+        value: String(today.present),
+        note: `Clocked in ${when}${pending}`,
     };
+    const late: TileFigure = {
+        value: String(today.late),
+        note: today.late === 0 ? `Nobody late ${when}` : 'After the grace time',
+    };
+
+    if (differs) {
+        present.label = 'Present';
+        late.label = 'Late';
+    }
+
+    return { present, absent, late };
 }
 
 /** "1h 5m" / "45m". */

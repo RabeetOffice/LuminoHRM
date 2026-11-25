@@ -119,6 +119,36 @@ it('shows an earlier month, and a month before joining as empty', function () {
         ->assertInertia(fn ($p) => $p->where('window', null)->where('totals.present', 0)->where('correctable', []));
 });
 
+it('stops paging back at the first month the person can have records: max(joining date, attendance start date)', function () {
+    // Joined before attendance started: the start date's month is the first.
+    [$user] = maMe('employee', ['joining_date' => '2025-06-10']);
+    Settings::set('attendance', ['start_date' => '2026-09-15']);
+
+    $this->actingAs($user)->get('/my/attendance?month=2026-10')->assertOk()
+        ->assertInertia(fn ($p) => $p->where('month.previous', '2026-09'));
+    $this->actingAs($user)->get('/my/attendance?month=2026-09')->assertOk()
+        ->assertInertia(fn ($p) => $p->where('month.previous', null));
+    // An earlier month typed into the URL is still shown empty, with no way further back.
+    $this->actingAs($user)->get('/my/attendance?month=2026-03')->assertOk()
+        ->assertInertia(fn ($p) => $p->where('month.previous', null)->where('window', null)->where('month.next', '2026-04'));
+
+    // Joined after attendance started: the joining month is the first.
+    Settings::set('attendance', ['start_date' => '2026-01-01']);
+    [$late] = maMe('employee', ['joining_date' => '2026-11-03']);
+    $this->actingAs($late)->get('/my/attendance')->assertOk()
+        ->assertInertia(fn ($p) => $p->where('month.value', '2026-11')->where('month.previous', null));
+
+    // Attendance not started at all: the joining month.
+    Settings::set('attendance', ['start_date' => null]);
+    $this->actingAs($user)->get('/my/attendance?month=2025-06')->assertOk()
+        ->assertInertia(fn ($p) => $p->where('month.previous', null));
+});
+
+it('gives a user with no employee record no earlier months to page through', function () {
+    $this->actingAs(userWithRole('admin'))->get('/my/attendance')->assertOk()
+        ->assertInertia(fn ($p) => $p->where('month.previous', null));
+});
+
 it('handles February of a leap year and a 31-day month', function () {
     [$user] = maMe('employee', ['joining_date' => '2020-01-01']);
     Settings::set('attendance', ['start_date' => '2020-01-01']);

@@ -85,6 +85,20 @@ it('leaves the tab and the key out for a viewer who may see the person but not t
         ->and($props['employee'])->not->toHaveKey('attendance');
 });
 
+it('leaves the tab and the key out on a report’s profile for a role with employees.view-team but not attendance.view-team', function () {
+    $role = Role::findOrCreate('team-lead', 'web');
+    $role->givePermissionTo('employees.view-team');
+    $lead = User::factory()->create();
+    $lead->assignRole($role);
+    $leadRecord = employeeFor($lead, ['joining_date' => '2026-01-01']);
+    $report = patPerson(['manager_id' => $leadRecord->id]);
+
+    $props = patProps($this->actingAs($lead)->get("/employees/{$report->id}")->assertOk());
+
+    expect($props['tabs'])->not->toContain('attendance')
+        ->and($props['employee'])->not->toHaveKey('attendance');
+});
+
 it('leaves the tab out for a manager-with-view-team-only on someone else’s report, who cannot open the record at all', function () {
     $managerUser = userWithRole('manager');
     employeeFor($managerUser, ['joining_date' => '2026-01-01']);

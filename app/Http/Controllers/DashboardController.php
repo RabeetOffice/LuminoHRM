@@ -29,6 +29,9 @@ use Inertia\Response;
  *                  (App\Support\Attendance\DashboardAttendance: today's counts, today's late people, the last 30 closed
  *                  days). Nobody outside the scope is counted or named.
  *   myAttendance   for everyone else with an employee record: their own month so far (MonthGrid totals) and today.
+ *   attendanceDay  {date, calendar_date, differs, cutoff}  with either of the above: the attendance day the "today"
+ *                  figures belong to. After midnight and before the day cutoff it is the previous calendar day
+ *                  (differs = true), and the page labels the figures with it.
  */
 class DashboardController extends Controller
 {
@@ -51,11 +54,14 @@ class DashboardController extends Controller
 
         if ($user->canAny(['attendance.view-all', 'attendance.view-team'])) {
             // The same people as the employee count: EmployeeAccess::scope (Admin/HR: everyone; Manager: own + reports).
-            $attendance = new DashboardAttendance($clock, $access->scope(Employee::query()), $user->can('employees.view-all'));
+            // Whoever sees every attendance record also sees every punch (even of an unknown machine user).
+            $attendance = new DashboardAttendance($clock, $access->scope(Employee::query()), $user->can('attendance.view-all'));
+            $props['attendanceDay'] = DashboardAttendance::day($clock);
             $props['attendanceToday'] = $attendance->today();
             $props['lateToday'] = $attendance->late();
             $props['attendanceTrend'] = $attendance->trend();
         } elseif ($user->employee_id !== null) {
+            $props['attendanceDay'] = DashboardAttendance::day($clock);
             $props['myAttendance'] = $this->myAttendance($clock, (int) $user->employee_id);
         }
 

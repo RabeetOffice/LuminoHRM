@@ -6,9 +6,11 @@ use App\Models\Employee;
 use App\Models\Holiday;
 use App\Models\Shift;
 use App\Models\User;
+use App\Support\Attendance\DashboardAttendance;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
+use Spatie\Permission\Models\Role;
 
 /*
 | The default shift is 09:00-18:00, Saturday and Sunday off. "Now" is 2026-11-24 (a Tuesday) 14:00 in Karachi: the
@@ -211,7 +213,7 @@ it('gives a plain employee without an employee record no attendance figures at a
 
 it('keeps "not in yet" for the open day until the cutoff, then charts the closed day', function () {
     $in = daEmployee();
-    daRow($in, '2026-11-24');
+    $inRow = daRow($in, '2026-11-24');
     $missing = daEmployee();
     $admin = userWithRole('admin');
 
@@ -221,7 +223,8 @@ it('keeps "not in yet" for the open day until the cutoff, then charts the closed
     expect($props['attendanceToday'])->toMatchArray(['date' => '2026-11-24', 'open' => true, 'not_in' => 1])
         ->and(end($props['attendanceTrend']['days']))->toBe('2026-11-23');
 
-    // After the cutoff the 24th is closed; the close has marked the missing person absent.
+    // After the cutoff the 24th is closed; the close has closed the day and marked the missing person absent.
+    $inRow->update(['closed' => true]);
     daRow($missing, '2026-11-24', ['status' => 'absent', 'clock_in' => null, 'clock_out' => null, 'worked_minutes' => 0, 'closed' => true]);
     $this->travelTo(CarbonImmutable::parse('2026-11-25 05:00:00', 'Asia/Karachi'));
     $props = daProps($this->actingAs($admin)->get('/dashboard')->assertOk());
@@ -231,7 +234,87 @@ it('keeps "not in yet" for the open day until the cutoff, then charts the closed
         ->and(daTrend($props)['2026-11-24'])->toBe(['absent' => 1, 'present' => 1]);
 });
 
+it('labels the figures with the attendance day when it is not the calendar date (after midnight, before the cutoff)', function () {
+    $admin = userWithRole('admin');
+
+    // 14:00: the attendance day is the calendar date.
+    $props = daProps($this->actingAs($admin)->get('/dashboard')->assertOk());
+    expect($props['attendanceDay'])->toBe([
+        'date' => '2026-11-24', 'calendar_date' => '2026-11-24', 'differs' => false, 'cutoff' => '04:00',
+    ]);
+
+    // 02:00 on the 25th: still the 24th's attendance day.
+    $this->travelTo(CarbonImmutable::parse('2026-11-25 02:00:00', 'Asia/Karachi'));
+    $props = daProps($this->actingAs($admin)->get('/dashboard')->assertOk());
+    expect($props['attendanceDay'])->toBe([
+        'date' => '2026-11-24', 'calendar_date' => '2026-11-25', 'differs' => true, 'cutoff' => '04:00',
+    ])
+        ->and($props['attendanceToday']['date'])->toBe('2026-11-24');
+
+    // A plain employee's "today" is the same attendance day, so they get the same label.
+    $user = userWithRole('employee');
+    employeeFor($user, ['joining_date' => '2026-01-01']);
+    Settings::set('attendance', ['start_date' => '2026-01-01', 'day_cutoff_time' => '05:30']);
+    $props = daProps($this->actingAs($user)->get('/dashboard')->assertOk());
+    expect($props['attendanceDay'])->toBe([
+        'date' => '2026-11-24', 'calendar_date' => '2026-11-25', 'differs' => true, 'cutoff' => '05:30',
+    ]);
+});
+
+it('sends no attendance day label to someone who gets no attendance figures', function () {
+    $props = daProps($this->actingAs(userWithRole('employee'))->get('/dashboard')->assertOk());
+
+    expect($props)->not->toHaveKey('attendanceDay');
+});
+
+it('shows the latest punch of anyone, even an unknown machine user, to a viewer with attendance.view-all only', function () {
+    $role = Role::findOrCreate('attendance-desk', 'web');
+    $role->givePermissionTo('attendance.view-all');
+    $viewer = User::factory()->create();
+    $viewer->assignRole($role);
+    DevicePunch::factory()->create(['employee_id' => null, 'punch_time' => '2026-11-24 13:05:59']);
+
+    $props = daProps($this->actingAs($viewer)->get('/dashboard')->assertOk());
+
+    expect($props['attendanceToday']['last_punch'])->toBe(['date' => '2026-11-24', 'time' => '13:05']);
+});
+
+it('lists at most the limit of late people, earliest first, with the full total', function () {
+    $limit = DashboardAttendance::LATE_LIST_LIMIT;
+    $people = [];
+    // Created latest first, so the list order cannot come from the ids.
+    for ($i = $limit + 2; $i >= 1; $i--) {
+        $e = daEmployee();
+        daLate($e, '2026-11-24', sprintf('%02d:%02d', 9 + intdiv($i, 60), $i % 60), $i);
+        $people[$i] = $e->id;
+    }
+
+    $late = daProps($this->actingAs(userWithRole('admin'))->get('/dashboard')->assertOk())['lateToday'];
+    $clockIns = array_column($late['people'], 'clock_in');
+    $sorted = $clockIns;
+    sort($sorted);
+
+    expect($late['total'])->toBe($limit + 2)
+        ->and($late['people'])->toHaveCount($limit)
+        ->and($clockIns)->toBe($sorted)
+        ->and($late['people'][0]['id'])->toBe($people[1])
+        ->and(array_column($late['people'], 'id'))->not->toContain($people[$limit + 1])
+        ->and(array_column($late['people'], 'id'))->not->toContain($people[$limit + 2]);
+});
+
 // ---------------------------------------------------------------- the 30-day series
+
+it('leaves a past day that has not been closed out of the series', function () {
+    $a = daEmployee();
+    $b = daEmployee();
+    daRow($a, '2026-11-23');
+    daRow($b, '2026-11-23', ['closed' => false]); // decided but never closed (the close has not run)
+    daRow($a, '2026-11-20', ['closed' => false]);
+
+    $props = daProps($this->actingAs(userWithRole('admin'))->get('/dashboard')->assertOk());
+
+    expect(daTrend($props))->toBe(['2026-11-23' => ['present' => 1]]);
+});
 
 it('charts the last 30 closed days only, from decided statuses, never today or pending', function () {
     $a = daEmployee();
@@ -315,5 +398,6 @@ it('reads a fixed number of queries whatever the number of people and days', fun
     $seed(12);
     $large = $count();
 
-    expect($large)->toBe($small)->and($large)->toBeLessThanOrEqual(25);
+    // Measured: 10 queries for the whole request; the bound leaves a margin of 2.
+    expect($large)->toBe($small)->and($large)->toBeLessThanOrEqual(12);
 });

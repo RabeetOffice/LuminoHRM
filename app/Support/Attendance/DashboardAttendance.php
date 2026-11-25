@@ -186,6 +186,8 @@ final class DashboardAttendance
 
         $grouped = Attendance::query()
             ->betweenDates($from, $to)
+            // Closed days only: a past day the close has not reached yet still has people missing who will be absent.
+            ->where('closed', true)
             ->whereIn('employee_id', (clone $this->people)->select('employees.id'))
             ->whereIn('status', self::TREND_STATUSES)
             ->toBase()
@@ -297,6 +299,25 @@ final class DashboardAttendance
         }
 
         return ['date' => substr($latest, 0, 10), 'time' => substr($latest, 11, 5)];
+    }
+
+    /**
+     * Which day the dashboard's "today" figures are for, so the page can say so when it is not the calendar date:
+     * after midnight and before the day cutoff the figures are still the previous attendance day's.
+     *
+     * @return array{date: string, calendar_date: string, differs: bool, cutoff: string}
+     */
+    public static function day(AttendanceClock $clock): array
+    {
+        $date = $clock->attendanceToday();
+        $calendar = $clock->today()->format('Y-m-d');
+
+        return [
+            'date' => $date,
+            'calendar_date' => $calendar,
+            'differs' => $date !== $calendar,
+            'cutoff' => $clock->dayCutoff(),
+        ];
     }
 
     /** settings('attendance.start_date') when it is a real "Y-m-d" date, else null. */

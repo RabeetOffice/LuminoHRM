@@ -15,8 +15,10 @@ import { formatClockTime } from '@/lib/clock-time';
 import {
     TREND_SERIES,
     attendanceBannerLine,
+    attendanceDayQualifier,
     barPercent,
     dashboardTiles,
+    dayPhrase,
     formatDays,
     formatLongDate,
     greetingFor,
@@ -28,8 +30,10 @@ import {
     tileTones,
     trendMax,
     trendSeries,
+    weekdayDay,
 } from '@/lib/dashboard';
 import type {
+    AttendanceDay,
     AttendanceTileKey,
     AttendanceToday,
     MyMonthAttendance,
@@ -80,6 +84,8 @@ type AttendanceTrend = {
 type Props = {
     employeeCount?: EmployeeCount;
     birthdays?: Birthday[];
+    /** The attendance day the "today" figures belong to (sent with any attendance figures). */
+    attendanceDay?: AttendanceDay;
     attendanceToday?: AttendanceToday;
     lateToday?: LateToday;
     attendanceTrend?: AttendanceTrend;
@@ -96,6 +102,7 @@ const SERIES_META: Record<TrendSeriesKey, { label: string; bar: string }> = {
 export default function Dashboard({
     employeeCount,
     birthdays,
+    attendanceDay,
     attendanceToday,
     lateToday,
     attendanceTrend,
@@ -115,10 +122,13 @@ export default function Dashboard({
     let figures: Partial<Record<AttendanceTileKey, TileFigure>> = {};
 
     if (attendanceToday) {
-        figures = teamAttendanceTiles(attendanceToday);
+        figures = teamAttendanceTiles(attendanceToday, attendanceDay);
     } else if (myAttendance) {
         figures = personalAttendanceTiles(myAttendance);
     }
+
+    // After midnight and before the day cutoff the figures are still the previous attendance day's: say so.
+    const qualifier = attendanceDayQualifier(attendanceDay);
 
     return (
         <>
@@ -138,7 +148,15 @@ export default function Dashboard({
                     </p>
                     {attendanceToday && (
                         <p className="mt-3 text-sm font-medium text-banner-foreground/90">
-                            {attendanceBannerLine(attendanceToday)}
+                            {attendanceBannerLine(
+                                attendanceToday,
+                                attendanceDay,
+                            )}
+                        </p>
+                    )}
+                    {qualifier && (
+                        <p className="mt-1 text-xs text-banner-foreground/70">
+                            {qualifier}
                         </p>
                     )}
                 </section>
@@ -229,14 +247,16 @@ export default function Dashboard({
                     {attendanceTrend ? (
                         <TrendCard trend={attendanceTrend} />
                     ) : myAttendance ? (
-                        <MyMonthCard mine={myAttendance} />
+                        <MyMonthCard mine={myAttendance} day={attendanceDay} />
                     ) : (
                         <PlaceholderCard
                             title="Attendance"
                             note="Your attendance appears here once your account is linked to an employee record."
                         />
                     )}
-                    {lateToday && <LateCard late={lateToday} />}
+                    {lateToday && (
+                        <LateCard late={lateToday} day={attendanceDay} />
+                    )}
                     <PlaceholderCard
                         title="Leave overview"
                         note="Leave requests by status appear here."
@@ -411,10 +431,14 @@ function TrendBar({ day, max }: { day: TrendDay; max: number }) {
 }
 
 /** Today's late people in the viewer's scope, earliest clock-in first. */
-function LateCard({ late }: { late: LateToday }) {
+function LateCard({ late, day }: { late: LateToday; day?: AttendanceDay }) {
     return (
         <CardShell
-            title="Late Arrivals Today"
+            title={
+                day?.differs
+                    ? `Late Arrivals, ${weekdayDay(day.date)}`
+                    : 'Late Arrivals Today'
+            }
             action={
                 <Link
                     href={daily()}
@@ -425,7 +449,7 @@ function LateCard({ late }: { late: LateToday }) {
             }
         >
             {late.people.length === 0 ? (
-                <EmptyNote>No late arrivals today.</EmptyNote>
+                <EmptyNote>No late arrivals {dayPhrase(day)}.</EmptyNote>
             ) : (
                 <>
                     <ul role="list" className="divide-y overflow-y-auto">
@@ -472,7 +496,13 @@ function LateCard({ late }: { late: LateToday }) {
 }
 
 /** A plain Employee's own month so far, with a link to My Attendance. */
-function MyMonthCard({ mine }: { mine: MyMonthAttendance }) {
+function MyMonthCard({
+    mine,
+    day,
+}: {
+    mine: MyMonthAttendance;
+    day?: AttendanceDay;
+}) {
     const { totals } = mine;
     const items: [string, string][] = [
         ['Present', String(totals.present)],
@@ -498,7 +528,9 @@ function MyMonthCard({ mine }: { mine: MyMonthAttendance }) {
         >
             <div className="grid gap-4 p-5">
                 <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="text-muted-foreground">Today:</span>
+                    <span className="text-muted-foreground">
+                        {day?.differs ? `${weekdayDay(day.date)}:` : 'Today:'}
+                    </span>
                     {mine.today ? (
                         <>
                             {/* An unknown or null status shows as Pending (statusMeta). */}

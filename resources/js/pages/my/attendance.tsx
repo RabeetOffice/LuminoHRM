@@ -1,6 +1,7 @@
 import { Head, Link } from '@inertiajs/react';
 import { CalendarClock, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useState } from 'react';
+import type { FocusEvent, KeyboardEvent } from 'react';
 import { DayCell } from '@/components/attendance/day-cell';
 import { AttendanceLegend } from '@/components/attendance/legend';
 import { RequestCorrectionDialog } from '@/components/attendance/request-correction-dialog';
@@ -18,7 +19,13 @@ import {
     shortDate,
 } from '@/lib/monthly-grid';
 import type { GridCell, GridDay, GridTotals } from '@/lib/monthly-grid';
-import { WEEKDAYS, dayList, leadingBlanks } from '@/lib/my-attendance';
+import {
+    WEEKDAYS,
+    dayList,
+    initialCalendarFocus,
+    leadingBlanks,
+    moveCalendarFocus,
+} from '@/lib/my-attendance';
 import { cn } from '@/lib/utils';
 import { attendance } from '@/routes/my';
 
@@ -92,6 +99,7 @@ export default function MyAttendance({
                                 {month.label}
                             </h2>
                             <Calendar
+                                key={month.value}
                                 days={days}
                                 cells={cells}
                                 window={window}
@@ -259,7 +267,12 @@ function Summary({ totals }: { totals: GridTotals }) {
     );
 }
 
-/** A Monday-first month calendar; each day uses the shared grid cell (symbol, markers, times on hover/focus). */
+/**
+ * A Monday-first month calendar; each day uses the shared grid cell (symbol, markers, times on hover/focus). The
+ * calendar is ONE tab stop (roving tabindex, like the monthly grid): Tab lands on today (or the first day), the
+ * arrow keys move by a day or a week, Home / End to the ends of the week, Ctrl+Home / Ctrl+End to the ends of the
+ * month. Remounted per month (key), so the stop starts on today again.
+ */
 function Calendar({
     days,
     cells,
@@ -272,9 +285,58 @@ function Calendar({
     today: string;
 }) {
     const blanks = leadingBlanks(days[0]?.weekday);
+    const [active, setActive] = useState(() =>
+        initialCalendarFocus(days, today),
+    );
+
+    const indexOf = (target: EventTarget): number | null => {
+        const col = (target as HTMLElement).dataset?.col;
+
+        return col === undefined ? null : Number(col);
+    };
+
+    const onFocus = (event: FocusEvent<HTMLDivElement>) => {
+        const index = indexOf(event.target);
+
+        if (index !== null) {
+            setActive(index);
+        }
+    };
+
+    const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+        const index = indexOf(event.target);
+
+        if (index === null) {
+            return;
+        }
+
+        const next = moveCalendarFocus(
+            index,
+            event.key,
+            event.ctrlKey || event.metaKey,
+            days.length,
+            blanks,
+        );
+
+        if (next === null) {
+            return;
+        }
+
+        event.preventDefault();
+        setActive(next);
+        event.currentTarget
+            .querySelector<HTMLElement>(`[data-col="${next}"]`)
+            ?.focus();
+    };
 
     return (
-        <div className="grid grid-cols-7 gap-1 sm:gap-2">
+        <div
+            role="group"
+            aria-label="Calendar. Use the arrow keys to move between days."
+            className="grid grid-cols-7 gap-1 sm:gap-2"
+            onFocus={onFocus}
+            onKeyDown={onKeyDown}
+        >
             {WEEKDAYS.map((weekday) => (
                 <div
                     key={weekday}
@@ -307,9 +369,11 @@ function Calendar({
                         {day.day}
                     </span>
                     <DayCell
+                        dayIndex={index}
                         day={day}
                         cell={cells[index] ?? null}
                         inWindow={inWindow(window, day.day)}
+                        tabbable={index === active}
                     />
                     {day.holiday && (
                         <span className="hidden w-full truncate text-center text-[10px] text-muted-foreground sm:block">

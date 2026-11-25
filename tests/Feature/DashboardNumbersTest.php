@@ -150,10 +150,11 @@ it('lists today\'s birthdays for Admin and HR with id, name, designation and pho
             'photo_url' => null,
         ]);
 
-    // The birth year and the full date never reach the browser. (The attendance figures carry today's date, which is
-    // the day being looked at, not a birth date, so they are left out of this text search.)
-    $json = json_encode(array_diff_key(dnPageProps($response), array_flip(['attendanceToday', 'lateToday', 'attendanceTrend'])));
-    expect($json)->not->toContain('1990')->not->toContain('2001')->not->toContain('06-15')->not->toContain('dob');
+    // The birth year and the full date never reach the browser, in any prop (the attendance ones included).
+    $json = json_encode(dnPageProps($response));
+    expect($json)->not->toContain('1990')->not->toContain('2001')->not->toContain('dob');
+    // The attendance figures name today's date ("2026-06-15"): the only "06-15" allowed is inside that exact string.
+    expect(str_replace('2026-06-15', '', $json))->not->toContain('06-15');
 })->with(['admin', 'hr']);
 
 it('sends an empty birthday list when nobody has a birthday today', function () {
@@ -238,8 +239,8 @@ it('walks every page prop of each role and finds only the allowed keys', functio
         expect(array_keys($props['employeeCount']))->toBe(['scope', 'total', 'probation']);
     }
 })->with([
-    ['admin', ['employeeCount', 'birthdays', 'attendanceToday', 'lateToday', 'attendanceTrend']],
-    ['hr', ['employeeCount', 'birthdays', 'attendanceToday', 'lateToday', 'attendanceTrend']],
-    ['manager', ['employeeCount', 'attendanceToday', 'lateToday', 'attendanceTrend']],
+    ['admin', ['employeeCount', 'birthdays', 'attendanceDay', 'attendanceToday', 'lateToday', 'attendanceTrend']],
+    ['hr', ['employeeCount', 'birthdays', 'attendanceDay', 'attendanceToday', 'lateToday', 'attendanceTrend']],
+    ['manager', ['employeeCount', 'attendanceDay', 'attendanceToday', 'lateToday', 'attendanceTrend']],
     ['employee', []],
 ]);
