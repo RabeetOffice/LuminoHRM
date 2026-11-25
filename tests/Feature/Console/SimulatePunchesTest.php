@@ -37,6 +37,30 @@ it('refuses to run outside the local and testing environments', function () {
         ->and(DeviceLog::count())->toBe(0);
 });
 
+it('cannot be talked past the production refusal with --env: the configured APP_ENV must be local or testing too', function () {
+    spStaff(2);
+    // What `--env=local` on a production server amounts to: the app environment says local, the configuration does not.
+    $this->app['env'] = 'local';
+    config(['app.env' => 'production']);
+
+    $this->artisan('hrm:simulate-punches', ['--date' => '2026-11-23'])
+        ->expectsOutputToContain('only runs when APP_ENV is local or testing')
+        ->assertFailed();
+
+    expect(DevicePunch::count())->toBe(0)->and(Device::count())->toBe(0);
+});
+
+it('sends as the local simulator device by default, never a real device', function () {
+    spStaff(1);
+    $real = Device::factory()->create(['serial_no' => 'SNREAL']);
+
+    $this->artisan('hrm:simulate-punches', ['--date' => '2026-11-23', '--absent' => 0])->assertSuccessful();
+
+    $simulator = Device::query()->where('serial_no', SimulatePunches::SIMULATOR_SERIAL)->sole();
+    expect(DevicePunch::where('device_id', $real->id)->count())->toBe(0)
+        ->and(DevicePunch::where('device_id', $simulator->id)->count())->toBeGreaterThan(0);
+});
+
 it('sends punches through the real /iclock endpoint as a local simulator device', function () {
     spStaff(3);
 

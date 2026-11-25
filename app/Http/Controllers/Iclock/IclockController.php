@@ -174,7 +174,8 @@ class IclockController extends Controller
      */
     private function handle(Request $request, callable $respond): Response
     {
-        $sn = trim($this->queryString($request, 'SN'));
+        // Serials are stored upper-cased: matching (and logging) the upper-cased value works the same on every database.
+        $sn = strtoupper(trim($this->queryString($request, 'SN')));
 
         // First of all, before any parsing: an oversized body never reaches the punch parser, and is neither logged
         // nor stored.
@@ -261,7 +262,7 @@ class IclockController extends Controller
         return $seconds % 3600 === 0 ? intdiv($seconds, 3600) : $seconds / 3600;
     }
 
-    /** The devices row for $sn, created for a serial listed in the environment; null when unknown. */
+    /** The devices row for $sn (already upper-cased), created for a serial listed in the environment (any case); null when unknown. */
     private function device(string $sn): ?Device
     {
         // Never query with what cannot be a stored serial (over-long, invalid UTF-8): it is simply unknown.
@@ -271,7 +272,9 @@ class IclockController extends Controller
 
         $device = Device::query()->where('serial_no', $sn)->first();
 
-        if ($device !== null || ! in_array($sn, config('hrm.devices.allowed_serials', []), true)) {
+        $allowed = array_map(fn ($serial) => strtoupper((string) $serial), (array) config('hrm.devices.allowed_serials', []));
+
+        if ($device !== null || ! in_array($sn, $allowed, true)) {
             return $device;
         }
 

@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Attendance;
 
 use App\Actions\Employees\UpdateEmployee;
-use App\Exceptions\AccountRuleViolation;
 use App\Http\Controllers\Controller;
 use App\Models\Device;
 use App\Models\DevicePunch;
@@ -24,9 +23,9 @@ use Inertia\Response;
 
 /**
  * Attendance > Raw Punches: every punch the machines sent, newest first (attendance.view-all). An unknown machine user ID
- * (a punch no employee was matched to) can be given to an employee here (attendance.edit + employees.manage). That goes
- * through UpdateEmployee, exactly like the employee form, so the stored punches are relinked, their days marked for a
- * rebuild and the change audited in one place.
+ * (a punch no employee was matched to) can be given to a working employee here (attendance.edit + employees.manage).
+ * That goes through UpdateEmployee with syncAccount off, so the stored punches are relinked, their days marked for a
+ * rebuild and the change audited in one place, with no login created, linked or renamed and no email sent.
  *
  * Filters are applied in SQL on indexed columns: punch_date (the attendance day), device_id, employee_id (null for
  * "Unknown IDs only") and device_user_id.
@@ -43,6 +42,9 @@ class PunchController extends Controller
         '15' => 'Face',
         '25' => 'Palm',
     ];
+
+    /** Employees who may be given a machine user ID here (not inactive, resigned or terminated). */
+    public const WORKING_STATUSES = ['active', 'probation'];
 
     public function index(Request $request, AttendanceClock $clock): Response|RedirectResponse
     {
@@ -78,6 +80,7 @@ class PunchController extends Controller
         }
 
         $access = new EmployeeAccess($user);
+        $canAssign = $user->can('attendance.edit') && $access->canManage();
 
         return Inertia::render('attendance/punches', [
             'punches' => [
@@ -93,19 +96,23 @@ class PunchController extends Controller
             'devices' => Device::query()->orderBy('name')->orderBy('id')->get(['id', 'name'])->all(),
             'employees' => $access->scope(Employee::query())
                 ->orderBy('first_name')->orderBy('last_name')->orderBy('id')
-                ->get(['id', 'first_name', 'last_name', 'employee_code', 'device_user_id'])
+                ->get(['id', 'first_name', 'last_name', 'employee_code', 'device_user_id', 'status'])
                 ->map(fn (Employee $e) => [
                     'id' => $e->id,
                     'name' => $e->full_name,
                     'code' => $e->employee_code,
                     'device_user_id' => $e->device_user_id,
+                    // Offered in the Assign dialog: currently working and without a machine user ID.
+                    'assignable' => $this->assignable($e),
                 ])
                 ->values()
                 ->all(),
             'today' => $clock->attendanceToday(),
             'can' => [
-                'assign' => $user->can('attendance.edit') && $access->canManage(),
+                'assign' => $canAssign,
             ],
+            // Only on the dialog's partial reload (?preview_user=&preview_employee=), never on a normal visit.
+            'assignPreview' => Inertia::optional(fn () => $canAssign ? $this->preview($request, $access) : null),
         ]);
     }
 
@@ -133,6 +140,12 @@ class PunchController extends Controller
             throw ValidationException::withMessages(['employee_id' => 'Choose an employee from the list.']);
         }
 
+        if (! in_array($employee->status, self::WORKING_STATUSES, true)) {
+            throw ValidationException::withMessages([
+                'employee_id' => "{$employee->full_name} is not currently working here, so a machine user ID cannot be given to them.",
+            ]);
+        }
+
         if (! DevicePunch::query()->whereNull('employee_id')->where('device_user_id', $id)->exists()) {
             throw ValidationException::withMessages(['device_user_id' => 'No unknown punches have this machine user ID.']);
         }
@@ -156,25 +169,70 @@ class PunchController extends Controller
             throw ValidationException::withMessages(['employee_id' => EmployeeRoles::PRIVILEGED_MESSAGE]);
         }
 
-        // A refusal from the update path itself (for example the login rules when an account is created) comes back as a
-        // validation error on its own field, as on the employee form.
+        // Only the machine user ID changes: no login is created, linked or renamed and no email is sent.
         try {
-            $update->handle($employee, ['device_user_id' => $id], $user);
+            $update->handle($employee, ['device_user_id' => $id], $user, syncAccount: false);
         } catch (UniqueConstraintViolationException) {
             throw ValidationException::withMessages(['device_user_id' => 'This machine user ID is already used by another employee.']);
-        } catch (AccountRuleViolation $e) {
-            return back()->with('error', $e->getMessage());
         }
 
-        $message = "Machine user ID {$id} assigned to {$employee->full_name}. Their punches will be worked into attendance within a minute.";
+        // The employee had no ID before, so every punch now linked under this one was linked by this save.
+        $linked = DevicePunch::query()->where('employee_id', $employee->id)->where('device_user_id', $id)->count();
+        $left = DevicePunch::query()->whereNull('employee_id')->where('device_user_id', $id)->count();
 
-        if ($update->createdAccount()) {
-            $message .= $update->linkSent()
-                ? ' A login was created for them and a link to set a password was emailed.'
-                : ' A login was created for them, but the set-password email could not be sent.';
+        $message = "Machine user ID {$id} assigned to {$employee->full_name}. ".match ($linked) {
+            0 => 'No punches linked (none are dated on or after the joining date).',
+            1 => '1 punch linked; it will be worked into attendance within a minute.',
+            default => "{$linked} punches linked; they will be worked into attendance within a minute.",
+        };
+
+        if ($left > 0) {
+            $message .= $left === 1 ? ' 1 earlier punch stays unknown.' : " {$left} earlier punches stay unknown.";
         }
 
         return back()->with('success', $message);
+    }
+
+    /**
+     * What assigning $id to the chosen employee would do (Raw Punches asks on a partial reload when an employee is
+     * picked): punches from the joining date on are linked, earlier ones stay unknown. Null when the pair is not
+     * assignable here.
+     *
+     * @return array{device_user_id: string, employee_id: int, joining_date: string, linked: int, earlier: int}|null
+     */
+    private function preview(Request $request, EmployeeAccess $access): ?array
+    {
+        $id = $request->query('preview_user');
+        $employeeId = $this->idParam($request, 'preview_employee');
+
+        if (! is_string($id) || trim($id) === '' || mb_strlen(trim($id)) > 20 || $employeeId === null) {
+            return null;
+        }
+
+        $id = trim($id);
+        $employee = Employee::query()->find($employeeId);
+
+        if ($employee === null || ! $access->canView($employee) || ! $this->assignable($employee)) {
+            return null;
+        }
+
+        $joined = $employee->joining_date->format('Y-m-d');
+        $unknown = DevicePunch::query()->whereNull('employee_id')->where('device_user_id', $id);
+
+        return [
+            'device_user_id' => $id,
+            'employee_id' => (int) $employee->id,
+            'joining_date' => $joined,
+            'linked' => (clone $unknown)->where('punch_date', '>=', $joined)->count(),
+            'earlier' => (clone $unknown)->where('punch_date', '<', $joined)->count(),
+        ];
+    }
+
+    /** Can be given a machine user ID here: currently working and without one. */
+    private function assignable(Employee $employee): bool
+    {
+        return in_array($employee->status, self::WORKING_STATUSES, true)
+            && ($employee->device_user_id === null || $employee->device_user_id === '');
     }
 
     /**

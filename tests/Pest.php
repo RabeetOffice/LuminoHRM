@@ -72,6 +72,9 @@ function validAttendance(array $overrides = []): array
         'half_day_hours' => 4,
         'overtime_enabled' => false,
         'overtime_min_minutes' => 30,
+        'start_date' => null,
+        'duplicate_punch_minutes' => 5,
+        'day_cutoff_time' => '04:00',
     ], $overrides);
 }
 

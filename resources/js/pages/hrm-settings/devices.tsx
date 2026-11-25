@@ -12,6 +12,7 @@ import type { StatusTone } from '@/components/hrm/status-pill';
 import { Field, fieldAria } from '@/components/settings/settings-form';
 import { DEVICES_ENTRY, SettingsNav } from '@/components/settings/settings-nav';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
     Dialog,
     DialogContent,
@@ -21,6 +22,7 @@ import {
     DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
     Select,
     SelectContent,
@@ -31,6 +33,7 @@ import {
 import { Spinner } from '@/components/ui/spinner';
 import { formatClockTime } from '@/lib/clock-time';
 import { formatDate } from '@/lib/format-date';
+import { nextTableUrl } from '@/lib/table-query';
 import { punches as punchesRoute } from '@/routes/attendance';
 import { index as settingsIndex } from '@/routes/hrm-settings';
 import { index } from '@/routes/hrm-settings/devices';
@@ -48,15 +51,41 @@ type DeviceRow = {
     last_punch_at: string | null;
     punches_today: number;
     has_punches: boolean;
+    /** Listed in HRM_DEVICE_SERIALS: removing it would not stick, so it can only be deactivated. */
+    env_listed: boolean;
 };
 
 type LogRow = {
-    id: number;
     time: string | null;
     type: string;
     accepted: boolean;
     summary: string;
 };
+
+type LogPage = {
+    data: LogRow[];
+    current_page: number;
+    last_page: number;
+    per_page: number;
+    total: number;
+};
+
+type LogFilters = {
+    /** Routine command polls (about every 10 seconds) are shown. */
+    polls: boolean;
+    /** '' (all) or one of LOG_TYPES' values. */
+    type: string;
+};
+
+const ALL_TYPES = 'all';
+
+const LOG_TYPES: { value: string; label: string }[] = [
+    { value: 'handshake', label: 'Handshake' },
+    { value: 'upload', label: 'Upload' },
+    { value: 'poll', label: 'Command poll' },
+    { value: 'result', label: 'Command result' },
+    { value: 'other', label: 'Other' },
+];
 
 type CommandRow = {
     id: number;
@@ -76,7 +105,8 @@ type Props = {
     groups: SettingsGroup[];
     devices: DeviceRow[];
     selected: number | null;
-    log: LogRow[];
+    log: LogPage;
+    logFilters: LogFilters;
     commands: CommandRow[];
     unknown: UnknownRow[];
     /** Calendar today in the company zone, "Y-m-d". */
@@ -149,6 +179,7 @@ export default function Devices({
     devices,
     selected,
     log,
+    logFilters,
     commands,
     unknown,
     today,
@@ -156,6 +187,7 @@ export default function Devices({
     onlineMinutes,
 }: Props) {
     const moment = useMoment();
+    const { url } = usePage();
     const [editing, setEditing] = useState<DeviceRow | 'new' | null>(null);
     const [pending, setPending] = useState<Pending | null>(null);
     const [confirmOpen, setConfirmOpen] = useState(false);
@@ -277,7 +309,7 @@ export default function Devices({
                     >
                         <Power />
                     </Button>
-                    {!row.has_punches && (
+                    {!row.has_punches && !row.env_listed && (
                         <Button
                             variant="ghost"
                             size="icon"
@@ -294,7 +326,23 @@ export default function Devices({
         },
     ];
 
-    const logColumns: DataTableColumn<LogRow>[] = [
+    /** Changes the sync log's filters or page; only the log props are reloaded. */
+    const logVisit = (changes: Record<string, string | null>) => {
+        router.get(
+            nextTableUrl(url, changes),
+            {},
+            {
+                only: ['log', 'logFilters'],
+                preserveScroll: true,
+                preserveState: true,
+                replace: true,
+            },
+        );
+    };
+
+    const logRows = log.data.map((row, i) => ({ ...row, key: i }));
+
+    const logColumns: DataTableColumn<LogRow & { key: number }>[] = [
         {
             key: 'time',
             header: 'Time',
@@ -384,7 +432,7 @@ export default function Devices({
 
                         <Section
                             title="Devices"
-                            description={`A machine is online when it checked in within the last ${onlineMinutes} minutes. A deactivated machine is refused by the server. A machine that has sent punches cannot be removed, only deactivated.`}
+                            description={`A machine is online when it checked in within the last ${onlineMinutes} minutes. A deactivated machine is refused by the server. A machine that has sent punches, or whose serial is listed in HRM_DEVICE_SERIALS, cannot be removed, only deactivated.`}
                             actions={
                                 <Button onClick={() => setEditing('new')}>
                                     <Plus />
@@ -454,15 +502,146 @@ export default function Devices({
 
                                 <Section
                                     title="Sync log"
-                                    description={`What ${current.name} sent in the last 7 days, newest first. Older entries are deleted automatically.`}
+                                    description={`What ${current.name} sent in the last 7 days, newest first. The machine checks for commands about every 10 seconds; those routine checks are hidden unless you show them. Older entries are deleted automatically.`}
                                 >
                                     <DataTable
                                         label="Sync log"
                                         columns={logColumns}
-                                        rows={log}
-                                        rowKey={(row) => row.id}
-                                        emptyText="Nothing received from this machine in the last 7 days."
+                                        rows={logRows}
+                                        rowKey={(row) => row.key}
+                                        toolbar={
+                                            <>
+                                                <Select
+                                                    value={
+                                                        logFilters.type === ''
+                                                            ? ALL_TYPES
+                                                            : logFilters.type
+                                                    }
+                                                    onValueChange={(value) =>
+                                                        logVisit({
+                                                            log_type:
+                                                                value ===
+                                                                ALL_TYPES
+                                                                    ? null
+                                                                    : value,
+                                                            log_page: null,
+                                                        })
+                                                    }
+                                                >
+                                                    <SelectTrigger
+                                                        className="w-full sm:w-44"
+                                                        aria-label="Filter by type"
+                                                    >
+                                                        <SelectValue />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem
+                                                            value={ALL_TYPES}
+                                                        >
+                                                            All types
+                                                        </SelectItem>
+                                                        {LOG_TYPES.map(
+                                                            (type) => (
+                                                                <SelectItem
+                                                                    key={
+                                                                        type.value
+                                                                    }
+                                                                    value={
+                                                                        type.value
+                                                                    }
+                                                                >
+                                                                    {type.label}
+                                                                </SelectItem>
+                                                            ),
+                                                        )}
+                                                    </SelectContent>
+                                                </Select>
+                                                <div className="flex items-center gap-2">
+                                                    <Checkbox
+                                                        id="log-polls"
+                                                        checked={
+                                                            logFilters.polls
+                                                        }
+                                                        onCheckedChange={(v) =>
+                                                            logVisit({
+                                                                polls:
+                                                                    v === true
+                                                                        ? '1'
+                                                                        : null,
+                                                                log_page: null,
+                                                            })
+                                                        }
+                                                    />
+                                                    <Label
+                                                        htmlFor="log-polls"
+                                                        className="font-normal whitespace-nowrap"
+                                                    >
+                                                        Show polls
+                                                    </Label>
+                                                </div>
+                                            </>
+                                        }
+                                        emptyText={
+                                            logFilters.type !== '' ||
+                                            logFilters.polls
+                                                ? 'Nothing matches in the last 7 days.'
+                                                : 'Nothing but routine command checks received from this machine in the last 7 days.'
+                                        }
                                     />
+                                    {log.last_page > 1 && (
+                                        <nav
+                                            aria-label="Sync log pages"
+                                            className="flex items-center justify-between gap-3 text-sm text-muted-foreground"
+                                        >
+                                            <span>
+                                                Page {log.current_page} of{' '}
+                                                {log.last_page} ({log.total}{' '}
+                                                entries)
+                                            </span>
+                                            <span className="flex gap-2">
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    disabled={
+                                                        log.current_page <= 1
+                                                    }
+                                                    onClick={() =>
+                                                        logVisit({
+                                                            log_page:
+                                                                log.current_page -
+                                                                    1 <=
+                                                                1
+                                                                    ? null
+                                                                    : String(
+                                                                          log.current_page -
+                                                                              1,
+                                                                      ),
+                                                        })
+                                                    }
+                                                >
+                                                    Newer
+                                                </Button>
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    disabled={
+                                                        log.current_page >=
+                                                        log.last_page
+                                                    }
+                                                    onClick={() =>
+                                                        logVisit({
+                                                            log_page: String(
+                                                                log.current_page +
+                                                                    1,
+                                                            ),
+                                                        })
+                                                    }
+                                                >
+                                                    Older
+                                                </Button>
+                                            </span>
+                                        </nav>
+                                    )}
                                 </Section>
                             </>
                         )}

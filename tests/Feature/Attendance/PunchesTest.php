@@ -6,6 +6,8 @@ use App\Models\DevicePunch;
 use App\Models\Employee;
 use App\Models\User;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Notification;
 use Spatie\Activitylog\Models\Activity;
 
 beforeEach(function () {
@@ -212,6 +214,119 @@ it('lets only an Admin give an id to an employee whose login is Admin or HR', fu
         ->post('/attendance/punches/assign', ['device_user_id' => '555', 'employee_id' => $employee->id])
         ->assertSessionHasNoErrors();
     expect($employee->fresh()->device_user_id)->toBe('555');
+});
+
+it('assigns an id to an employee with no login without creating an account, mail or account audit entry', function () {
+    Mail::fake();
+    Notification::fake();
+    $employee = pnEmployee(['first_name' => 'No', 'last_name' => 'Login', 'email' => 'nologin@example.test']);
+    punch('555', '2026-11-23 09:00:00');
+    $admin = userWithRole('admin');
+    $users = User::count();
+    $before = Activity::query()->max('id') ?? 0;
+
+    $this->actingAs($admin)
+        ->post('/attendance/punches/assign', ['device_user_id' => '555', 'employee_id' => $employee->id])
+        ->assertSessionHasNoErrors()
+        ->assertSessionHas('success', fn (string $m) => ! str_contains($m, 'login') && ! str_contains($m, 'email'));
+
+    expect($employee->fresh()->device_user_id)->toBe('555')
+        ->and($employee->fresh()->user)->toBeNull()
+        ->and(User::count())->toBe($users)
+        ->and(User::query()->where('email', 'nologin@example.test')->exists())->toBeFalse();
+
+    Mail::assertNothingOutgoing();
+    Notification::assertNothingSent();
+
+    $entries = Activity::query()->where('id', '>', $before)->get();
+    expect($entries->where('subject_type', (new User)->getMorphClass())->count())->toBe(0)
+        ->and($entries->pluck('description')->all())->toBe(['Employee updated']);
+});
+
+it('assigns an id to an employee with a login without changing the account name or email', function () {
+    Mail::fake();
+    Notification::fake();
+    $account = userWithRole('employee');
+    $account->forceFill(['name' => 'Account Name', 'email' => 'account@example.test'])->save();
+    $employee = employeeFor($account, ['joining_date' => '2026-01-01']);
+    // The employee row differs from the login (as if edited without a sync): assigning must not copy it across.
+    Employee::query()->whereKey($employee->id)->update(['first_name' => 'Other', 'last_name' => 'Person', 'email' => 'other@example.test']);
+    punch('555', '2026-11-23 09:00:00');
+
+    $this->actingAs(userWithRole('admin'))
+        ->post('/attendance/punches/assign', ['device_user_id' => '555', 'employee_id' => $employee->id])
+        ->assertSessionHasNoErrors();
+
+    $account->refresh();
+    expect($employee->fresh()->device_user_id)->toBe('555')
+        ->and($account->name)->toBe('Account Name')
+        ->and($account->email)->toBe('account@example.test');
+    Notification::assertNothingSent();
+});
+
+it('says how many punches were linked, including none', function () {
+    $employee = pnEmployee(['joining_date' => '2026-11-23']);
+    punch('555', '2026-11-20 09:00:00'); // before joining: stays unknown
+    punch('555', '2026-11-23 09:00:00');
+    punch('555', '2026-11-23 18:00:00');
+    $late = pnEmployee(['joining_date' => '2026-11-24']);
+    punch('556', '2026-11-22 09:00:00');
+    $admin = userWithRole('admin');
+
+    $this->actingAs($admin)
+        ->post('/attendance/punches/assign', ['device_user_id' => '555', 'employee_id' => $employee->id])
+        ->assertSessionHas('success', fn (string $m) => str_contains($m, '2 punches linked') && str_contains($m, '1 earlier punch stays unknown'));
+
+    $this->actingAs($admin)
+        ->post('/attendance/punches/assign', ['device_user_id' => '556', 'employee_id' => $late->id])
+        ->assertSessionHas('success', fn (string $m) => str_contains($m, 'No punches linked'));
+    expect($late->fresh()->device_user_id)->toBe('556');
+});
+
+it('lists only working employees for assigning and refuses others', function (string $status) {
+    $gone = pnEmployee(['status' => $status]);
+    $working = pnEmployee(['status' => 'probation']);
+    punch('555', '2026-11-23 09:00:00');
+    $admin = userWithRole('admin');
+
+    $this->actingAs($admin)->get('/attendance/punches')
+        ->assertInertia(fn ($p) => $p
+            ->where('employees', fn ($list) => collect($list)->firstWhere('id', $gone->id)['assignable'] === false
+                && collect($list)->firstWhere('id', $working->id)['assignable'] === true));
+
+    $this->actingAs($admin)
+        ->post('/attendance/punches/assign', ['device_user_id' => '555', 'employee_id' => $gone->id])
+        ->assertSessionHasErrors(['employee_id' => "{$gone->full_name} is not currently working here, so a machine user ID cannot be given to them."]);
+
+    expect($gone->fresh()->device_user_id)->toBeNull();
+})->with(['inactive', 'resigned', 'terminated']);
+
+it('previews how many punches an assignment would link, on a partial reload only', function () {
+    $employee = pnEmployee(['joining_date' => '2026-11-22']);
+    punch('555', '2026-11-20 09:00:00');
+    punch('555', '2026-11-22 09:00:00');
+    punch('555', '2026-11-23 09:00:00');
+    punch('555', '2026-11-23 18:00:00');
+
+    $this->actingAs(userWithRole('admin'))
+        ->get('/attendance/punches?preview_user=555&preview_employee='.$employee->id)
+        ->assertInertia(fn ($p) => $p
+            ->missing('assignPreview')
+            ->reloadOnly('assignPreview', fn ($r) => $r
+                ->where('assignPreview.device_user_id', '555')
+                ->where('assignPreview.employee_id', $employee->id)
+                ->where('assignPreview.joining_date', '2026-11-22')
+                ->where('assignPreview.linked', 3)
+                ->where('assignPreview.earlier', 1)));
+});
+
+it('previews nothing for an employee outside the assignable list', function () {
+    $gone = pnEmployee(['status' => 'resigned']);
+    punch('555', '2026-11-23 09:00:00');
+
+    $this->actingAs(userWithRole('admin'))
+        ->get('/attendance/punches?preview_user=555&preview_employee='.$gone->id)
+        ->assertInertia(fn ($p) => $p->reloadOnly('assignPreview', fn ($r) => $r->where('assignPreview', null)));
 });
 
 it('needs the employee management permission as well as attendance.edit', function () {

@@ -113,18 +113,76 @@ it('shows a 7-day sync log of type and summary, never bodies or query strings', 
         'ip' => '127.0.0.1', 'scheme' => 'http', 'accepted' => false, 'summary' => 'rejected: unknown device',
     ]);
 
+    // Routine polls are hidden by default.
     $response = $this->actingAs(userWithRole('admin'))->get('/hrm-settings/devices?device='.$device->id);
     $response->assertInertia(fn ($p) => $p
-        ->has('log', 3)
-        ->where('log.0.type', 'Command poll')
-        ->where('log.1.type', 'Upload')
-        ->where('log.1.summary', 'ATTLOG upload: 1 stored, 0 duplicate(s), 0 skipped')
-        ->where('log.2.type', 'Handshake')
-        ->where('log.2.time', '2026-11-24 12:00'));
+        ->has('log.data', 2)
+        ->where('log.total', 2)
+        ->where('log.data.0.type', 'Upload')
+        ->where('log.data.0.summary', 'ATTLOG upload: 1 stored, 0 duplicate(s), 0 skipped')
+        ->where('log.data.1.type', 'Handshake')
+        ->where('log.data.1.time', '2026-11-24 12:00')
+        ->where('logFilters.polls', false)
+        ->where('logFilters.type', ''));
 
-    $log = $response->viewData('page')['props']['log'];
-    expect(array_keys($log[0]))->toBe(['id', 'time', 'type', 'accepted', 'summary'])
+    $log = $response->viewData('page')['props']['log']['data'];
+    expect(array_keys($log[0]))->toBe(['time', 'type', 'accepted', 'summary'])
         ->and(json_encode($response->viewData('page')['props']))->not->toContain("2026-11-24 09:00:00\t");
+
+    $this->actingAs(userWithRole('admin'))->get('/hrm-settings/devices?polls=1&device='.$device->id)
+        ->assertInertia(fn ($p) => $p
+            ->has('log.data', 3)
+            ->where('log.data.0.type', 'Command poll')
+            ->where('logFilters.polls', true));
+});
+
+it('keeps a poll that handed out a command, and a refused poll, in the default sync log', function () {
+    $device = Device::factory()->create(['serial_no' => 'SNPOLL']);
+    DeviceCommand::create(['device_id' => $device->id, 'command' => 'INFO', 'status' => 'queued']);
+    dvIclock('GET', 'getrequest', 'SNPOLL'); // hands out the command
+    dvIclock('GET', 'getrequest', 'SNPOLL'); // routine
+    DeviceLog::create([
+        'serial_no' => 'SNPOLL', 'method' => 'GET', 'path' => 'iclock/getrequest', 'query' => '', 'body' => null,
+        'ip' => '127.0.0.1', 'scheme' => 'http', 'accepted' => false, 'summary' => 'rejected: inactive device',
+    ]);
+
+    $this->actingAs(userWithRole('admin'))->get('/hrm-settings/devices?device='.$device->id)
+        ->assertInertia(fn ($p) => $p
+            ->where('log.total', 2)
+            ->where('log.data.0.accepted', false)
+            ->where('log.data.1.summary', fn (string $s) => str_starts_with($s, 'command poll: sent command')));
+});
+
+it('pages the sync log 25 at a time over the 7 days and filters it by type', function () {
+    $device = Device::factory()->create(['serial_no' => 'SNPAGE']);
+
+    foreach (range(1, 27) as $i) {
+        DeviceLog::create([
+            'serial_no' => 'SNPAGE', 'method' => 'GET', 'path' => 'iclock/cdata', 'query' => '', 'body' => null,
+            'ip' => '127.0.0.1', 'scheme' => 'http', 'accepted' => true, 'summary' => "handshake {$i}",
+        ])->forceFill(['created_at' => Date::now()->subDays(6)->addMinutes($i)])->save();
+    }
+
+    DeviceLog::create([
+        'serial_no' => 'SNPAGE', 'method' => 'POST', 'path' => 'iclock/cdata', 'query' => '', 'body' => null,
+        'ip' => '127.0.0.1', 'scheme' => 'http', 'accepted' => true, 'summary' => 'ATTLOG upload: 2 stored',
+    ]);
+    $admin = userWithRole('admin');
+
+    $this->actingAs($admin)->get('/hrm-settings/devices?device='.$device->id)
+        ->assertInertia(fn ($p) => $p->has('log.data', 25)->where('log.total', 28)->where('log.last_page', 2)
+            ->where('log.data.0.type', 'Upload'));
+
+    $this->actingAs($admin)->get('/hrm-settings/devices?log_page=2&device='.$device->id)
+        ->assertInertia(fn ($p) => $p->has('log.data', 3)->where('log.current_page', 2)
+            ->where('log.data.2.summary', 'handshake 1'));
+
+    $this->actingAs($admin)->get('/hrm-settings/devices?log_type=upload&device='.$device->id)
+        ->assertInertia(fn ($p) => $p->where('log.total', 1)->where('logFilters.type', 'upload'));
+
+    $this->actingAs($admin)->get('/hrm-settings/devices?log_type=nonsense&log_page=x&device='.$device->id)
+        ->assertOk()
+        ->assertInertia(fn ($p) => $p->where('log.total', 28)->where('logFilters.type', ''));
 });
 
 // ---------------------------------------------------------------- add, rename, activate, remove
@@ -198,7 +256,84 @@ it('removes a device only when it has no punches', function () {
         ->and(Activity::query()->where('log_name', 'attendance')->where('subject_id', $empty->id)->where('event', 'deleted')->exists())->toBeTrue();
 });
 
+it('refuses to remove a device whose serial is listed in HRM_DEVICE_SERIALS, and flags it', function () {
+    config(['hrm.devices.allowed_serials' => ['snenv']]);
+    $listed = Device::factory()->create(['name' => 'Listed', 'serial_no' => 'SNENV']);
+    $plain = Device::factory()->create(['name' => 'Plain', 'serial_no' => 'SNPLAIN']);
+    $admin = userWithRole('admin');
+
+    $this->actingAs($admin)->get('/hrm-settings/devices')
+        ->assertInertia(fn ($p) => $p
+            ->where('devices.0.name', 'Listed')->where('devices.0.env_listed', true)
+            ->where('devices.1.name', 'Plain')->where('devices.1.env_listed', false));
+
+    $this->actingAs($admin)->delete("/hrm-settings/devices/{$listed->id}")
+        ->assertSessionHas('error', 'This serial is listed in HRM_DEVICE_SERIALS, so it would come back on the next check-in. Deactivate it, or remove it from the environment first.');
+    expect(Device::whereKey($listed->id)->exists())->toBeTrue();
+
+    $this->actingAs($admin)->delete("/hrm-settings/devices/{$plain->id}")->assertSessionHas('success');
+    expect(Device::whereKey($plain->id)->exists())->toBeFalse();
+});
+
+it('stores serial numbers upper-cased and treats case as the same serial', function () {
+    $admin = userWithRole('admin');
+
+    $this->actingAs($admin)->post('/hrm-settings/devices', ['name' => 'Gate', 'serial_no' => 'cqz7232560123'])
+        ->assertSessionHasNoErrors();
+    expect(Device::query()->sole()->serial_no)->toBe('CQZ7232560123');
+
+    $this->actingAs($admin)->post('/hrm-settings/devices', ['name' => 'Copy', 'serial_no' => 'CqZ7232560123'])
+        ->assertSessionHasErrors(['serial_no' => 'A device with this serial number already exists.']);
+
+    // A row stored in another case before this rule still counts.
+    Device::factory()->create(['serial_no' => 'legacy1']);
+    $this->actingAs($admin)->post('/hrm-settings/devices', ['name' => 'Legacy copy', 'serial_no' => 'LEGACY1'])
+        ->assertSessionHasErrors('serial_no');
+
+    expect(Device::count())->toBe(2);
+});
+
+it('matches a machine to its device whatever case it sends the serial in', function () {
+    $device = Device::factory()->create(['serial_no' => 'SNCASE']);
+
+    expect(dvIclock('POST', 'cdata', 'SNCASE', "101\t2026-11-24 09:00:00\t0\t1\n")->getContent())->toBe("OK: 1\n")
+        ->and(dvIclock('POST', 'cdata', 'sncase', "101\t2026-11-24 10:00:00\t0\t1\n")->getContent())->toBe("OK: 1\n")
+        ->and(DevicePunch::where('device_id', $device->id)->count())->toBe(2)
+        // Logged under the stored serial, so the sync log shows both.
+        ->and(DeviceLog::query()->where('serial_no', 'SNCASE')->count())->toBe(2);
+});
+
+it('creates a device listed in HRM_DEVICE_SERIALS upper-cased, matching the list case-insensitively', function () {
+    config(['hrm.devices.allowed_serials' => ['snnew']]);
+
+    expect(dvIclock('GET', 'cdata', 'SNNEW')->status())->toBe(200);
+    expect(Device::query()->sole()->serial_no)->toBe('SNNEW');
+});
+
 // ---------------------------------------------------------------- re-send punches
+
+it('refuses a re-send identical to one still waiting for the machine', function () {
+    $device = Device::factory()->create(['serial_no' => 'SNDUP']);
+    $admin = userWithRole('admin');
+    $range = ['from' => '2026-11-01', 'to' => '2026-11-07'];
+
+    $this->actingAs($admin)->post("/hrm-settings/devices/{$device->id}/resend", $range)->assertSessionHasNoErrors();
+    $this->actingAs($admin)->post("/hrm-settings/devices/{$device->id}/resend", $range)
+        ->assertSessionHasErrors(['from' => 'The same re-send is already waiting for the machine. It runs when the machine next checks in.']);
+    expect(DeviceCommand::count())->toBe(1);
+
+    // Another range, or another device, is fine.
+    $this->actingAs($admin)->post("/hrm-settings/devices/{$device->id}/resend", ['from' => '2026-11-01', 'to' => '2026-11-08'])->assertSessionHasNoErrors();
+    $other = Device::factory()->create();
+    $this->actingAs($admin)->post("/hrm-settings/devices/{$other->id}/resend", $range)->assertSessionHasNoErrors();
+
+    // Once the machine has picked it up, the same range may be asked for again.
+    dvIclock('GET', 'getrequest', 'SNDUP');
+    dvIclock('GET', 'getrequest', 'SNDUP');
+    $this->actingAs($admin)->post("/hrm-settings/devices/{$device->id}/resend", $range)->assertSessionHasNoErrors();
+
+    expect(DeviceCommand::count())->toBe(4);
+});
 
 it('queues a re-send command that getrequest hands out in the exact line format and devicecmd marks done', function () {
     $device = Device::factory()->create(['serial_no' => 'SNCMD']);

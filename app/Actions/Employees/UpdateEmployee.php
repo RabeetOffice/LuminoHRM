@@ -47,16 +47,19 @@ class UpdateEmployee
 
     /**
      * @param  array<string, mixed>  $data
+     * @param  bool  $syncAccount  false: never create, link or update a login and never send a set-password link (for
+     *                             saves that touch no account field, such as assigning a machine user ID). The
+     *                             privileged-account check still applies.
      *
      * @throws AccountRuleViolation the own-role or last-admin rule refused the account change (nothing is saved)
      * @throws UniqueConstraintViolationException
      */
-    public function handle(Employee $employee, array $data, User $by): Employee
+    public function handle(Employee $employee, array $data, User $by, bool $syncAccount = true): Employee
     {
         $this->linkSent = false;
         $this->writer->reset();
 
-        $saved = DB::transaction(function () use ($employee, $data, $by): Employee {
+        $saved = DB::transaction(function () use ($employee, $data, $by, $syncAccount): Employee {
             $this->writer->reset(); // a deadlock retry runs this again
             $current = Employee::query()->whereKey($employee->getKey())->lockForUpdate()->firstOrFail();
 
@@ -103,10 +106,13 @@ class UpdateEmployee
 
             $account = $current->user;
 
-            if ($account === null) {
-                $this->writer->provideLogin($current, $by, $data['role'] ?? null);
-            } else {
-                $this->writer->syncLogin($current, $account, $by, $data['role'] ?? null);
+            // Without $syncAccount no login is created, linked or renamed (so there is no link to send below).
+            if ($syncAccount) {
+                if ($account === null) {
+                    $this->writer->provideLogin($current, $by, $data['role'] ?? null);
+                } else {
+                    $this->writer->syncLogin($current, $account, $by, $data['role'] ?? null);
+                }
             }
 
             if ($new !== []) {

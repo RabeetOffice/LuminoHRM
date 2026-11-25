@@ -56,6 +56,18 @@ type EmployeeOption = {
     name: string;
     code: string | null;
     device_user_id: string | null;
+    /** Offered in the Assign dialog: currently working and without a machine user ID. */
+    assignable: boolean;
+};
+
+/** What assigning an ID to the chosen employee would do (sent only on the dialog's partial reload). */
+type AssignPreview = {
+    device_user_id: string;
+    employee_id: number;
+    /** "Y-m-d". */
+    joining_date: string;
+    linked: number;
+    earlier: number;
 };
 
 type Filters = {
@@ -75,6 +87,7 @@ type Props = {
     employees: EmployeeOption[];
     today: string;
     can: { assign: boolean };
+    assignPreview?: AssignPreview | null;
 };
 
 const ALL = 'all';
@@ -91,6 +104,7 @@ export default function Punches({
     devices,
     employees,
     can,
+    assignPreview,
 }: Props) {
     const { url, props } = usePage();
     const dateFormat = props.app.dateFormat;
@@ -346,9 +360,9 @@ export default function Punches({
                 <AssignDialog
                     key={assigning}
                     deviceUserId={assigning}
-                    employees={employees.filter(
-                        (e) => e.device_user_id === null,
-                    )}
+                    employees={employees.filter((e) => e.assignable)}
+                    preview={assignPreview ?? null}
+                    dateFormat={dateFormat}
                     onClose={() => setAssigning(null)}
                 />
             )}
@@ -359,11 +373,15 @@ export default function Punches({
 function AssignDialog({
     deviceUserId,
     employees,
+    preview,
+    dateFormat,
     onClose,
 }: {
     deviceUserId: string;
-    /** Employees without a machine user ID. */
+    /** Working employees without a machine user ID. */
     employees: EmployeeOption[];
+    preview: AssignPreview | null;
+    dateFormat: Parameters<typeof formatDate>[1];
     onClose: () => void;
 }) {
     const form = useForm({
@@ -371,6 +389,26 @@ function AssignDialog({
         employee_id: '',
     });
     const { data, errors } = form;
+    const [checking, setChecking] = useState(false);
+
+    // The counts for the chosen employee, fetched on a partial reload (the URL stays as it is).
+    const choose = (value: string) => {
+        form.setData('employee_id', value);
+        setChecking(true);
+        router.reload({
+            only: ['assignPreview'],
+            data: { preview_user: deviceUserId, preview_employee: value },
+            preserveUrl: true,
+            onFinish: () => setChecking(false),
+        });
+    };
+
+    const shown =
+        preview !== null &&
+        preview.device_user_id === deviceUserId &&
+        String(preview.employee_id) === data.employee_id
+            ? preview
+            : null;
 
     const submit = (event: FormEvent) => {
         event.preventDefault();
@@ -392,9 +430,10 @@ function AssignDialog({
                             Assign machine user ID {deviceUserId}
                         </DialogTitle>
                         <DialogDescription>
-                            This saves the ID on the employee's record, as the
-                            employee form does. Their punches under this ID from
-                            the joining date on are then worked into attendance.
+                            This saves the ID on the employee's record. Their
+                            punches under this ID from the joining date on are
+                            then worked into attendance. Their login, if any, is
+                            not changed and no email is sent.
                         </DialogDescription>
                     </DialogHeader>
 
@@ -408,16 +447,11 @@ function AssignDialog({
                         }
                         hint={
                             employees.length === 0
-                                ? 'Every employee already has a machine user ID. Change one on the employee form.'
-                                : 'Only employees without a machine user ID are listed.'
+                                ? 'Every working employee already has a machine user ID. Change one on the employee form.'
+                                : 'Only working employees without a machine user ID are listed.'
                         }
                     >
-                        <Select
-                            value={data.employee_id}
-                            onValueChange={(value) =>
-                                form.setData('employee_id', value)
-                            }
-                        >
+                        <Select value={data.employee_id} onValueChange={choose}>
                             <SelectTrigger
                                 id="assign-employee"
                                 aria-invalid={
@@ -441,6 +475,35 @@ function AssignDialog({
                             </SelectContent>
                         </Select>
                     </Field>
+
+                    {data.employee_id !== '' && (
+                        <p
+                            className="rounded-lg border bg-muted/40 p-3 text-sm"
+                            aria-live="polite"
+                        >
+                            {shown === null ? (
+                                <span className="flex items-center gap-2 text-muted-foreground">
+                                    {checking && <Spinner />}
+                                    {checking
+                                        ? 'Counting punches…'
+                                        : 'The punch count could not be worked out for this employee.'}
+                                </span>
+                            ) : (
+                                <>
+                                    {shown.linked === 1
+                                        ? '1 punch'
+                                        : `${shown.linked} punches`}{' '}
+                                    from{' '}
+                                    {formatDate(shown.joining_date, dateFormat)}{' '}
+                                    will be linked;{' '}
+                                    {shown.earlier === 1
+                                        ? '1 earlier punch stays'
+                                        : `${shown.earlier} earlier punches stay`}{' '}
+                                    unknown.
+                                </>
+                            )}
+                        </p>
+                    )}
 
                     <DialogFooter>
                         <Button

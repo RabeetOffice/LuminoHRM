@@ -20,8 +20,9 @@ use Random\Randomizer;
 
 /**
  * LOCAL TESTING ONLY. Makes up a realistic day of machine punches and sends them through the real /iclock/cdata handler,
- * in-process (routing, device check, PunchIngestor, device_logs), exactly as the MB20 would. Refuses to run unless
- * APP_ENV is local or testing.
+ * in-process (routing, device check, PunchIngestor, device_logs), exactly as the MB20 would. Refuses to run unless both
+ * the app environment and the configured APP_ENV are local or testing. Sends as the LOCAL-SIMULATOR device unless
+ * --serial names another.
  *
  * Each chosen employee who should work that day gets a clock-in around their shift start and a clock-out around its
  * end; --late, --absent and --missing-out are percentages. The same --seed gives the same punches.
@@ -34,7 +35,7 @@ class SimulatePunches extends Command
         {--late=10 : Percent of people who arrive late}
         {--absent=5 : Percent of people who do not come}
         {--missing-out=3 : Percent of people who forget to punch out}
-        {--serial= : Serial number of an active device to send as; default: the first active device, or a local simulator device}
+        {--serial= : Serial number of an active device to send as; default: the LOCAL-SIMULATOR device (created when missing)}
         {--assign-ids : Give a machine user ID to chosen employees who have none}
         {--seed= : Random seed, for repeatable punches; default: derived from the date}';
 
@@ -49,7 +50,11 @@ class SimulatePunches extends Command
 
     public function handle(AttendanceClock $clock): int
     {
-        if (! app()->environment(['local', 'testing'])) {
+        // Both must agree: the console takes the app environment from argv (--env=local), so the configured APP_ENV is
+        // checked as well, and a production server cannot be talked into it.
+        $configured = config('app.env');
+
+        if (! app()->environment(['local', 'testing']) || ! in_array($configured, ['local', 'testing'], true)) {
             $this->error('hrm:simulate-punches only runs when APP_ENV is local or testing. Nothing was sent.');
 
             return self::FAILURE;
@@ -137,7 +142,7 @@ class SimulatePunches extends Command
             $in = $isLate
                 ? $start + $grace + 1 + intdiv($rolls['in'] * 74, 1000)
                 : $start - 20 + intdiv($rolls['in'] * (20 + $grace), 1000);
-            // Out: 10 minutes before the shift end up to 45 minutes after it.
+            // Out: 10 minutes before the shift end up to 45 minutes after it. Shifts cannot span midnight in this version.
             $out = $end - 10 + intdiv($rolls['out'] * 55, 1000);
             $forgetsOut = $rolls['missing'] <= $missingOut;
 
@@ -203,7 +208,7 @@ class SimulatePunches extends Command
             return self::FAILURE;
         }
 
-        $this->comment('Punches only mark days. Run "php artisan hrm:attendance-rebuild" to work them out, and "php artisan hrm:attendance-close" for a past day to record absences.');
+        $this->comment('Punches only mark days. Run "php artisan hrm:attendance-rebuild" to work them out, and "php artisan hrm:attendance-close <date>" for a past day to record absences (use your PHP 8.4 binary for "php", for example C:\php84\php.exe on the Windows dev machine).');
 
         return self::SUCCESS;
     }
@@ -253,10 +258,10 @@ class SimulatePunches extends Command
         ];
     }
 
-    /** The device to send as: --serial (must be active), else the first active one, else a local simulator device. */
+    /** The device to send as: --serial (must be active), else the local simulator device (never a real one silently). */
     private function device(): ?Device
     {
-        $serial = trim((string) $this->option('serial'));
+        $serial = strtoupper(trim((string) $this->option('serial')));
 
         if ($serial !== '') {
             $device = Device::query()->where('serial_no', $serial)->first();
@@ -267,12 +272,6 @@ class SimulatePunches extends Command
                 return null;
             }
 
-            return $device;
-        }
-
-        $device = Device::query()->where('is_active', true)->orderBy('id')->first();
-
-        if ($device !== null) {
             return $device;
         }
 
@@ -287,7 +286,9 @@ class SimulatePunches extends Command
             return null;
         }
 
-        $this->comment("Created device \"{$device->name}\" ({$device->serial_no}) for the simulation.");
+        if ($device->wasRecentlyCreated) {
+            $this->comment("Created device \"{$device->name}\" ({$device->serial_no}) for the simulation.");
+        }
 
         return $device;
     }

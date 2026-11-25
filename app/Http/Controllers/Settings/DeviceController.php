@@ -11,15 +11,16 @@ use App\Models\User;
 use App\Support\Attendance\AttendanceClock;
 use App\Support\Audit\Audit;
 use Carbon\CarbonInterface;
+use Closure;
 use DateTimeImmutable;
 use DateTimeZone;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -40,8 +41,23 @@ class DeviceController extends Controller
     /** device_logs rows are kept this many days (hrm:prune-device-logs); the sync log shows the same window. */
     public const LOG_DAYS = 7;
 
-    /** Most sync log rows shown at once. */
-    private const LOG_LIMIT = 200;
+    /** Sync log rows per page. */
+    private const LOG_PER_PAGE = 25;
+
+    /**
+     * The sync log's type filter: key => [label, path, method or null]. "other" is every path not listed here.
+     *
+     * @var array<string, array{0: string, 1: string, 2: string|null}>
+     */
+    public const LOG_TYPES = [
+        'handshake' => ['Handshake', 'iclock/cdata', 'GET'],
+        'upload' => ['Upload', 'iclock/cdata', 'POST'],
+        'poll' => ['Command poll', 'iclock/getrequest', null],
+        'result' => ['Command result', 'iclock/devicecmd', null],
+    ];
+
+    /** The summary IclockController writes for a poll that found no command: the machine's routine 10-second check. */
+    public const ROUTINE_POLL_SUMMARY = 'command poll';
 
     /** Longest range "Re-send punches" may ask for, in days (both ends included). */
     public const MAX_RESEND_DAYS = 31;
@@ -67,6 +83,7 @@ class DeviceController extends Controller
             ? $devices->firstWhere('id', (int) $requested)
             : null;
         $selected ??= $devices->first();
+        $logFilters = $this->logFilters($request);
 
         return Inertia::render('hrm-settings/devices', [
             'groups' => HrmSettingsController::groupsFor($request->user()),
@@ -81,9 +98,12 @@ class DeviceController extends Controller
                 'last_punch_at' => $d->last_punch_at === null ? null : substr((string) $d->getRawOriginal('last_punch_at'), 0, 16),
                 'punches_today' => (int) ($todayCounts[$d->id] ?? 0),
                 'has_punches' => (bool) $d->getAttribute('punches_exists'),
+                // Listed in HRM_DEVICE_SERIALS: removing it would not stick (the next check-in re-creates it).
+                'env_listed' => self::envListed($d->serial_no),
             ])->values()->all(),
             'selected' => $selected?->id,
-            'log' => $selected === null ? [] : $this->log($selected, $zone),
+            'log' => $this->log($selected, $zone, $logFilters, $request),
+            'logFilters' => $logFilters,
             'commands' => $selected === null ? [] : $this->commands($selected, $zone),
             'unknown' => $this->unknownIds(),
             'today' => $now->format('Y-m-d'),
@@ -131,6 +151,10 @@ class DeviceController extends Controller
     /** Removes a device that never sent a punch. A device with punches is deactivated instead (its history stays). */
     public function destroy(Device $device): RedirectResponse
     {
+        if (self::envListed($device->serial_no)) {
+            return back()->with('error', 'This serial is listed in HRM_DEVICE_SERIALS, so it would come back on the next check-in. Deactivate it, or remove it from the environment first.');
+        }
+
         try {
             $refused = DB::transaction(function () use ($device): bool {
                 $locked = Device::query()->whereKey($device->getKey())->lockForUpdate()->firstOrFail();
@@ -182,6 +206,20 @@ class DeviceController extends Controller
         $command = self::resendCommand($data['from'], $data['to']);
 
         DB::transaction(function () use ($device, $command, $user, $data): void {
+            // The same request still waiting for the machine would only make it upload the same punches twice. The
+            // device row is locked so two clicks at once cannot both pass this check.
+            Device::query()->whereKey($device->getKey())->lockForUpdate()->first();
+
+            $waiting = DeviceCommand::query()
+                ->where('device_id', $device->id)
+                ->where('status', 'queued')
+                ->where('command', $command)
+                ->exists();
+
+            if ($waiting) {
+                throw ValidationException::withMessages(['from' => 'The same re-send is already waiting for the machine. It runs when the machine next checks in.']);
+            }
+
             $queued = DeviceCommand::create([
                 'device_id' => $device->id,
                 'command' => $command,
@@ -211,9 +249,11 @@ class DeviceController extends Controller
      */
     private function validateDevice(Request $request, ?Device $device): array
     {
+        // Serials are stored upper-cased and compared without regard to case, so SQLite (tests) and MariaDB (a
+        // case-insensitive collation) behave the same.
         $request->merge([
             'name' => is_string($request->input('name')) ? trim($request->input('name')) : $request->input('name'),
-            'serial_no' => is_string($request->input('serial_no')) ? trim($request->input('serial_no')) : $request->input('serial_no'),
+            'serial_no' => is_string($request->input('serial_no')) ? strtoupper(trim($request->input('serial_no'))) : $request->input('serial_no'),
         ]);
 
         /** @var array{name: string, serial_no: string} */
@@ -221,12 +261,29 @@ class DeviceController extends Controller
             'name' => ['required', 'string', 'max:100'],
             'serial_no' => [
                 'bail', 'required', 'string', 'max:50', 'regex:/^[A-Za-z0-9._-]+$/',
-                Rule::unique('devices', 'serial_no')->ignore($device?->id),
+                function (string $attribute, mixed $value, Closure $fail) use ($device): void {
+                    $taken = Device::query()
+                        ->whereRaw('UPPER(serial_no) = ?', [strtoupper((string) $value)])
+                        ->when($device !== null, fn ($q) => $q->whereKeyNot($device->getKey()))
+                        ->exists();
+
+                    if ($taken) {
+                        $fail('A device with this serial number already exists.');
+                    }
+                },
             ],
         ], [
             'serial_no.regex' => 'The serial number may contain only letters, digits, dots, dashes and underscores.',
-            'serial_no.unique' => 'A device with this serial number already exists.',
         ], ['serial_no' => 'serial number']);
+    }
+
+    /** Whether $serial is in config('hrm.devices.allowed_serials') (HRM_DEVICE_SERIALS), ignoring case. */
+    public static function envListed(string $serial): bool
+    {
+        $allowed = config('hrm.devices.allowed_serials', []);
+
+        return is_array($allowed)
+            && in_array(strtoupper($serial), array_map(fn ($s) => strtoupper((string) $s), $allowed), true);
     }
 
     private function online(?CarbonInterface $lastSeen, CarbonInterface $now): bool
@@ -242,27 +299,71 @@ class DeviceController extends Controller
     }
 
     /**
-     * The last 7 days of requests from this machine: time, type and summary. Never the body or the query string.
+     * The sync log filters as applied: polls (show routine command polls) and type ('' or a LOG_TYPES key / 'other').
      *
-     * @return array<int, array{id: int, time: string|null, type: string, accepted: bool, summary: string}>
+     * @return array{polls: bool, type: string}
      */
-    private function log(Device $device, DateTimeZone $zone): array
+    private function logFilters(Request $request): array
     {
-        return DeviceLog::query()
+        $type = $request->query('log_type');
+
+        return [
+            'polls' => in_array($request->query('polls'), ['1', 'true'], true),
+            'type' => is_string($type) && ($type === 'other' || array_key_exists($type, self::LOG_TYPES)) ? $type : '',
+        ];
+    }
+
+    /**
+     * The last 7 days of requests from this machine, newest first, 25 a page (?log_page=): time, type, accepted and
+     * summary only. Never the body or the query string. The machine polls for commands about every 10 seconds, so
+     * accepted polls that found nothing are left out unless asked for.
+     *
+     * @param  array{polls: bool, type: string}  $filters
+     * @return array{data: array<int, array{time: string|null, type: string, accepted: bool, summary: string}>, current_page: int, last_page: int, per_page: int, total: int}
+     */
+    private function log(?Device $device, DateTimeZone $zone, array $filters, Request $request): array
+    {
+        if ($device === null) {
+            return ['data' => [], 'current_page' => 1, 'last_page' => 1, 'per_page' => self::LOG_PER_PAGE, 'total' => 0];
+        }
+
+        $page = $request->query('log_page');
+        $page = is_string($page) && ctype_digit($page) && strlen($page) <= 6 && (int) $page > 0 ? (int) $page : 1;
+
+        $query = DeviceLog::query()
             ->where('serial_no', $device->serial_no)
-            ->where('created_at', '>=', Date::now()->subDays(self::LOG_DAYS))
+            ->where('created_at', '>=', Date::now()->subDays(self::LOG_DAYS));
+
+        if (! $filters['polls']) {
+            $query->whereNot(fn (Builder $q) => $q
+                ->where('path', self::LOG_TYPES['poll'][1])
+                ->where('accepted', true)
+                ->where('summary', self::ROUTINE_POLL_SUMMARY));
+        }
+
+        if ($filters['type'] === 'other') {
+            $query->whereNotIn('path', array_unique(array_column(self::LOG_TYPES, 1)));
+        } elseif ($filters['type'] !== '') {
+            [, $path, $method] = self::LOG_TYPES[$filters['type']];
+            $query->where('path', $path)->when($method !== null, fn (Builder $q) => $q->where('method', $method));
+        }
+
+        $paginator = $query
             ->orderByDesc('id')
-            ->limit(self::LOG_LIMIT)
-            ->get(['id', 'method', 'path', 'accepted', 'summary', 'created_at'])
-            ->map(fn (DeviceLog $log) => [
-                'id' => $log->id,
+            ->paginate(self::LOG_PER_PAGE, ['id', 'method', 'path', 'accepted', 'summary', 'created_at'], 'log_page', $page);
+
+        return [
+            'data' => $paginator->getCollection()->map(fn (DeviceLog $log) => [
                 'time' => $this->local($log->created_at, $zone),
                 'type' => self::logType((string) $log->method, (string) $log->path),
                 'accepted' => (bool) $log->accepted,
                 'summary' => (string) $log->summary,
-            ])
-            ->values()
-            ->all();
+            ])->values()->all(),
+            'current_page' => $paginator->currentPage(),
+            'last_page' => $paginator->lastPage(),
+            'per_page' => $paginator->perPage(),
+            'total' => $paginator->total(),
+        ];
     }
 
     public static function logType(string $method, string $path): string
