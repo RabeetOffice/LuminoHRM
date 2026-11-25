@@ -196,8 +196,8 @@ class MonthlyController extends Controller
                     ->from('attendances')
                     ->whereColumn('attendances.employee_id', 'employees.id')
                     ->whereBetween('attendances.date', [$grid->first, $grid->last])))
-            ->orderBy('last_name')
             ->orderBy('first_name')
+            ->orderBy('last_name')
             ->orderBy('id');
     }
 
