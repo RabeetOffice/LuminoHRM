@@ -30,6 +30,7 @@ import { index as shiftsIndex } from '@/routes/attendance/shifts';
 import { index as auditLogIndex } from '@/routes/audit-log';
 import { index as holidaysIndex } from '@/routes/holidays';
 import { index as hrmSettingsIndex } from '@/routes/hrm-settings';
+import { index as leaveBalancesIndex } from '@/routes/leave/balances';
 import { index as leaveRequestsIndex } from '@/routes/leave/requests';
 import { index as leaveTypesIndex } from '@/routes/leave/types';
 import { attendance as myAttendance, leaves as myLeaves } from '@/routes/my';
@@ -137,7 +138,8 @@ export const navigation: NavGroup[] = [
                 children: [
                     // Approvers: everyone's (leave.approve-all) or own team's (leave.approve-team).
                     { title: 'Requests', href: leaveRequestsIndex() },
-                    { title: 'Balances', href: '/leave/balances', ...unready },
+                    // Everyone's balances (leave.approve-all) or own team's, read-only (leave.approve-team).
+                    { title: 'Balances', href: leaveBalancesIndex() },
                     {
                         title: 'Leave Types',
                         href: leaveTypesIndex(),

@@ -4,9 +4,12 @@ namespace App\Actions\Employees;
 
 use App\Models\Employee;
 use App\Models\User;
+use App\Support\Attendance\AttendanceClock;
+use App\Support\Attendance\Leavers;
 use App\Support\Attendance\PunchIngestor;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeCode;
+use App\Support\Leave\LeaveBalances;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -119,6 +122,15 @@ class CreateEmployee
 
         $satellites = $this->writer->saveSatellites($employee, $data);
         $this->writer->provideLogin($employee, $by, $data['role'] ?? null, $passwordHash);
+
+        // Balance rows of the current leave year (pro-rated for a joiner; none when joining in a later year). A leaver
+        // without a last working day gets none, as in the allocation job.
+        if (! Leavers::withoutLastDay($employee)) {
+            app(LeaveBalances::class)->ensureYear(
+                $employee,
+                (int) substr(app(AttendanceClock::class)->attendanceToday(), 0, 4),
+            );
+        }
 
         $values = array_filter(
             [...$attributes, ...$satellites['attributes']],

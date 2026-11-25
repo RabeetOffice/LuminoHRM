@@ -104,6 +104,7 @@ describe('ready flag', () => {
         ]);
         expect(r[1].items[4].children?.map((c) => c.title)).toEqual([
             'Requests',
+            'Balances',
             'Leave Types',
             'Holidays',
         ]);
@@ -477,6 +478,19 @@ describe('shifts and holidays', () => {
             expect(child(r, 'Leave', 'Requests')?.soon).toBe(false);
             expect(toUrl(child(r, 'Leave', 'Requests')?.href ?? '')).toBe(
                 '/leave/requests',
+            );
+        }
+    });
+
+    test('leave balances are ready for approvers, a manager included', () => {
+        for (const perms of [
+            ['leave.approve-all'],
+            ['attendance.view-team', 'leave.approve-team'],
+        ]) {
+            const r = filterNavigation(navigation, perms, '', full);
+            expect(child(r, 'Leave', 'Balances')?.soon).toBe(false);
+            expect(toUrl(child(r, 'Leave', 'Balances')?.href ?? '')).toBe(
+                '/leave/balances',
             );
         }
     });

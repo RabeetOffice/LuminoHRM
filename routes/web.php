@@ -200,6 +200,23 @@ Route::middleware(['auth', 'verified'])->group(function () {
             ->whereNumber('leaveRequest')->middleware('can:leave.approve-all')->name('cancel-approved');
     });
 
+    // Leave > Balances: the grid (leave.approve-all, or leave.approve-team read-only for the own team; checked in the
+    // controller, scoped by EmployeeAccess), HR's edit of a balance row (LeaveRouting::mayAdminister, 403), the .xlsx,
+    // and the go-live opening-balance import (HR / Admin). Static URLs before the numeric edit route.
+    Route::prefix('leave/balances')->name('leave.balances.')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Leave\BalanceController::class, 'index'])->name('index');
+
+        Route::middleware('can:leave.approve-all')->group(function () {
+            Route::get('export', [\App\Http\Controllers\Leave\BalanceController::class, 'export'])->name('export');
+            Route::get('import', [\App\Http\Controllers\Leave\BalanceImportController::class, 'show'])->name('import');
+            Route::get('import/template', [\App\Http\Controllers\Leave\BalanceImportController::class, 'template'])->name('import.template');
+            Route::post('import/preview', [\App\Http\Controllers\Leave\BalanceImportController::class, 'upload'])->name('import.preview');
+            Route::post('import/run', [\App\Http\Controllers\Leave\BalanceImportController::class, 'run'])->name('import.run');
+            Route::put('{employee}/{type}/{year}', [\App\Http\Controllers\Leave\BalanceController::class, 'update'])
+                ->whereNumber(['employee', 'type'])->where('year', '\d{4}')->name('update');
+        });
+    });
+
     // Users and roles. No delete route: accounts are disabled, never removed.
     Route::middleware('can:users.manage')->prefix('users')->name('users.')->group(function () {
         Route::get('/', [UserController::class, 'index'])->name('index');

@@ -67,3 +67,9 @@ Schedule::command('hrm:prune-device-logs')
     ->dailyAt('03:40')
     ->timezone(config('app.timezone'))
     ->withoutOverlapping(30);
+
+// Leave balances (Phase 4): creates the missing balance rows of the current leave year for everyone employed in it
+// (idempotent, so a missed 1 January is caught up on the next run; existing rows are never changed).
+Schedule::command('hrm:leave-allocate')
+    ->hourlyAt(40)
+    ->withoutOverlapping(30);

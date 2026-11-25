@@ -4,11 +4,14 @@ namespace App\Actions\Employees;
 
 use App\Exceptions\AccountRuleViolation;
 use App\Models\Employee;
+use App\Models\LeaveBalance;
 use App\Models\User;
 use App\Support\Attendance\PunchIngestor;
 use App\Support\Attendance\RebuildMarks;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeRoles;
+use App\Support\Leave\LeaveBalances;
+use App\Support\Leave\LeaveDays;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -77,6 +80,7 @@ class UpdateEmployee
             }
 
             $current->disableLogging(); // one entry for the whole save, written below
+            $before = clone $current; // the record as stored, for the allocation recalculation below
             $current->fill($attributes);
 
             $old = [];
@@ -104,6 +108,10 @@ class UpdateEmployee
             // one opens days, which the hourly close backfills.)
             if ($current->wasChanged(['joining_date', 'last_working_day', 'status'])) {
                 RebuildMarks::outsideEmployment($current);
+            }
+
+            if ($current->wasChanged('joining_date')) {
+                $this->recalculateAllocations($before, $current, $by);
             }
 
             $satellites = $this->writer->saveSatellites($current, $data);
@@ -144,5 +152,58 @@ class UpdateEmployee
         }
 
         return $saved;
+    }
+
+    /**
+     * A new joining date changes the pro-rated allocation of the old and the new joining year. A balance row of either
+     * year whose `allocated` still equals LeaveBalances::allocationFor under the OLD joining date (HR never edited it)
+     * gets allocationFor under the new one; a row HR edited is left alone. Unpaid types have no balance. One entry
+     * "Leave allocation recalculated" per row changed (subject the employee; year, type, old / new allocated).
+     */
+    private function recalculateAllocations(Employee $before, Employee $after, User $by): void
+    {
+        $balances = app(LeaveBalances::class);
+        $years = array_values(array_unique([
+            (int) $before->joining_date->format('Y'),
+            (int) $after->joining_date->format('Y'),
+        ]));
+
+        $rows = LeaveBalance::query()
+            ->with('type')
+            ->where('employee_id', $after->getKey())
+            ->whereIn('year', $years)
+            ->orderBy('year')->orderBy('leave_type_id')
+            ->lockForUpdate()
+            ->get();
+
+        foreach ($rows as $row) {
+            $type = $row->type;
+
+            if ($type === null || $type->isUnpaid()) {
+                continue;
+            }
+
+            $oldAllocation = $balances->allocationFor($before, $type, (int) $row->year);
+
+            if (LeaveDays::halves($row->allocated) !== LeaveDays::halves($oldAllocation)) {
+                continue; // HR edited this row
+            }
+
+            $newAllocation = $balances->allocationFor($after, $type, (int) $row->year);
+
+            if (LeaveDays::halves($newAllocation) === LeaveDays::halves($oldAllocation)) {
+                continue;
+            }
+
+            $row->forceFill(['allocated' => $newAllocation])->save();
+
+            Audit::record('leave', 'Leave allocation recalculated', $after, [
+                'year' => (int) $row->year,
+                'type' => $type->name,
+                'type_id' => $type->id,
+                'old' => ['allocated' => LeaveDays::fromHalves(LeaveDays::halves($oldAllocation))],
+                'attributes' => ['allocated' => LeaveDays::fromHalves(LeaveDays::halves($newAllocation))],
+            ], $by);
+        }
     }
 }
