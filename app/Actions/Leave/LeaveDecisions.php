@@ -414,7 +414,7 @@ class LeaveDecisions
                     if ($short) {
                         throw ValidationException::withMessages([
                             'decision' => "Not enough {$type->name} leave: these days would be taken from what carries into {$year}, and {$year} would end "
-                                .BalanceLine::format(-$after).' short. Reject it, or ask for the extra days as Unpaid leave.',
+                                .$this->daysText(-$after).' short. Reject it, or ask for the extra days as Unpaid leave.',
                         ]);
                     }
 

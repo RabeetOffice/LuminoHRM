@@ -136,3 +136,16 @@ it('shows the reduced available for this year in the preview while a December re
     // And the December request's own preview (backdated) still fits 2026.
     expect(LeaveDays::plan($employee, '2026-12-28', '2026-12-30', null)->total)->toBe(3.0);
 });
+
+it('checks a later year with approved leave days even when it has no balance row yet', function () {
+    [, $employee] = ytPerson();
+    LeaveBalance::query()->where('employee_id', $employee->id)->where('year', 2027)->delete();
+    ytBook2027($employee); // 19 approved days in 2027, no 2027 row (written directly)
+    $request = ytDecember($employee);
+
+    expect(app(LeaveBalances::class)->lastYearInUse($employee, leaveType()))->toBe(2027);
+
+    $this->actingAs(userWithRole('hr'))->from('/leave/requests')
+        ->put("/leave/requests/{$request->id}/final-decide", ['decision' => 'approve', 'note' => null])
+        ->assertSessionHas('error', fn (string $m) => str_contains($m, 'what carries into 2027'));
+});

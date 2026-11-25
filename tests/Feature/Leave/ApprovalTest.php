@@ -337,7 +337,7 @@ it('refuses approving a 2026 request that would take days a pending 2027 request
     $r = lvRequest($employee, '2026-12-07', '2026-12-18'); // 10 days: only 4 would carry
 
     lvDecide($hrUser, $r, 'final')->assertSessionHas('error',
-        'Not enough Annual leave: these days would be taken from what carries into 2027, and 2027 would end 1 short. Reject it, or ask for the extra days as Unpaid leave.');
+        'Not enough Annual leave: these days would be taken from what carries into 2027, and 2027 would end 1 day short. Reject it, or ask for the extra days as Unpaid leave.');
     expect($r->fresh()->status)->toBe('pending')->and(lvDays($r))->toBe([]);
 });
 
@@ -367,7 +367,7 @@ it('refuses a 2026 approval that would overdraw APPROVED 2027 leave relying on t
 
     $r = lvRequest($employee, '2026-11-30', '2026-12-04'); // 5 days in 2026: fits 2026 alone, but empties the carry
     lvDecide($hrUser, $r, 'final')->assertSessionHas('error',
-        'Not enough Annual leave: these days would be taken from what carries into 2027, and 2027 would end 5 short. Reject it, or ask for the extra days as Unpaid leave.');
+        'Not enough Annual leave: these days would be taken from what carries into 2027, and 2027 would end 5 days short. Reject it, or ask for the extra days as Unpaid leave.');
     expect($r->fresh()->status)->toBe('pending')->and(lvDays($r))->toBe([]);
 });
 

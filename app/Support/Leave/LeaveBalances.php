@@ -157,8 +157,8 @@ class LeaveBalances
     }
 
     /**
-     * The last year the employee has a balance row or open-request days for this type ($ignoreRequestId left out),
-     * or null when there is neither. A request's effect on carry can reach any year up to here.
+     * The last year the employee has a balance row, approved leave days or open-request days for this type
+     * ($ignoreRequestId left out), or null when there is none. A request's effect on carry can reach any year up to here.
      */
     public function lastYearInUse(Employee $employee, LeaveType $type, ?int $ignoreRequestId = null): ?int
     {
@@ -171,9 +171,14 @@ class LeaveBalances
             ->when($ignoreRequestId !== null, fn ($q) => $q->where('id', '!=', $ignoreRequestId))
             ->max('to_date');
 
+        $lastDay = DB::table('leave_days')
+            ->where('employee_id', $employee->id)->where('leave_type_id', $type->id)
+            ->max('date');
+
         $years = array_filter([
             $rowYear !== null ? (int) $rowYear : null,
             $lastTo !== null ? (int) substr((string) $lastTo, 0, 4) : null,
+            $lastDay !== null ? (int) substr((string) $lastDay, 0, 4) : null,
         ], fn (?int $y): bool => $y !== null);
 
         return $years === [] ? null : max($years);
