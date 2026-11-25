@@ -25,6 +25,7 @@ import type { LucideIcon } from 'lucide-react';
 import { toUrl } from '@/lib/utils';
 import { dashboard } from '@/routes';
 import { daily, monthly, punches } from '@/routes/attendance';
+import { index as correctionsIndex } from '@/routes/attendance/corrections';
 import { index as shiftsIndex } from '@/routes/attendance/shifts';
 import { index as auditLogIndex } from '@/routes/audit-log';
 import { index as holidaysIndex } from '@/routes/holidays';
@@ -113,8 +114,8 @@ export const navigation: NavGroup[] = [
                     { title: 'Monthly', href: monthly() },
                     {
                         title: 'Correction Requests',
-                        href: '/attendance/corrections',
-                        ...unready,
+                        href: correctionsIndex(),
+                        // Admin / HR see every request, a Manager their own team's (inherits the Attendance permission).
                     },
                     {
                         title: 'Shifts',

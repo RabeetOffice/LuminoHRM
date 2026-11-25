@@ -95,6 +95,7 @@ describe('ready flag', () => {
         expect(r[1].items[3].children?.map((c) => c.title)).toEqual([
             'Daily',
             'Monthly',
+            'Correction Requests',
             'Shifts',
             'Raw Punches',
         ]);
@@ -501,5 +502,26 @@ describe('raw punches', () => {
         expect(entry?.soon).toBe(false);
         expect(toUrl(entry?.href ?? '')).toBe('/attendance/punches');
         expect(find(['attendance.view-team'])).toBeUndefined();
+    });
+});
+
+describe('correction requests', () => {
+    test('is ready for Admin, HR and managers, and hidden from a plain employee', () => {
+        const find = (permissions: string[]) =>
+            filterNavigation(navigation, permissions)
+                .flatMap((g) => g.items)
+                .find((i) => i.title === 'Attendance')
+                ?.children?.find((c) => c.title === 'Correction Requests');
+
+        for (const permission of [
+            'attendance.view-all',
+            'attendance.view-team',
+        ]) {
+            const entry = find([permission]);
+            expect(entry?.soon).toBe(false);
+            expect(toUrl(entry?.href ?? '')).toBe('/attendance/corrections');
+        }
+
+        expect(find([])).toBeUndefined();
     });
 });

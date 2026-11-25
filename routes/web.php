@@ -134,6 +134,20 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('attendance/punches/assign', [\App\Http\Controllers\Attendance\PunchController::class, 'assign'])
         ->middleware('can:attendance.edit')->name('attendance.punches.assign');
 
+    // Attendance > Correction Requests. The list: view-all (everyone's) or view-team (own and direct reports'), checked
+    // in the controller. Submitting: any signed-in user, for their own record. Who decides which step and who may cancel
+    // is checked by CorrectionRouting (403 outside scope); HR's step also needs attendance.edit.
+    Route::prefix('attendance/corrections')->name('attendance.corrections.')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Attendance\CorrectionController::class, 'index'])->name('index');
+        Route::post('/', [\App\Http\Controllers\Attendance\CorrectionController::class, 'store'])->name('store');
+        Route::put('{correction}/manager-decide', [\App\Http\Controllers\Attendance\CorrectionController::class, 'managerDecide'])
+            ->whereNumber('correction')->name('manager-decide');
+        Route::put('{correction}/hr-decide', [\App\Http\Controllers\Attendance\CorrectionController::class, 'hrDecide'])
+            ->whereNumber('correction')->middleware('can:attendance.edit')->name('hr-decide');
+        Route::post('{correction}/cancel', [\App\Http\Controllers\Attendance\CorrectionController::class, 'cancel'])
+            ->whereNumber('correction')->name('cancel');
+    });
+
     // Leave > Holidays: the company holiday calendar (Admin, HR: the attendance and leave rules permission).
     Route::middleware('can:settings.attendance-leave')->prefix('leave/holidays')->name('holidays.')->group(function () {
         Route::get('/', [HolidayController::class, 'index'])->name('index');
