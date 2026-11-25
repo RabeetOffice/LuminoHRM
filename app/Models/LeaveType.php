@@ -15,7 +15,8 @@ use Spatie\Activitylog\Support\LogOptions;
 /**
  * A kind of leave (Annual, Sick, ...). Paid types have a yearly quota and one balance row per employee and year;
  * unpaid types have no balance and are never limited. Exactly one unpaid type is seeded as is_system: it is the type
- * staff are pointed to when a paid balance is short, and it can never be deleted or made paid (guarded here).
+ * staff are pointed to when a paid balance is short, and it can never be deleted, made paid or deactivated (guarded
+ * here). is_system is not mass assignable and never changes on an existing type.
  *
  * Changes are audited by the model (area leave, "Leave type created / updated / deleted"). Day amounts are multiples
  * of 0.5, cast to float.
@@ -41,7 +42,8 @@ class LeaveType extends Model
     /** The audited columns: every column except the id and the timestamps. */
     private const AUDITED = ['name', 'yearly_quota', 'is_paid', 'carry_forward', 'carry_forward_cap', 'is_active', 'is_system', 'colour', 'sort_order'];
 
-    protected $fillable = self::AUDITED;
+    /** Every audited column except is_system: that flag is written only by the seed migration (query builder) or a factory. */
+    protected $fillable = ['name', 'yearly_quota', 'is_paid', 'carry_forward', 'carry_forward_cap', 'is_active', 'colour', 'sort_order'];
 
     protected $attributes = [
         'yearly_quota' => 0,
@@ -74,8 +76,16 @@ class LeaveType extends Model
                 throw new InvalidArgumentException("Unknown leave colour [{$type->colour}].");
             }
 
+            if ($type->exists && $type->isDirty('is_system')) {
+                throw new InvalidArgumentException('The system flag of a leave type cannot be changed.');
+            }
+
             if ($type->is_system && $type->is_paid) {
                 throw new InvalidArgumentException('The system unpaid leave type cannot be made paid.');
+            }
+
+            if ($type->is_system && ! $type->is_active) {
+                throw new InvalidArgumentException('Unpaid leave must stay active; it is what staff use when their balance runs out.');
             }
         });
 

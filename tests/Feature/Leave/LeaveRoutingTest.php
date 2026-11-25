@@ -6,6 +6,8 @@ use App\Models\User;
 use App\Support\Leave\LeaveRouting;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
+use Spatie\Permission\PermissionRegistrar;
 
 beforeEach(function () {
     $this->travelTo(CarbonImmutable::parse('2026-11-24 14:00:00', 'Asia/Karachi'));
@@ -128,6 +130,98 @@ it('keeps the manager step when the HR step is switched off and reports the sett
     expect($routing->hrStepEnabled())->toBeFalse()
         ->and($routing->stage(leaveRequest($employee)))->toBe('manager')
         ->and($routing->stage(leaveRequest($employee, ['status' => 'manager_approved'])))->toBe('final');
+});
+
+it('makes a manager approval final only with the HR step off and a requester who is not HR or Admin', function () {
+    [, $manager] = lrPerson('manager');
+    [, $staff] = lrPerson('employee', ['manager_id' => $manager->id]);
+    [, $hrPerson] = lrPerson('hr', ['manager_id' => $manager->id]);
+    [, $adminPerson] = lrPerson('admin', ['manager_id' => $manager->id]);
+
+    $staffRequest = leaveRequest($staff, ['status' => 'manager_approved']);
+    $hrRequest = leaveRequest($hrPerson, ['status' => 'manager_approved']);
+    $adminRequest = leaveRequest($adminPerson, ['status' => 'manager_approved']);
+
+    // HR step on: never final.
+    foreach ([$staffRequest, $hrRequest, $adminRequest] as $request) {
+        expect(lrRouting()->managerApprovalIsFinal($request))->toBeFalse();
+    }
+
+    Settings::set('leave', ['hr_step_enabled' => false]);
+
+    expect(lrRouting()->managerApprovalIsFinal($staffRequest))->toBeTrue()
+        ->and(lrRouting()->managerApprovalIsFinal($hrRequest))->toBeFalse()
+        ->and(lrRouting()->managerApprovalIsFinal($adminRequest))->toBeFalse();
+});
+
+it('routes an HR person with a Manager-role manager: manager step first, then an Admin decides the final step', function () {
+    [$managerUser, $manager] = lrPerson('manager');
+    [$hrUser, $hrPerson] = lrPerson('hr', ['manager_id' => $manager->id]);
+    [$otherHr] = lrPerson('hr');
+    [$adminUser] = lrPerson('admin');
+
+    $request = leaveRequest($hrPerson);
+    $routing = lrRouting();
+
+    expect($routing->stage($request))->toBe('manager')
+        ->and($routing->decidableStage($managerUser, $request))->toBe('manager')
+        ->and($routing->decidableStage($otherHr, $request))->toBeNull()
+        ->and($routing->decidableStage($hrUser, $request))->toBeNull()
+        ->and($routing->decidableStage($adminUser, $request))->toBe('final');
+
+    $request->forceFill(['status' => 'manager_approved', 'manager_decided_by' => $managerUser->id, 'manager_decided_at' => now()])->save();
+
+    expect($routing->stage($request))->toBe('final')
+        ->and($routing->decidableStage($managerUser, $request))->toBeNull()
+        ->and($routing->decidableStage($otherHr, $request))->toBeNull()
+        ->and($routing->decidableStage($adminUser, $request))->toBe('final')
+        ->and($routing->managerApprovalIsFinal($request))->toBeFalse();
+});
+
+it('with the HR step off, still leaves the final step of an HR or Admin requester to an Admin', function () {
+    Settings::set('leave', ['hr_step_enabled' => false]);
+
+    [$managerUser, $manager] = lrPerson('manager');
+    [, $hrPerson] = lrPerson('hr', ['manager_id' => $manager->id]);
+    [$adminUser, $adminPerson] = lrPerson('admin', ['manager_id' => $manager->id]);
+    [$secondAdmin] = lrPerson('admin');
+    [$otherHr] = lrPerson('hr');
+
+    foreach ([$hrPerson, $adminPerson] as $person) {
+        $request = leaveRequest($person, ['status' => 'manager_approved', 'manager_decided_by' => $managerUser->id]);
+        $routing = lrRouting();
+
+        expect($routing->managerApprovalIsFinal($request))->toBeFalse()
+            ->and($routing->stage($request))->toBe('final')
+            ->and($routing->decidableStage($otherHr, $request))->toBeNull()
+            ->and($routing->decidableStage($secondAdmin, $request))->toBe('final');
+    }
+
+    expect(lrRouting()->decidableStage($adminUser, leaveRequest($hrPerson, ['status' => 'manager_approved'])))->toBe('final');
+});
+
+it('primes manager logins for a list in one batch, with no query per row', function () {
+    [, $managerA] = lrPerson('manager');
+    [, $managerB] = lrPerson('manager');
+    $requests = collect();
+
+    foreach ([$managerA, $managerB, $managerA, $managerB] as $manager) {
+        [, $employee] = lrPerson('employee', ['manager_id' => $manager->id]);
+        $requests->push(leaveRequest($employee));
+    }
+
+    $requests = LeaveRequest::query()->with('employee')->whereKey($requests->pluck('id'))->get();
+    $routing = lrRouting();
+    $routing->prime($requests);
+    app(PermissionRegistrar::class)->getPermissions(); // the package's one-off global cache, not per row
+
+    DB::enableQueryLog();
+    DB::flushQueryLog();
+
+    $stages = $requests->map(fn (LeaveRequest $r) => $routing->stage($r))->all();
+
+    expect($stages)->toBe(['manager', 'manager', 'manager', 'manager'])
+        ->and(DB::getQueryLog())->toBe([]);
 });
 
 // ---------------------------------------------------------------- who may decide the final step

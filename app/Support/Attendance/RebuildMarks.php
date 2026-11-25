@@ -102,13 +102,13 @@ class RebuildMarks
 
     /**
      * Leave days were added to or removed from these dates of one employee (approval, cancellation, holiday refund,
-     * exit trimming): each date up to AttendanceClock::attendanceToday() is marked so the rebuild decides it again with
-     * the leave ledger. An existing non-manual row gets needs_rebuild = true, closed or not; a date with no row gets a
-     * bare pending row (status null, needs_rebuild = true, is_manual = false) via insert-or-ignore, exactly as punch
-     * ingestion does. Skipped: future dates (no row exists for a day not yet reached), manual rows (manual attendance
-     * wins; the caller lists them as needing attention), and, for the bare rows only, dates before the attendance start
-     * date or any date while attendance has not started (the rebuild would only remove a punch-less row there; an
-     * existing row there, which has punches, is still flagged).
+     * exit trimming): each date from AttendanceClock::startDate() up to AttendanceClock::attendanceToday() is marked so
+     * the rebuild decides it again with the leave ledger. An existing non-manual row gets needs_rebuild = true, closed or
+     * not; a date with no row gets a bare pending row (status null, needs_rebuild = true, is_manual = false) via
+     * insert-or-ignore, exactly as punch ingestion does. Skipped: future dates (no row exists for a day not yet reached),
+     * manual rows (manual attendance wins; the caller lists them as needing attention), and every date before the
+     * attendance start date (design 5.7: leave there changes no attendance row, existing or not). While attendance has
+     * not started (start date null) nothing is touched and 0 is returned.
      *
      * @param  list<string>  $dates  "Y-m-d", any order, duplicates allowed
      * @return int the rows flagged plus the rows created
@@ -128,7 +128,7 @@ class RebuildMarks
                 throw new \InvalidArgumentException("Not a date [{$date}].");
             }
 
-            if ($date <= $today) {
+            if ($start !== null && $date >= $start && $date <= $today) {
                 $wanted[$date] = true;
             }
         }
@@ -147,10 +147,7 @@ class RebuildMarks
             ->map(fn ($d) => substr((string) $d, 0, 10))
             ->all();
 
-        $missing = array_values(array_filter(
-            array_diff($wanted, $existing),
-            fn (string $date) => $start !== null && $date >= $start,
-        ));
+        $missing = array_values(array_diff($wanted, $existing));
 
         $now = (new Attendance)->freshTimestampString();
 

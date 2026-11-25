@@ -4,6 +4,7 @@ use App\Models\Attendance;
 use App\Models\Employee;
 use App\Models\LeaveBalance;
 use App\Models\LeaveDay;
+use App\Models\LeaveRequest;
 use App\Models\LeaveType;
 use App\Support\Attendance\RebuildMarks;
 use App\Support\Audit\Audit;
@@ -222,6 +223,67 @@ it('never makes the system unpaid type paid and never deletes it', function () {
         ->and(LeaveType::query()->whereKey($unpaid->id)->value('is_paid'))->toBeFalsy();
 });
 
+it('keeps is_system out of mass assignment and never changes it on an existing type', function () {
+    $unpaid = leaveType('Unpaid');
+
+    // is_system is ignored by update(); is_paid alone would make the system type paid: refused.
+    expect(fn () => $unpaid->update(['is_system' => false, 'is_paid' => true]))->toThrow(InvalidArgumentException::class);
+
+    $fresh = $unpaid->fresh();
+    expect($fresh->is_system)->toBeTrue()->and($fresh->is_paid)->toBeFalse();
+
+    // Forced past mass assignment: still refused, either way round.
+    expect(fn () => $fresh->forceFill(['is_system' => false])->save())->toThrow(InvalidArgumentException::class, 'system flag')
+        ->and(fn () => leaveType('Sick')->forceFill(['is_system' => true])->save())->toThrow(InvalidArgumentException::class, 'system flag')
+        ->and(LeaveType::query()->where('is_system', true)->pluck('name')->all())->toBe(['Unpaid']);
+
+    // create() ignores it too; the factory may set it (it writes past mass assignment).
+    $made = LeaveType::query()->create(['name' => 'Study', 'colour' => 'sky', 'is_system' => true]);
+    expect($made->fresh()->is_system)->toBeFalse()
+        ->and(LeaveType::factory()->unpaid()->create(['is_system' => true])->fresh()->is_system)->toBeTrue();
+});
+
+it('refuses to deactivate the system unpaid type', function () {
+    $unpaid = leaveType('Unpaid');
+
+    expect(fn () => $unpaid->update(['is_active' => false]))
+        ->toThrow(InvalidArgumentException::class, 'Unpaid leave must stay active; it is what staff use when their balance runs out.')
+        ->and(LeaveType::query()->whereKey($unpaid->id)->value('is_active'))->toBeTruthy();
+
+    // Other changes to it still save.
+    $unpaid->fresh()->update(['name' => 'Leave without pay', 'colour' => 'amber']);
+    expect($unpaid->fresh()->name)->toBe('Leave without pay');
+});
+
+it('stores dates assigned as Carbon objects as plain Y-m-d strings', function () {
+    $employee = Employee::factory()->create();
+    $request = leaveRequest($employee, [
+        'from_date' => CarbonImmutable::parse('2026-12-01 15:30:00'),
+        'to_date' => CarbonImmutable::parse('2026-12-03'),
+        'status' => 'approved',
+    ]);
+    $request->update(['cancelled_from' => CarbonImmutable::parse('2026-12-02 09:00:00')]);
+
+    $raw = DB::table('leave_requests')->where('id', $request->id)->first(['from_date', 'to_date', 'cancelled_from']);
+
+    expect([$raw->from_date, $raw->to_date, $raw->cancelled_from])->toBe(['2026-12-01', '2026-12-03', '2026-12-02'])
+        ->and(LeaveRequest::query()->where('from_date', '<=', '2026-12-01')->where('to_date', '>=', '2026-12-03')->pluck('id')->all())->toBe([$request->id])
+        ->and(LeaveRequest::query()->where('cancelled_from', '2026-12-02')->exists())->toBeTrue()
+        ->and($request->fresh()->from_date->format('Y-m-d'))->toBe('2026-12-01');
+});
+
+it('refuses a half day that is not one date, or half and is_half_day that disagree', function () {
+    $employee = Employee::factory()->create();
+
+    expect(fn () => leaveRequest($employee, ['is_half_day' => true, 'half' => null]))->toThrow(InvalidArgumentException::class)
+        ->and(fn () => leaveRequest($employee, ['is_half_day' => false, 'half' => 'am']))->toThrow(InvalidArgumentException::class)
+        ->and(fn () => leaveRequest($employee, ['is_half_day' => true, 'half' => 'pm', 'from_date' => '2026-12-01', 'to_date' => '2026-12-02']))->toThrow(InvalidArgumentException::class)
+        ->and(LeaveRequest::query()->count())->toBe(0);
+
+    $ok = leaveRequest($employee, ['is_half_day' => true, 'half' => 'pm', 'from_date' => '2026-12-01', 'to_date' => '2026-12-01']);
+    expect($ok->exists)->toBeTrue();
+});
+
 it('audits leave type changes in the leave area', function () {
     $type = LeaveType::factory()->create(['name' => 'Study', 'yearly_quota' => 3]);
     $type->update(['yearly_quota' => 4.5]);
@@ -289,20 +351,30 @@ it('returns zero for nothing to do and does not count a day already flagged twic
         ->and(Attendance::query()->where('employee_id', $employee->id)->count())->toBe(1);
 });
 
-it('creates no bare row before the attendance start date, or while attendance has not started', function () {
+it('touches nothing before the attendance start date', function () {
     $employee = Employee::factory()->create(['joining_date' => '2025-01-01']);
     Settings::set('attendance', ['start_date' => '2026-11-01']);
 
-    expect(RebuildMarks::forLeaveDays($employee->id, ['2026-10-30', '2026-11-02']))->toBe(1)
-        ->and(Attendance::query()->where('employee_id', $employee->id)->pluck('date')->map->format('Y-m-d')->all())->toBe(['2026-11-02']);
+    // An existing row before the start date is not flagged; no bare row is made there either.
+    $early = Attendance::factory()->create(['employee_id' => $employee->id, 'date' => '2026-10-29', 'closed' => true]);
+    $onStart = Attendance::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-01', 'closed' => true]);
+
+    expect(RebuildMarks::forLeaveDays($employee->id, ['2026-10-29', '2026-10-30', '2026-11-01', '2026-11-02']))->toBe(2)
+        ->and($early->fresh()->needs_rebuild)->toBeFalse()
+        ->and($onStart->fresh()->needs_rebuild)->toBeTrue()
+        ->and(Attendance::query()->where('employee_id', $employee->id)->orderBy('date')->pluck('date')->map->format('Y-m-d')->all())
+        ->toBe(['2026-10-29', '2026-11-01', '2026-11-02']);
+});
+
+it('does nothing at all while attendance has not started', function () {
+    $employee = Employee::factory()->create(['joining_date' => '2025-01-01']);
+    $row = Attendance::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-20', 'closed' => true]);
 
     Settings::set('attendance', ['start_date' => null]);
-    expect(RebuildMarks::forLeaveDays($employee->id, ['2026-11-03']))->toBe(0);
 
-    // An existing row before the start date (it has punches) is still flagged.
-    $early = Attendance::factory()->create(['employee_id' => $employee->id, 'date' => '2026-10-29', 'closed' => true]);
-    expect(RebuildMarks::forLeaveDays($employee->id, ['2026-10-29']))->toBe(1)
-        ->and($early->fresh()->needs_rebuild)->toBeTrue();
+    expect(RebuildMarks::forLeaveDays($employee->id, ['2026-11-20', '2026-11-21']))->toBe(0)
+        ->and($row->fresh()->needs_rebuild)->toBeFalse()
+        ->and(Attendance::query()->where('employee_id', $employee->id)->count())->toBe(1);
 });
 
 it('rejects a malformed date', function () {

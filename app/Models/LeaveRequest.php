@@ -18,8 +18,10 @@ use InvalidArgumentException;
  * Final approval writes one LeaveDay per counted day; those rows, not this one, are the ledger balances, attendance and
  * payroll read. Approved leave cancelled part-way keeps status approved with cancelled_from set (isPartlyCancelled).
  *
- * from_date / to_date / cancelled_from are DATE columns cast to Carbon ("Y-m-d" when serialised). Query them with
- * "Y-m-d" strings only, never a Carbon. Not audited by the model: the leave actions write their own entries.
+ * from_date / to_date / cancelled_from are DATE columns cast to Carbon ("Y-m-d" when serialised); saving stores them as
+ * plain "Y-m-d" even when a Carbon was assigned. Query them with "Y-m-d" strings only, never a Carbon. Saving refuses
+ * an is_half_day / half mismatch and a half day whose from_date and to_date differ. Not audited by the model: the leave
+ * actions write their own entries.
  *
  * @property int $id
  * @property int $employee_id
@@ -93,6 +95,24 @@ class LeaveRequest extends Model
 
             if ($request->half !== null && ! in_array($request->half, (array) config('hrm.leave.halves'), true)) {
                 throw new InvalidArgumentException("Unknown leave half [{$request->half}].");
+            }
+
+            // A Carbon assigned to a date column is formatted with a time ("Y-m-d H:i:s"); keep the plain date so "Y-m-d"
+            // string comparisons work on every driver.
+            foreach (['from_date', 'to_date', 'cancelled_from'] as $column) {
+                $raw = $request->attributes[$column] ?? null;
+
+                if ($raw !== null) {
+                    $request->attributes[$column] = substr((string) $raw, 0, 10);
+                }
+            }
+
+            if ((bool) $request->is_half_day !== ($request->half !== null)) {
+                throw new InvalidArgumentException('A half-day request needs a half (am or pm), and only a half-day request has one.');
+            }
+
+            if ($request->is_half_day && ($request->attributes['from_date'] ?? null) !== ($request->attributes['to_date'] ?? null)) {
+                throw new InvalidArgumentException('A half-day request covers one date: from_date and to_date must be the same.');
             }
         });
     }

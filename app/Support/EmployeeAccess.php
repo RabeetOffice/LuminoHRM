@@ -4,6 +4,8 @@ namespace App\Support;
 
 use App\Models\AttendanceCorrection;
 use App\Models\Employee;
+use App\Models\LeaveBalance;
+use App\Models\LeaveRequest;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
 
@@ -25,6 +27,10 @@ class EmployeeAccess
 
     /** What a manager sees of a direct report. */
     private const TEAM_GROUPS = ['basic', 'employment'];
+
+    public const LEAVE_REQUESTS_MESSAGE = 'This employee has leave requests. Set the status to Inactive, Resigned or Terminated instead.';
+
+    public const LEAVE_ADJUSTMENTS_MESSAGE = 'This employee has leave balance adjustments. Set the status to Inactive, Resigned or Terminated instead.';
 
     private ?int $ownId = null;
 
@@ -104,7 +110,26 @@ class EmployeeAccess
             $blockers[] = 'This employee has attendance correction requests. Set the status to Inactive, Resigned or Terminated instead.';
         }
 
+        // Leave rows restrict the delete at the database; any request (whatever its status) is history to keep.
+        if (LeaveRequest::query()->where('employee_id', $employee->getKey())->exists()) {
+            $blockers[] = self::LEAVE_REQUESTS_MESSAGE;
+        }
+
+        // Plain balance rows go with the record (DeleteEmployee); hand-entered figures are kept.
+        if (self::hasLeaveBalanceAdjustments((int) $employee->getKey())) {
+            $blockers[] = self::LEAVE_ADJUSTMENTS_MESSAGE;
+        }
+
         return $blockers;
+    }
+
+    /** Whether any of the employee's leave balance rows holds a hand-entered figure (a non-zero adjustment or opening used). */
+    public static function hasLeaveBalanceAdjustments(int $employeeId): bool
+    {
+        return LeaveBalance::query()
+            ->where('employee_id', $employeeId)
+            ->where(fn (Builder $q) => $q->where('adjustment', '!=', 0)->orWhere('opening_used', '!=', 0))
+            ->exists();
     }
 
     /**

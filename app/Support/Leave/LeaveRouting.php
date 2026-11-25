@@ -21,7 +21,9 @@ use Illuminate\Database\Eloquent\Collection;
  * the manager has no login or a disabled one, the manager's login is the requester's own, the manager lacks
  * leave.approve-team (an Employee-role person with reports), or the manager holds leave.approve-all (an HR/Admin
  * manager decides once, as the final approver). When settings('leave.hr_step_enabled') is off the routing is the same;
- * the decision action (Task 6) makes a manager approval final.
+ * whether a manager approval is then the final decision is answered by managerApprovalIsFinal() and ONLY there (the
+ * decision action asks it; no caller re-derives it): HR step off AND the requester's login is neither Admin nor HR. A
+ * privileged requester's request always goes on to the final step (an Admin decides it), whatever the setting.
  *
  * The final decision: leave.approve-all, never the user who approved as manager, and
  *   - a request of a person whose login holds admin: another Admin, or the requester themself only while they are the
@@ -34,6 +36,21 @@ use Illuminate\Database\Eloquent\Collection;
  * The step is worked out when needed, never stored: a request waiting for a manager whose login is later disabled moves
  * to the final step by itself, and a new manager sees (and decides) the requests of their new report; a manager's
  * approval already given stands when the manager changes afterwards.
+ *
+ * Rare stuck case: a request whose manager step was approved by a user who later becomes the only active Admin, made
+ * by an Admin or HR person, has no one left who may decide the final step (the manager-approver may never decide it
+ * too). The requester can cancel it and apply again (the new request goes straight to the final step).
+ *
+ * Using it:
+ *   - One instance per request / action (new LeaveRouting, or resolve it from the container, which builds a fresh one):
+ *     it caches manager logins, the privileged map and the Admin count per instance. Never bind it as a singleton (a
+ *     queue worker or Octane would keep stale roles across requests).
+ *   - findVisible() returns null both for an id that does not exist and for one out of the user's scope, so the two
+ *     cannot be told apart: controllers must abort(403) on null (never 404, never a redirect that reveals existence).
+ *   - Every method that takes a request reads $request->employee (stage, decidableStage, isApprover, canCancel*). For
+ *     a list screen eager-load it (LeaveRequest::with('employee')) and call prime($requests) once before the loop: that
+ *     loads the managers' logins with their roles and permissions in one batch, so stage() / decidableStage() run no
+ *     query per row. The privileged map (Admin / HR logins) is one query per instance whatever the list size.
  */
 class LeaveRouting
 {
@@ -61,7 +78,7 @@ class LeaveRouting
         $managerId = (int) $managerId;
         $user = array_key_exists($managerId, $this->logins)
             ? $this->logins[$managerId]
-            : ($this->logins[$managerId] = User::query()->where('employee_id', $managerId)->first());
+            : ($this->logins[$managerId] = User::query()->with(['roles', 'permissions'])->where('employee_id', $managerId)->first());
 
         if ($user === null || ! $user->is_active || (int) $user->employee_id === (int) $employee->id) {
             return null;
@@ -74,10 +91,54 @@ class LeaveRouting
         return $user;
     }
 
+    /**
+     * Loads, in one query, the logins (with roles and permissions) of the managers of these requests' employees into
+     * this instance's cache, so stage() / decidableStage() over a list run no query per row. The requests should have
+     * their employee eager-loaded (LeaveRequest::with('employee')); a request without it loads it here, one by one.
+     *
+     * @param  iterable<LeaveRequest>  $requests
+     */
+    public function prime(iterable $requests): void
+    {
+        $wanted = [];
+
+        foreach ($requests as $request) {
+            $managerId = $request->employee?->manager_id;
+
+            if ($managerId !== null && ! array_key_exists((int) $managerId, $this->logins)) {
+                $wanted[(int) $managerId] = true;
+            }
+        }
+
+        if ($wanted === []) {
+            return;
+        }
+
+        $found = User::query()->with(['roles', 'permissions'])
+            ->whereIn('employee_id', array_keys($wanted))
+            ->get()
+            ->keyBy(fn (User $u) => (int) $u->employee_id);
+
+        foreach (array_keys($wanted) as $managerId) {
+            $this->logins[$managerId] = $found->get($managerId);
+        }
+    }
+
     /** Whether the final (HR) step follows a manager approval: settings('leave.hr_step_enabled'). */
     public function hrStepEnabled(): bool
     {
         return (bool) settings('leave.hr_step_enabled', true);
+    }
+
+    /**
+     * Whether a manager's approval of this request is the final decision (the request becomes approved, not
+     * manager_approved): the HR step is switched off AND the requester's login is neither Admin nor HR. An HR or Admin
+     * requester's request always goes on to the final step, decided by an Admin (see mayDecideFinal). The single place
+     * the decision action asks; nothing else re-derives this rule.
+     */
+    public function managerApprovalIsFinal(LeaveRequest $request): bool
+    {
+        return ! $this->hrStepEnabled() && $this->privilegedRole((int) $request->employee_id) === null;
     }
 
     /** The step a request is waiting at: "manager", "final", or null once it is decided or cancelled. */

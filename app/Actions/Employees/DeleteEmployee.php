@@ -4,8 +4,11 @@ namespace App\Actions\Employees;
 
 use App\Exceptions\AccountRuleViolation;
 use App\Models\Employee;
+use App\Models\LeaveBalance;
+use App\Models\LeaveRequest;
 use App\Models\User;
 use App\Support\Audit\Audit;
+use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
 use App\Support\EmployeeRoles;
 use App\Support\LastAdminGuard;
@@ -18,7 +21,8 @@ use Spatie\Activitylog\Models\Activity;
  * that keeps the name and code, because the row will be gone.
  *
  * The caller has checked employees.delete and EmployeeAccess::deleteBlockers(); this class re-checks the account rule
- * that no one can end up without an active Admin.
+ * that no one can end up without an active Admin, and the two leave blockers (leave requests, hand-entered balance
+ * figures) under the row lock. The employee's plain leave balance rows are deleted with the record.
  */
 class DeleteEmployee
 {
@@ -30,6 +34,16 @@ class DeleteEmployee
         DB::transaction(function () use ($employee, $by): void {
             $current = Employee::query()->whereKey($employee->getKey())->lockForUpdate()->firstOrFail();
             $account = $current->user;
+
+            // Leave rows restrict the delete at the database. Re-checked under the lock (the caller's blockers ran before
+            // it): any request, or a balance row with a hand-entered figure, refuses the delete.
+            if (LeaveRequest::query()->where('employee_id', $current->getKey())->exists()) {
+                throw new AccountRuleViolation(EmployeeAccess::LEAVE_REQUESTS_MESSAGE);
+            }
+
+            if (EmployeeAccess::hasLeaveBalanceAdjustments((int) $current->getKey())) {
+                throw new AccountRuleViolation(EmployeeAccess::LEAVE_ADJUSTMENTS_MESSAGE);
+            }
 
             Audit::record(
                 'employees',
@@ -74,6 +88,9 @@ class DeleteEmployee
                     $account->forceFill(['employee_id' => null])->save();
                 }
             }
+
+            // Plain allocated balance rows go with the record (their foreign key restricts the delete).
+            LeaveBalance::query()->where('employee_id', $current->getKey())->delete();
 
             $current->delete();
         }, attempts: 3);

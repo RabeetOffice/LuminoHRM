@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Factories\Factory;
 /**
  * An active paid type with a unique name, 10 days a year, no carry-forward, colour sky. The four defaults (Annual,
  * Sick, Casual, Unpaid) are seeded by a migration: use the test helper leaveType('Annual') to get one of them.
+ * is_system is not mass assignable on the model; a factory writes past mass assignment, so the definition may set it.
  *
  * @extends Factory<LeaveType>
  */
