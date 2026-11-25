@@ -100,6 +100,9 @@ return new class extends Migration
             // config('hrm.attendance.statuses'); null = pending calculation (a bare row made by punch ingestion).
             $table->string('status', 20)->nullable();
             $table->boolean('is_manual')->default(false);
+            // A manual row whose status was chosen by hand (an override), not worked out from the times: the nightly
+            // close only marks it closed, and the correction dialog shows the chosen status again.
+            $table->boolean('status_overridden')->default(false);
             $table->boolean('needs_attention')->default(false);
             $table->boolean('needs_rebuild')->default(false);
             $table->boolean('closed')->default(false);

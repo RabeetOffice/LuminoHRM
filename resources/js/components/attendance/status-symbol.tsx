@@ -30,6 +30,8 @@ export type StatusMeta = {
     tone: StatusTone;
     /** Text colour for the symbol, light and dark. */
     symbolClass: string;
+    /** Background colour of a small dot (summary chips), in the symbol's colour. */
+    dotClass: string;
 };
 
 /** The key used for a null (pending) status in STATUS_META. */
@@ -49,48 +51,56 @@ export const STATUS_META: Record<
         symbol: '✓',
         tone: 'green',
         symbolClass: 'text-emerald-600 dark:text-emerald-400',
+        dotClass: 'bg-emerald-500',
     },
     late: {
         label: 'Late',
         symbol: 'L',
         tone: 'amber',
         symbolClass: 'text-amber-600 dark:text-amber-400',
+        dotClass: 'bg-amber-500',
     },
     half_day: {
         label: 'Half Day',
         symbol: '½',
         tone: 'amber',
         symbolClass: 'text-orange-600 dark:text-orange-400',
+        dotClass: 'bg-orange-500',
     },
     absent: {
         label: 'Absent',
         symbol: '✕',
         tone: 'red',
         symbolClass: 'text-red-600 dark:text-red-400',
+        dotClass: 'bg-red-500',
     },
     on_leave: {
         label: 'On Leave',
         symbol: '⚑',
         tone: 'blue',
         symbolClass: 'text-blue-600 dark:text-blue-400',
+        dotClass: 'bg-blue-500',
     },
     holiday: {
         label: 'Holiday',
         symbol: '★',
-        tone: 'blue',
+        tone: 'violet',
         symbolClass: 'text-violet-600 dark:text-violet-400',
+        dotClass: 'bg-violet-500',
     },
     weekend: {
         label: 'Weekend',
         symbol: '⊘',
         tone: 'grey',
         symbolClass: 'text-neutral-500 dark:text-neutral-400',
+        dotClass: 'bg-neutral-400',
     },
     pending: {
         label: 'Pending',
         symbol: '–',
         tone: 'grey',
         symbolClass: 'text-muted-foreground',
+        dotClass: 'bg-neutral-400',
     },
 };
 

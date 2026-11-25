@@ -32,6 +32,7 @@ use Illuminate\Support\Carbon;
  * @property int $overtime_minutes
  * @property string|null $status config('hrm.attendance.statuses'); null = pending calculation (not yet rebuilt)
  * @property bool $is_manual
+ * @property bool $status_overridden a manual row whose status was chosen by hand (ApplyManualCorrection override)
  * @property bool $needs_attention
  * @property bool $needs_rebuild
  * @property bool $closed
@@ -48,7 +49,7 @@ class Attendance extends Model
 
     protected $fillable = [
         'employee_id', 'date', 'shift_id', 'shift_rules', 'clock_in', 'clock_out', 'worked_minutes', 'late_minutes', 'early_minutes',
-        'overtime_minutes', 'status', 'is_manual', 'needs_attention', 'needs_rebuild', 'closed', 'note',
+        'overtime_minutes', 'status', 'is_manual', 'status_overridden', 'needs_attention', 'needs_rebuild', 'closed', 'note',
     ];
 
     protected $attributes = [
@@ -57,6 +58,7 @@ class Attendance extends Model
         'early_minutes' => 0,
         'overtime_minutes' => 0,
         'is_manual' => false,
+        'status_overridden' => false,
         'needs_attention' => false,
         'needs_rebuild' => false,
         'closed' => false,
@@ -75,6 +77,7 @@ class Attendance extends Model
             'early_minutes' => 'integer',
             'overtime_minutes' => 'integer',
             'is_manual' => 'boolean',
+            'status_overridden' => 'boolean',
             'needs_attention' => 'boolean',
             'needs_rebuild' => 'boolean',
             'closed' => 'boolean',

@@ -1,7 +1,9 @@
 <?php
 
+use App\Actions\Attendance\ApplyManualCorrection;
 use App\Models\Attendance;
 use App\Models\Employee;
+use App\Models\Holiday;
 use App\Support\Attendance\AttendanceRebuilder;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
@@ -411,4 +413,342 @@ it('never sends raw date objects to the page', function () {
     expect($row['is_manual'])->toBeTrue()
         ->and($response->inertiaProps('previousDate'))->toBe('2026-11-22')
         ->and(json_encode($response->inertiaProps()))->not->toContain('T00:00:00');
+});
+
+// ---------------------------------------------------------------- fix round: open day decided as complete (C1)
+
+it('decides an open-day correction with a clock-out as a complete day', function () {
+    $e = dlEmployee();
+    $hr = userWithRole('hr');
+
+    $this->actingAs($hr)->put("/attendance/daily/{$e->id}/2026-11-24", dlPayload(['clock_in' => '09:00', 'clock_out' => '12:30']))
+        ->assertSessionHasNoErrors();
+
+    $row = dlFind($e, '2026-11-24');
+    expect($row->status)->toBe('half_day')
+        ->and($row->early_minutes)->toBe(330)
+        ->and($row->worked_minutes)->toBe(210)
+        ->and($row->is_manual)->toBeTrue()
+        ->and($row->closed)->toBeFalse();
+});
+
+it('refuses a clock-out (or clock-in) later than now on the open day', function () {
+    $e = dlEmployee();
+    $hr = userWithRole('hr');
+    $url = "/attendance/daily/{$e->id}/2026-11-24";
+
+    $this->actingAs($hr)->put($url, dlPayload(['clock_in' => '09:00', 'clock_out' => '15:00']))->assertSessionHasErrors('clock_out');
+    $this->actingAs($hr)->put($url, dlPayload(['clock_in' => '14:30', 'clock_out' => null]))->assertSessionHasErrors('clock_in');
+    expect(dlFind($e, '2026-11-24'))->toBeNull();
+
+    $this->actingAs($hr)->put($url, dlPayload(['clock_in' => '09:00', 'clock_out' => '13:59']))->assertSessionHasNoErrors();
+});
+
+it('finalises an open-day clock-in-only correction at the nightly close with its stored snapshot', function () {
+    $e = dlEmployee();
+
+    $this->actingAs(userWithRole('hr'))->put("/attendance/daily/{$e->id}/2026-11-24", dlPayload(['clock_in' => '09:40', 'clock_out' => null]))
+        ->assertSessionHasNoErrors();
+    expect(dlFind($e, '2026-11-24')->only(['status', 'late_minutes', 'closed', 'needs_attention']))
+        ->toBe(['status' => 'late', 'late_minutes' => 40, 'closed' => false, 'needs_attention' => false]);
+
+    // The shift changes afterwards: the close still uses the rules stored with the correction.
+    shiftFor($e, ['start_time' => '10:00', 'end_time' => '19:00']);
+    punch($e, '2026-11-24 08:00:00');
+
+    $this->travelTo(CarbonImmutable::parse('2026-11-25 04:30:00', 'Asia/Karachi'));
+    app(AttendanceRebuilder::class)->closeDay('2026-11-24');
+
+    $row = dlFind($e, '2026-11-24');
+    expect($row->is_manual)->toBeTrue()
+        ->and($row->closed)->toBeTrue()
+        ->and($row->status)->toBe('late')
+        ->and($row->late_minutes)->toBe(40)
+        ->and($row->needs_attention)->toBeTrue() // a closed day with only a clock-in
+        ->and($row->clock_in->format('Y-m-d H:i:s'))->toBe('2026-11-24 09:40:00') // never replaced by the punch
+        ->and($row->clock_out)->toBeNull();
+});
+
+it('writes the full rule snapshot on a manual save', function () {
+    $e = dlEmployee(['attendance_exempt' => false]);
+    Settings::set('attendance', ['overtime_min_minutes' => 30, 'duplicate_punch_minutes' => 3]);
+
+    $this->actingAs(userWithRole('hr'))->put("/attendance/daily/{$e->id}/2026-11-23", dlPayload())->assertSessionHasNoErrors();
+
+    expect(dlFind($e, '2026-11-23')->shift_rules)->toMatchArray([
+        'start_time' => '09:00', 'overtime_min_minutes' => 30, 'duplicate_punch_minutes' => 3, 'attendance_exempt' => false,
+    ]);
+});
+
+// ---------------------------------------------------------------- fix round: who may correct whom (I1)
+
+it('forbids correcting your own record unless you are an Admin, and privileged logins unless you are an Admin', function () {
+    $hr = userWithRole('hr');
+    $ownHr = employeeFor($hr, ['joining_date' => '2026-01-01']);
+    $admin = userWithRole('admin');
+    $ownAdmin = employeeFor($admin, ['joining_date' => '2026-01-01']);
+    $otherHr = userWithRole('hr');
+    $otherHrEmployee = employeeFor($otherHr, ['joining_date' => '2026-01-01']);
+    $plain = dlEmployee();
+
+    foreach ([$ownHr, $ownAdmin, $otherHrEmployee] as $target) {
+        $this->actingAs($hr)->put("/attendance/daily/{$target->id}/2026-11-23", dlPayload())->assertForbidden();
+        $this->actingAs($hr)->delete("/attendance/daily/{$target->id}/2026-11-23")->assertForbidden();
+    }
+    expect(Attendance::count())->toBe(0);
+
+    $this->actingAs($hr)->put("/attendance/daily/{$plain->id}/2026-11-23", dlPayload())->assertSessionHasNoErrors();
+    foreach ([$ownAdmin, $ownHr, $otherHrEmployee, $plain] as $target) {
+        $this->actingAs($admin)->put("/attendance/daily/{$target->id}/2026-11-23", dlPayload())->assertSessionHasNoErrors();
+    }
+    expect(Attendance::count())->toBe(4);
+
+    $rows = collect($this->actingAs($hr)->get('/attendance/daily?date=2026-11-23')->inertiaProps('rows'))->keyBy('employee.id');
+    expect($rows[$ownHr->id]['can_edit'])->toBeFalse()
+        ->and($rows[$ownAdmin->id]['can_edit'])->toBeFalse()
+        ->and($rows[$otherHrEmployee->id]['can_edit'])->toBeFalse()
+        ->and($rows[$plain->id]['can_edit'])->toBeTrue();
+
+    $rows = collect($this->actingAs($admin)->get('/attendance/daily?date=2026-11-23')->inertiaProps('rows'))->keyBy('employee.id');
+    expect($rows->pluck('can_edit')->unique()->values()->all())->toBe([true]);
+});
+
+// ---------------------------------------------------------------- fix round: overrides (I2, I3)
+
+it('applies each override to the status only, with minutes from the times', function (string $status, ?string $in, ?string $out, array $expected) {
+    $e = dlEmployee();
+
+    $this->actingAs(userWithRole('hr'))
+        ->put("/attendance/daily/{$e->id}/2026-11-23", dlPayload(['clock_in' => $in, 'clock_out' => $out, 'status' => $status]))
+        ->assertSessionHasNoErrors();
+
+    $row = dlFind($e, '2026-11-23');
+    expect($row->only(['status', 'worked_minutes', 'late_minutes', 'early_minutes', 'overtime_minutes', 'status_overridden']))
+        ->toBe([...$expected, 'status_overridden' => true]);
+})->with([
+    'present hides late' => ['present', '09:50', '18:00', ['status' => 'present', 'worked_minutes' => 490, 'late_minutes' => 0, 'early_minutes' => 0, 'overtime_minutes' => 0]],
+    'present on a short day' => ['present', '09:00', '13:00', ['status' => 'present', 'worked_minutes' => 240, 'late_minutes' => 0, 'early_minutes' => 300, 'overtime_minutes' => 0]],
+    'late keeps late minutes' => ['late', '09:40', '18:30', ['status' => 'late', 'worked_minutes' => 530, 'late_minutes' => 40, 'early_minutes' => 0, 'overtime_minutes' => 30]],
+    'late on a short day' => ['late', '09:40', '12:00', ['status' => 'late', 'worked_minutes' => 140, 'late_minutes' => 40, 'early_minutes' => 360, 'overtime_minutes' => 0]],
+    'half day has no late minutes' => ['half_day', '09:40', '18:00', ['status' => 'half_day', 'worked_minutes' => 500, 'late_minutes' => 0, 'early_minutes' => 0, 'overtime_minutes' => 0]],
+    'holiday counts worked as overtime' => ['holiday', '10:00', '10:30', ['status' => 'holiday', 'worked_minutes' => 30, 'late_minutes' => 0, 'early_minutes' => 0, 'overtime_minutes' => 30]],
+    'weekend counts worked as overtime' => ['weekend', '10:00', '14:00', ['status' => 'weekend', 'worked_minutes' => 240, 'late_minutes' => 0, 'early_minutes' => 0, 'overtime_minutes' => 240]],
+    'weekend without times' => ['weekend', null, null, ['status' => 'weekend', 'worked_minutes' => 0, 'late_minutes' => 0, 'early_minutes' => 0, 'overtime_minutes' => 0]],
+    'absent' => ['absent', null, null, ['status' => 'absent', 'worked_minutes' => 0, 'late_minutes' => 0, 'early_minutes' => 0, 'overtime_minutes' => 0]],
+]);
+
+it('keeps the overtime minimum for an off-day override', function () {
+    Settings::set('attendance', ['overtime_min_minutes' => 300]);
+    $e = dlEmployee();
+
+    $this->actingAs(userWithRole('hr'))
+        ->put("/attendance/daily/{$e->id}/2026-11-23", dlPayload(['clock_in' => '10:00', 'clock_out' => '14:00', 'status' => 'weekend']))
+        ->assertSessionHasNoErrors();
+
+    expect(dlFind($e, '2026-11-23')->only(['worked_minutes', 'overtime_minutes']))->toBe(['worked_minutes' => 240, 'overtime_minutes' => 0]);
+});
+
+it('refuses times with an absent override', function () {
+    $e = dlEmployee();
+
+    $this->actingAs(userWithRole('hr'))
+        ->put("/attendance/daily/{$e->id}/2026-11-23", dlPayload(['clock_in' => '09:00', 'clock_out' => '18:00', 'status' => 'absent']))
+        ->assertSessionHasErrors('clock_in');
+
+    expect(dlFind($e, '2026-11-23'))->toBeNull();
+});
+
+it('sends whether a manual row is an override, and lets an absent override be saved again', function () {
+    $e = dlEmployee();
+    $hr = userWithRole('hr');
+    $url = "/attendance/daily/{$e->id}/2026-11-23";
+    $listed = fn () => collect($this->actingAs($hr)->get('/attendance/daily?date=2026-11-23')->inertiaProps('rows'))
+        ->firstWhere('employee.id', $e->id);
+
+    $this->actingAs($hr)->put($url, dlPayload(['clock_in' => null, 'clock_out' => null, 'status' => 'absent']))->assertSessionHasNoErrors();
+    expect($listed()['status_overridden'])->toBeTrue()->and($listed()['status'])->toBe('absent');
+
+    // Re-opening the dialog posts the same override back.
+    $this->actingAs($hr)->put($url, dlPayload(['clock_in' => null, 'clock_out' => null, 'status' => 'absent', 'reason' => 'Confirmed again']))
+        ->assertSessionHasNoErrors();
+    expect(Activity::query()->where('description', 'Attendance corrected')->count())->toBe(2);
+
+    // Back to working it out from the times.
+    $this->actingAs($hr)->put($url, dlPayload())->assertSessionHasNoErrors();
+    expect($listed()['status_overridden'])->toBeFalse()->and($listed()['status'])->toBe('present');
+});
+
+it('only marks an override row closed at the nightly close', function () {
+    $e = dlEmployee();
+
+    $this->actingAs(userWithRole('hr'))
+        ->put("/attendance/daily/{$e->id}/2026-11-24", dlPayload(['clock_in' => '09:00', 'clock_out' => null, 'status' => 'half_day']))
+        ->assertSessionHasNoErrors();
+    $before = dlFind($e, '2026-11-24')->only(['status', 'worked_minutes', 'late_minutes', 'early_minutes', 'overtime_minutes', 'needs_attention']);
+
+    $this->travelTo(CarbonImmutable::parse('2026-11-25 04:30:00', 'Asia/Karachi'));
+    app(AttendanceRebuilder::class)->closeDay('2026-11-24');
+
+    $row = dlFind($e, '2026-11-24');
+    expect($row->closed)->toBeTrue()->and($row->is_manual)->toBeTrue()->and($row->status_overridden)->toBeTrue()
+        ->and($row->only(array_keys($before)))->toBe($before);
+});
+
+// ---------------------------------------------------------------- fix round: employment window (spec deviations, M10)
+
+it('refuses corrections before the attendance start date, for update and reset, and marks such days not editable', function () {
+    Settings::set('attendance', ['start_date' => '2026-11-20']);
+    $e = dlEmployee();
+    dlRow($e, '2026-11-19', ['is_manual' => true]);
+    $hr = userWithRole('hr');
+
+    $this->actingAs($hr)->put("/attendance/daily/{$e->id}/2026-11-19", dlPayload())->assertSessionHasErrors('date');
+    $this->actingAs($hr)->delete("/attendance/daily/{$e->id}/2026-11-19")->assertSessionHasErrors('date');
+    expect(dlFind($e, '2026-11-19')->is_manual)->toBeTrue();
+
+    $row = collect($this->actingAs($hr)->get('/attendance/daily?date=2026-11-19')->inertiaProps('rows'))->firstWhere('employee.id', $e->id);
+    expect($row['can_edit'])->toBeFalse();
+
+    $this->actingAs($hr)->put("/attendance/daily/{$e->id}/2026-11-20", dlPayload(['clock_in' => null, 'clock_out' => null, 'status' => 'weekend']))
+        ->assertSessionHasNoErrors();
+});
+
+it('refuses corrections for people who left without a last working day', function (string $status) {
+    $e = dlEmployee(['status' => $status]);
+    dlRow($e, '2026-11-23');
+    $hr = userWithRole('hr');
+
+    $this->actingAs($hr)->put("/attendance/daily/{$e->id}/2026-11-23", dlPayload())->assertSessionHasErrors('date');
+
+    $row = collect($this->actingAs($hr)->get('/attendance/daily?date=2026-11-23')->inertiaProps('rows'))->firstWhere('employee.id', $e->id);
+    expect($row['can_edit'])->toBeFalse();
+})->with(['inactive', 'resigned', 'terminated']);
+
+it('answers 404 for a malformed date in the URL', function () {
+    $e = dlEmployee();
+    $hr = userWithRole('hr');
+
+    $this->actingAs($hr)->put("/attendance/daily/{$e->id}/2026-13-45", dlPayload())->assertNotFound();
+    $this->actingAs($hr)->put("/attendance/daily/{$e->id}/2026-02-30", dlPayload())->assertNotFound();
+    $this->actingAs($hr)->delete("/attendance/daily/{$e->id}/24-11-2026")->assertNotFound();
+});
+
+// ---------------------------------------------------------------- fix round: notes, audit, race (M1, M4, M5)
+
+it('keeps a correction-request note when a later correction gives none, and audits the note', function () {
+    $e = dlEmployee();
+    $hr = userWithRole('hr');
+
+    app(ApplyManualCorrection::class)->handle($e, '2026-11-23', '09:00', '18:00', null, 'Approved request', $hr, 'Correction request #12');
+    $entry = Activity::query()->where('description', 'Attendance corrected')->sole();
+    expect($entry->properties['note'])->toBe('Correction request #12');
+
+    $this->actingAs($hr)->put("/attendance/daily/{$e->id}/2026-11-23", dlPayload(['clock_in' => '09:05']))->assertSessionHasNoErrors();
+
+    expect(dlFind($e, '2026-11-23')->note)->toBe('Correction request #12');
+});
+
+it('audits the values before the reset and the rebuilt values after it', function () {
+    $e = dlEmployee();
+    punch($e, '2026-11-23 09:00:00');
+    punch($e, '2026-11-23 18:00:00');
+    $hr = userWithRole('hr');
+    $this->actingAs($hr)->put("/attendance/daily/{$e->id}/2026-11-23", dlPayload(['clock_in' => null, 'clock_out' => null, 'status' => 'absent']));
+
+    $this->actingAs($hr)->delete("/attendance/daily/{$e->id}/2026-11-23")->assertSessionHas('success');
+
+    $entry = Activity::query()->where('description', 'Attendance correction removed')->sole();
+    expect($entry->properties['old']['status'])->toBe('absent')
+        ->and($entry->properties['attributes']['status'])->toBe('present')
+        ->and($entry->properties['attributes']['clock_in'])->toBe('2026-11-23 09:00')
+        ->and($entry->properties['attributes']['is_manual'])->toBeFalse()
+        ->and(dlFind($e, '2026-11-23')->status_overridden)->toBeFalse();
+});
+
+it('resets a day with no punches: absent once attendance has started, removed while it has not', function (?string $start, ?string $expected) {
+    Settings::set('attendance', ['start_date' => $start]);
+    $e = dlEmployee();
+    $hr = userWithRole('hr');
+    dlRow($e, '2026-11-23', ['is_manual' => true, 'status_overridden' => true, 'status' => 'present']);
+
+    $this->actingAs($hr)->delete("/attendance/daily/{$e->id}/2026-11-23")->assertSessionHas('success');
+
+    expect(dlFind($e, '2026-11-23')?->status)->toBe($expected);
+    $entry = Activity::query()->where('description', 'Attendance correction removed')->sole();
+    expect($entry->properties['old']['status'])->toBe('present')
+        ->and($entry->properties['attributes']['status'])->toBe($expected)
+        ->and($entry->properties['attributes']['is_manual'])->toBeFalse();
+})->with([
+    'start date set' => ['2026-01-01', 'absent'],
+    'no start date' => [null, null],
+]);
+
+it('retries once when the row is created by someone else at the same moment', function () {
+    $e = dlEmployee();
+    $raced = false;
+
+    Attendance::creating(function (Attendance $a) use (&$raced, $e): void {
+        if (! $raced && $a->employee_id === $e->id) {
+            $raced = true;
+            DB::table('attendances')->insert([
+                'employee_id' => $e->id, 'date' => '2026-11-23', 'status' => null, 'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+    });
+
+    $this->actingAs(userWithRole('hr'))->put("/attendance/daily/{$e->id}/2026-11-23", dlPayload())->assertSessionHasNoErrors();
+
+    expect($raced)->toBeTrue()
+        ->and(Attendance::query()->where('employee_id', $e->id)->count())->toBe(1)
+        ->and(dlFind($e, '2026-11-23')->status)->toBe('present');
+});
+
+// ---------------------------------------------------------------- fix round: list (M2, M3, M9)
+
+it('matches people without a record on a past day with the not-in / no-record filter', function () {
+    $missing = dlEmployee();
+    dlRow(dlEmployee(), '2026-11-23');
+
+    $response = $this->actingAs(userWithRole('hr'))->get('/attendance/daily?date=2026-11-23&status=not_in')->assertOk();
+
+    expect(dlIds($response))->toBe([$missing->id])
+        ->and($response->inertiaProps('summary.not_in'))->toBe(1);
+});
+
+it('shows people without a row as Weekend or Holiday on an open off day, not as not in yet', function () {
+    $this->travelTo(CarbonImmutable::parse('2026-11-28 14:00:00', 'Asia/Karachi')); // Saturday
+    $e = dlEmployee();
+    $worksSaturday = dlEmployee();
+    shiftFor($worksSaturday, ['weekly_offs' => ['friday']]);
+    $hr = userWithRole('hr');
+
+    $response = $this->actingAs($hr)->get('/attendance/daily')->assertOk();
+    $rows = collect($response->inertiaProps('rows'))->keyBy('employee.id');
+
+    expect($rows[$e->id]['status'])->toBe('weekend')
+        ->and($rows[$e->id]['not_in'])->toBeFalse()
+        ->and($rows[$worksSaturday->id]['not_in'])->toBeTrue()
+        ->and($response->inertiaProps('summary'))->toMatchArray(['not_in' => 1, 'holiday_weekend' => 1]);
+
+    Holiday::query()->create(['name' => 'Founders Day', 'date' => '2026-11-28']);
+    $response = $this->actingAs($hr)->get('/attendance/daily')->assertOk();
+    $rows = collect($response->inertiaProps('rows'))->keyBy('employee.id');
+
+    expect($rows[$worksSaturday->id]['status'])->toBe('holiday')
+        ->and($response->inertiaProps('summary'))->toMatchArray(['not_in' => 0, 'holiday_weekend' => 2]);
+});
+
+it('lists only the departments of people in a manager scope, and filters within the scope', function () {
+    [$manager, $me, $report, $other] = dlManagerWithTeam();
+    dlRow($report, '2026-11-23', ['status' => 'late', 'late_minutes' => 30]);
+    dlRow($other, '2026-11-23', ['status' => 'late', 'late_minutes' => 30]);
+
+    $response = $this->actingAs($manager)->get('/attendance/daily?date=2026-11-23&status=late')->assertOk();
+
+    expect(collect($response->inertiaProps('departments'))->pluck('id')->sort()->values()->all())
+        ->toBe(collect([$me->department_id, $report->department_id])->unique()->sort()->values()->all())
+        ->and(dlIds($response))->toBe([$report->id]);
+
+    $this->actingAs($manager)->get('/attendance/daily?date=2026-11-23&department='.$other->department_id)->assertOk()
+        ->assertInertia(fn ($p) => $p->where('rows', []));
 });

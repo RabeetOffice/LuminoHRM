@@ -130,7 +130,7 @@ it('keeps a manual row byte for byte, even when it is marked for rebuild', funct
     $manual = Attendance::factory()->create([
         'employee_id' => $e->id, 'date' => '2026-11-23', 'status' => 'present', 'is_manual' => true,
         'clock_in' => '2026-11-23 09:00:00', 'clock_out' => '2026-11-23 17:00:00', 'worked_minutes' => 480,
-        'note' => 'Corrected by HR', 'closed' => false,
+        'note' => 'Corrected by HR', 'closed' => true, // a manual row still open is finalised by the close (CloseDayTest)
     ]);
     punch($e, '2026-11-23 11:00:00');
     punch($e, '2026-11-23 12:00:00');

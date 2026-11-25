@@ -31,8 +31,17 @@ import {
 import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
 import { formatDate } from '@/lib/format-date';
+import {
+    CALCULATE,
+    correctionPayload,
+    initialCorrectionStatus,
+    statusTakesNoTimes,
+} from '@/lib/manual-correction';
 
-/** The statuses a person may set by hand (On Leave comes only from approved leave). */
+/**
+ * The statuses a person may set by hand (On Leave comes only from approved
+ * leave). A fallback only: pages pass the server's list as `overrideStatuses`.
+ */
 export const OVERRIDE_STATUSES: AttendanceStatus[] = ATTENDANCE_STATUSES.filter(
     (status) => status !== 'on_leave',
 );
@@ -43,6 +52,8 @@ export type CorrectionCurrent = {
     clock_out: string | null;
     status: AttendanceStatusValue;
     is_manual: boolean;
+    /** The manual row's status was chosen by hand: the dialog starts on it. */
+    status_overridden?: boolean;
 };
 
 export type CorrectionDialogProps = {
@@ -52,9 +63,9 @@ export type CorrectionDialogProps = {
     /** "Y-m-d", never passed through Date. */
     date: string;
     current: CorrectionCurrent;
+    /** The statuses that may be chosen, from the server (ApplyManualCorrection::OVERRIDE_STATUSES). */
+    overrideStatuses?: readonly string[];
 };
-
-const CALCULATE = 'calculate';
 
 /**
  * Correct one employee-day by hand, or remove an earlier correction. It
@@ -67,6 +78,7 @@ export function CorrectionDialog({
     employee,
     date,
     current,
+    overrideStatuses,
 }: CorrectionDialogProps) {
     const [busy, setBusy] = useState(false);
 
@@ -81,6 +93,7 @@ export function CorrectionDialog({
                     employee={employee}
                     date={date}
                     current={current}
+                    overrideStatuses={overrideStatuses}
                     onClose={onClose}
                     onBusy={setBusy}
                 />
@@ -97,14 +110,20 @@ function CorrectionForm({
     employee,
     date,
     current,
+    overrideStatuses,
     onClose,
     onBusy,
 }: FormProps) {
     const dateFormat = usePage().props.app.dateFormat;
+    const statuses: AttendanceStatus[] = (
+        overrideStatuses ?? OVERRIDE_STATUSES
+    ).filter((status): status is AttendanceStatus =>
+        (ATTENDANCE_STATUSES as readonly string[]).includes(status),
+    );
     const form = useForm({
         clock_in: current.clock_in ?? '',
         clock_out: current.clock_out ?? '',
-        status: CALCULATE as string,
+        status: initialCorrectionStatus(current, statuses),
         reason: '',
     });
     const { data, errors } = form;
@@ -113,14 +132,12 @@ function CorrectionForm({
     const processing = form.processing || resetting;
     const dateError = (errors as Record<string, string | undefined>).date;
     const target = { employee: employee.id, date };
+    const noTimes = statusTakesNoTimes(data.status);
 
     const submit = (event: FormEvent) => {
         event.preventDefault();
 
-        form.transform((values) => ({
-            ...values,
-            status: values.status === CALCULATE ? null : values.status,
-        }));
+        form.transform((values) => correctionPayload(values));
         form.submit(DailyController.update(target), {
             preserveScroll: true,
             onStart: () => onBusy(true),
@@ -164,7 +181,8 @@ function CorrectionForm({
                     <Input
                         {...fieldAria('correction-in', errors.clock_in)}
                         type="time"
-                        value={data.clock_in}
+                        disabled={noTimes}
+                        value={noTimes ? '' : data.clock_in}
                         onChange={(e) =>
                             form.setData('clock_in', e.target.value)
                         }
@@ -179,7 +197,8 @@ function CorrectionForm({
                     <Input
                         {...fieldAria('correction-out', errors.clock_out, true)}
                         type="time"
-                        value={data.clock_out}
+                        disabled={noTimes}
+                        value={noTimes ? '' : data.clock_out}
                         onChange={(e) =>
                             form.setData('clock_out', e.target.value)
                         }
@@ -191,7 +210,11 @@ function CorrectionForm({
                 id="correction-status"
                 label="Status"
                 error={errors.status}
-                hint="Leave on “Work out from the times” unless the times cannot show the right status."
+                hint={
+                    noTimes
+                        ? 'An absent day has no times: the clock-in and clock-out are cleared.'
+                        : 'Leave on “Work out from the times” unless the times cannot show the right status. A chosen status changes only the status; the minutes still come from the times.'
+                }
             >
                 <Select
                     value={data.status}
@@ -207,7 +230,7 @@ function CorrectionForm({
                         <SelectItem value={CALCULATE}>
                             Work out from the times
                         </SelectItem>
-                        {OVERRIDE_STATUSES.map((status) => (
+                        {statuses.map((status) => (
                             <SelectItem key={status} value={status}>
                                 {STATUS_META[status].label}
                             </SelectItem>

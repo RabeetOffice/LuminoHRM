@@ -27,6 +27,8 @@ use Throwable;
  * Rules kept here (the day rules themselves are in DayCalculator):
  *   - A manual row (is_manual) is never written, deleted or marked: not even its needs_rebuild flag is cleared. Pending
  *     selection leaves manual rows out, so a manual day marked by a new punch waits until the manual flag is cleared.
+ *     One exception: the nightly close finalises a manual row that is still open (corrected while the day was open)
+ *     from its own stored times and snapshot, or only marks it closed when its status was an override.
  *   - Attendance start (settings('attendance.start_date'), "Y-m-d" or null): no day WITHOUT punches (absent / weekend /
  *     holiday / exempt present) is recorded before it, or at all while it is null: an existing non-manual punch-less
  *     row there is removed. Days WITH punches are decided and kept whatever the start date (also before it, or when it
@@ -157,8 +159,9 @@ class AttendanceRebuilder
      * The nightly close of one past date: once attendance has started (settings('attendance.start_date') set and not
      * after $date), every employee who should have a record that day and has none gets one (absent, weekend, holiday,
      * or present when exempt; decided from their punches if they have any); every non-manual row still open or still
-     * pending (status null) is decided again as a closed day (so a single punch is flagged); the day's decided
-     * non-manual rows are marked closed, then pending rows are rebuilt. Running it again changes nothing.
+     * pending (status null) is decided again as a closed day (so a single punch is flagged); a manual row still open
+     * (corrected while the day was open) is finalised (see finaliseManual); the day's decided non-manual rows are marked
+     * closed, then pending rows are rebuilt. Running it again changes nothing.
      *
      * @return int employee-days written or deleted for $date
      */
@@ -212,6 +215,9 @@ class AttendanceRebuilder
         }
 
         $written = $this->processSafely(array_values($pairs), false, $employees);
+        if ($rows->contains(fn (object $row): bool => (bool) $row->is_manual && ! $row->closed)) {
+            $written += $this->finaliseManual($date);
+        }
 
         // Safety net: anything decided, non-manual and still open on that day (normally nothing left) is marked closed.
         // A row still pending here could not be decided: it stays open (the next close tries again) and is flagged.
@@ -223,6 +229,133 @@ class AttendanceRebuilder
         $this->rebuildPending();
 
         return $written;
+    }
+
+    /**
+     * The manual rows of a closing day that are still open (corrected while the day was open), finalised under a row
+     * lock: a row whose status was an explicit override (status_overridden) is only marked closed; any other is decided
+     * again from its STORED times (never the punches) with closed-day rules and its own rule snapshot (decideEntered),
+     * keeping is_manual, its times and its note, and marked closed. A row that cannot be decided is marked closed and
+     * flagged. Returns how many rows were finalised.
+     */
+    private function finaliseManual(string $date): int
+    {
+        return DB::transaction(function () use ($date): int {
+            $rows = Attendance::query()->where('date', $date)->where('is_manual', true)->where('closed', false)
+                ->lockForUpdate()->get();
+
+            if ($rows->isEmpty()) {
+                return 0;
+            }
+
+            $employees = Employee::query()->with('shift')->whereIn('id', $rows->pluck('employee_id')->unique()->all())
+                ->get()->keyBy('id');
+            $isHoliday = Holiday::query()->toBase()->where('date', $date)->exists();
+
+            foreach ($rows as $row) {
+                $employee = $employees->get($row->employee_id);
+                $raw = $row->getAttributes();
+                $in = isset($raw['clock_in']) ? substr((string) $raw['clock_in'], 0, 19) : null;
+                $out = isset($raw['clock_out']) ? substr((string) $raw['clock_out'], 0, 19) : null;
+
+                if ($row->status_overridden || $employee === null || ($in === null && $out === null)) {
+                    $row->forceFill(['closed' => true])->save();
+
+                    continue;
+                }
+
+                try {
+                    $rules = $this->rulesFor($employee, $row);
+                    $result = $this->decideEntered($rules, $date, $in, $out, true, $isHoliday);
+                } catch (Throwable $e) {
+                    $this->logFailed((int) $row->employee_id, $date, $e);
+                    $row->forceFill(['closed' => true, 'needs_attention' => true])->save();
+
+                    continue;
+                }
+
+                $row->forceFill($result === null ? ['closed' => true] : [
+                    'shift_rules' => $rules,
+                    'status' => $result->status,
+                    'worked_minutes' => $result->workedMinutes,
+                    'late_minutes' => $result->lateMinutes,
+                    'early_minutes' => $result->earlyMinutes,
+                    'overtime_minutes' => $result->overtimeMinutes,
+                    'needs_attention' => $result->needsAttention,
+                    'closed' => true,
+                ])->save();
+            }
+
+            return $rows->count();
+        });
+    }
+
+    /**
+     * The full rule snapshot for a manual correction of $row's day (ApplyManualCorrection, finaliseManual): the row's
+     * usable snapshot (keys it predates take the current values), otherwise the employee's shift in force and the
+     * current settings. The same shape every decided row stores in shift_rules.
+     *
+     * @return array{shift_id: int|null, name: string, start_time: string, end_time: string, grace_minutes: int, half_day_hours: float, weekly_offs: list<string>, overtime_min_minutes: int, duplicate_punch_minutes: int, attendance_exempt: bool}
+     */
+    public function rulesFor(Employee $employee, ?Attendance $row = null): array
+    {
+        $current = [
+            'overtime_min_minutes' => $this->overtimeMinMinutes(),
+            'duplicate_punch_minutes' => $this->duplicateMinutes(),
+            'attendance_exempt' => (bool) $employee->attendance_exempt,
+        ];
+
+        $snapshot = $row !== null ? $this->snapshotOf($row) : null;
+
+        if ($snapshot === null) {
+            $rules = $this->rulesOf($this->shiftOf($employee, Shift::default()), $current);
+
+            return [
+                ...$rules,
+                'overtime_min_minutes' => $current['overtime_min_minutes'],
+                'duplicate_punch_minutes' => $current['duplicate_punch_minutes'],
+                'attendance_exempt' => $current['attendance_exempt'],
+            ];
+        }
+
+        return [
+            ...$snapshot,
+            'overtime_min_minutes' => $snapshot['overtime_min_minutes'] ?? $current['overtime_min_minutes'],
+            'duplicate_punch_minutes' => $snapshot['duplicate_punch_minutes'] ?? $current['duplicate_punch_minutes'],
+            'attendance_exempt' => $snapshot['attendance_exempt'] ?? $current['attendance_exempt'],
+        ];
+    }
+
+    /**
+     * Decides a day from times a person entered (a manual correction) rather than from punches: the entered values are
+     * deliberate, so no double-tap window applies (duplicatePunchMinutes 0). $closed true applies the closed-day rules
+     * (half day, early minutes, single-time flag).
+     *
+     * @param  array{start_time: string, end_time: string, grace_minutes: int, half_day_hours: float, weekly_offs: list<string>, overtime_min_minutes: int, attendance_exempt: bool}  $rules  from rulesFor()
+     * @param  string|null  $clockIn  naive "Y-m-d H:i:s"
+     * @param  string|null  $clockOut  naive "Y-m-d H:i:s" (after midnight: the next calendar day)
+     * @param  bool|null  $isHoliday  null: looked up
+     */
+    public function decideEntered(array $rules, string $date, ?string $clockIn, ?string $clockOut, bool $closed, ?bool $isHoliday = null): ?DayResult
+    {
+        $date = $this->date($date);
+
+        return $this->calculator->calculate(new DayInput(
+            date: $date,
+            shiftStart: $rules['start_time'],
+            shiftEnd: $rules['end_time'],
+            graceMinutes: $rules['grace_minutes'],
+            halfDayHours: $rules['half_day_hours'],
+            weeklyOffs: $rules['weekly_offs'],
+            isHoliday: $isHoliday ?? Holiday::query()->toBase()->where('date', $date)->exists(),
+            isExempt: $rules['attendance_exempt'],
+            punches: array_values(array_filter([$clockIn, $clockOut])),
+            closed: $closed,
+            overtimeMinMinutes: $rules['overtime_min_minutes'],
+            onLeave: false,
+            duplicatePunchMinutes: 0, // entered times are deliberate, never a double tap
+            dayCutoff: $this->clock->dayCutoff(),
+        ));
     }
 
     /**

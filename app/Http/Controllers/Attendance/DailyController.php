@@ -8,6 +8,7 @@ use App\Http\Requests\ManualCorrectionRequest;
 use App\Models\Attendance;
 use App\Models\Department;
 use App\Models\Employee;
+use App\Models\Holiday;
 use App\Models\Shift;
 use App\Models\User;
 use App\Support\Attendance\AttendanceClock;
@@ -21,6 +22,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 use Throwable;
@@ -34,9 +36,15 @@ use Throwable;
  *
  * Who is listed: everyone in scope who has a row that day, plus, once attendance has started (attendance.start_date set
  * and not after the day), everyone employed that day who should have one (joined, not past the last working day, not
- * inactive / resigned / terminated without a last working day). A listed person with no row is "Not in yet" on the open
- * day (AttendanceClock::attendanceToday()) and "No record" on a past day (the nightly close has not run). A future
- * date is refused.
+ * inactive / resigned / terminated without a last working day).  * A listed person with no row is "Not in yet" on the open
+ * day (AttendanceClock::attendanceToday()) and "No record" on a past day (the nightly close has not run); both match
+ * the "not_in" filter. On an open day that is a holiday, or a weekly off of the person's shift, a person with no row
+ * shows Holiday / Weekend instead and is not counted as missing. A future date is refused.
+ *
+ * Who may correct whom (update, reset, and each row's can_edit): attendance.edit, the scope, ApplyManualCorrection::
+ * mayCorrect (not your own record unless Admin; an Admin / HR login only by an Admin) and a day the person can be
+ * corrected on (ApplyManualCorrection::employmentRefusal: not before max(joining date, attendance start date), not
+ * after the last working day, not someone who left without a last working day).
  *
  * The page reads two queries for the people and their rows (plus the fixed lookups: departments, the default shift),
  * never one per row. The summary counts the whole day in scope; the filters only narrow the table.
@@ -51,7 +59,10 @@ class DailyController extends Controller
 
     private const LEAVING_STATUSES = ['inactive', 'resigned', 'terminated'];
 
-    public function __construct(private readonly AttendanceClock $clock) {}
+    public function __construct(
+        private readonly AttendanceClock $clock,
+        private readonly ApplyManualCorrection $correct,
+    ) {}
 
     public function index(Request $request): Response|RedirectResponse
     {
@@ -84,7 +95,7 @@ class DailyController extends Controller
         // Query 2: the people (with their department and own shift, eager-loaded in two fixed queries).
         $start = $this->startDate();
         $employees = $access->scope(Employee::query())
-            ->with(['department:id,name', 'designation:id,name', 'shift:id,name'])
+            ->with(['department:id,name', 'designation:id,name', 'shift:id,name,weekly_offs'])
             ->where(function (Builder $q) use ($rows, $date, $start): void {
                 $q->whereIn('id', $rows->keys()->all());
 
@@ -98,10 +109,29 @@ class DailyController extends Controller
             ->get();
 
         $defaultShift = $employees->contains(fn (Employee $e) => ! $e->getRelation('shift') instanceof Shift)
-            ? Shift::default()->name
+            ? Shift::default()
             : null;
 
-        $list = $employees->map(fn (Employee $e) => $this->row($e, $rows->get($e->id), $isOpen, $defaultShift))->values();
+        // The open day's off-day status for people with no row: a holiday for everyone, else their shift's weekly off.
+        $isHoliday = $isOpen && Holiday::query()->onDate($date)->exists();
+
+        $canEdit = $user->can('attendance.edit');
+        // Employees whose login is Admin or HR: one query, only when the viewer edits and is not an Admin.
+        $privileged = $canEdit && ! $user->hasRole('admin')
+            ? array_flip(User::query()->role(['admin', 'hr'])->whereNotNull('employee_id')->pluck('employee_id')->all())
+            : [];
+
+        $list = $employees->map(fn (Employee $e) => $this->row(
+            $e,
+            $rows->get($e->id),
+            $date,
+            $isOpen,
+            $isHoliday,
+            $defaultShift,
+            $canEdit
+                && ApplyManualCorrection::mayCorrect($user, $e, isset($privileged[$e->id]))
+                && $this->correct->employmentRefusal($e, $date) === null,
+        ))->values();
 
         $filters = $this->filters($request);
 
@@ -114,21 +144,27 @@ class DailyController extends Controller
             'summary' => $this->summary($list),
             'rows' => $this->applyFilters($list, $filters)->values()->all(),
             'filters' => $filters,
-            'departments' => Department::query()->orderBy('name')->orderBy('id')->get(['id', 'name'])->all(),
+            // A team-scoped viewer only sees the departments of the people in their scope.
+            'departments' => Department::query()
+                ->when(! $user->can('attendance.view-all'), fn (Builder $q) => $q->whereIn(
+                    'id',
+                    $access->scope(Employee::query())->whereNotNull('department_id')->select('department_id'),
+                ))
+                ->orderBy('name')->orderBy('id')->get(['id', 'name'])->all(),
             'statuses' => config('hrm.attendance.statuses'),
             'overrideStatuses' => ApplyManualCorrection::OVERRIDE_STATUSES,
-            'can' => ['edit' => $user->can('attendance.edit')],
+            'can' => ['edit' => $canEdit],
         ]);
     }
 
-    public function update(ManualCorrectionRequest $request, ApplyManualCorrection $correct, Employee $employee, string $date): RedirectResponse
+    public function update(ManualCorrectionRequest $request, Employee $employee, string $date): RedirectResponse
     {
         $date = $this->authorizeDay($request, $employee, $date);
 
         /** @var User $user */
         $user = $request->user();
 
-        $correct->handle(
+        $this->correct->handle(
             $employee,
             $date,
             $request->validated('clock_in'),
@@ -141,27 +177,44 @@ class DailyController extends Controller
         return back()->with('success', "Attendance for {$employee->full_name} saved.");
     }
 
-    public function reset(Request $request, AttendanceRebuilder $rebuilder, ApplyManualCorrection $correct, Employee $employee, string $date): RedirectResponse
+    public function reset(Request $request, AttendanceRebuilder $rebuilder, Employee $employee, string $date): RedirectResponse
     {
         $date = $this->authorizeDay($request, $employee, $date);
+
+        $refusal = $this->correct->employmentRefusal($employee, $date);
+
+        if ($refusal !== null) {
+            throw ValidationException::withMessages(['date' => $refusal]);
+        }
 
         /** @var User $user */
         $user = $request->user();
 
-        $reset = DB::transaction(function () use ($employee, $date, $correct, $user): bool {
+        // One transaction: clear the manual flag, rebuild from the punches straight away (so the screen shows the
+        // punch-based values), then audit the values before and the values that resulted. If the rebuild fails the
+        // row stays marked needs_rebuild and the scheduled rebuild picks it up; the audit then shows that state.
+        $reset = DB::transaction(function () use ($employee, $date, $user, $rebuilder): bool {
             $row = Attendance::query()->where('employee_id', $employee->id)->onDate($date)->lockForUpdate()->first();
 
             if ($row === null || ! $row->is_manual) {
                 return false;
             }
 
-            $old = $correct->audited($row);
-            $row->forceFill(['is_manual' => false, 'needs_rebuild' => true, 'note' => null])->save();
+            $old = $this->correct->audited($row);
+            $row->forceFill(['is_manual' => false, 'status_overridden' => false, 'needs_rebuild' => true, 'note' => null])->save();
+
+            try {
+                $rebuilder->rebuild($employee, $date);
+            } catch (Throwable $e) {
+                report($e);
+            }
+
+            $after = Attendance::query()->where('employee_id', $employee->id)->onDate($date)->first();
 
             Audit::record('attendance', 'Attendance correction removed', $employee, [
                 'date' => $date,
                 'old' => $old,
-                'attributes' => ['is_manual' => false],
+                'attributes' => $after !== null ? $this->correct->audited($after) : $this->correct->auditedMissing(),
             ], $user);
 
             return true;
@@ -171,20 +224,13 @@ class DailyController extends Controller
             return back()->with('info', 'This day has no manual correction.');
         }
 
-        try {
-            // Straight away, so the screen shows the punch-based values. If it fails the row stays marked
-            // needs_rebuild and the scheduled rebuild picks it up.
-            $rebuilder->rebuild($employee, $date);
-        } catch (Throwable $e) {
-            report($e);
-        }
-
         return back()->with('success', "The manual correction for {$employee->full_name} was removed.");
     }
 
     /**
-     * The checks every write shares: a real, non-future date and an employee in the viewer's scope (403 otherwise,
-     * so nothing about people outside it is revealed). Returns the date as "Y-m-d".
+     * The checks every write shares: a real, non-future date, an employee in the viewer's scope (403 otherwise, so
+     * nothing about people outside it is revealed) and one the viewer may correct (not their own record unless Admin,
+     * not an Admin / HR login unless Admin: 403). Returns the date as "Y-m-d".
      */
     private function authorizeDay(Request $request, Employee $employee, string $date): string
     {
@@ -192,6 +238,7 @@ class DailyController extends Controller
         $user = $request->user();
 
         abort_unless((new EmployeeAccess($user))->canView($employee), 403);
+        abort_unless(ApplyManualCorrection::mayCorrect($user, $employee), 403);
 
         $valid = $this->validDate($date);
         abort_if($valid === null, 404);
@@ -209,12 +256,16 @@ class DailyController extends Controller
     }
 
     /** @return array<string, mixed> */
-    private function row(Employee $e, ?Attendance $a, bool $isOpen, ?string $defaultShift): array
+    private function row(Employee $e, ?Attendance $a, string $date, bool $isOpen, bool $isHoliday, ?Shift $defaultShift, bool $canEdit): array
     {
         $raw = $a?->getAttributes() ?? [];
         $in = isset($raw['clock_in']) ? (string) $raw['clock_in'] : null;
         $out = isset($raw['clock_out']) ? (string) $raw['clock_out'] : null;
         $shift = $e->getRelation('shift');
+        $shift = $shift instanceof Shift ? $shift : $defaultShift;
+
+        // No row on the open day: Holiday / Weekend when the day is one for this person, otherwise "Not in yet".
+        $offDay = $a === null && $isOpen ? $this->offDay($date, $isHoliday, $shift) : null;
 
         return [
             'employee' => [
@@ -226,11 +277,10 @@ class DailyController extends Controller
                 'department_id' => $e->department_id,
                 'designation' => $e->designation?->name,
             ],
-            'shift' => ($a !== null ? $this->snapshotName($a) : null)
-                ?? ($shift instanceof Shift ? $shift->name : $defaultShift),
+            'shift' => ($a !== null ? $this->snapshotName($a) : null) ?? $shift?->name,
             'has_record' => $a !== null,
-            // "Not in yet": no row on the open day. A past day with no row is "No record".
-            'not_in' => $a === null && $isOpen,
+            // No row and not an off day: "Not in yet" on the open day, "No record" on a past day.
+            'not_in' => $a === null && $offDay === null,
             'clock_in' => $in !== null ? substr($in, 11, 5) : null,
             'clock_out' => $out !== null ? substr($out, 11, 5) : null,
             // A clock-out after midnight (before the day cutoff) is on the next calendar day.
@@ -240,11 +290,26 @@ class DailyController extends Controller
             'late_minutes' => (int) ($a->late_minutes ?? 0),
             'early_minutes' => (int) ($a->early_minutes ?? 0),
             'overtime_minutes' => (int) ($a->overtime_minutes ?? 0),
-            'status' => $a?->status,
+            'status' => $a->status ?? $offDay,
             'is_manual' => (bool) ($a->is_manual ?? false),
+            'status_overridden' => (bool) ($a->status_overridden ?? false),
             'needs_attention' => (bool) ($a->needs_attention ?? false),
             'note' => $a?->note,
+            'can_edit' => $canEdit,
         ];
+    }
+
+    /** "holiday" or "weekend" when $date is one for a person on $shift, otherwise null. */
+    private function offDay(string $date, bool $isHoliday, ?Shift $shift): ?string
+    {
+        if ($isHoliday) {
+            return 'holiday';
+        }
+
+        $weekday = strtolower((new DateTimeImmutable($date.' 00:00:00', new \DateTimeZone('UTC')))->format('l'));
+        $offs = array_map(fn (string $d): string => strtolower(trim($d)), $shift->weekly_offs ?? []);
+
+        return in_array($weekday, $offs, true) ? 'weekend' : null;
     }
 
     /** The shift name stored in the row's shift-rule snapshot (read raw: the JSON may be old or hand-edited). */

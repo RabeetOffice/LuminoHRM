@@ -105,15 +105,55 @@ it('flags a single-punch day and closes the rows ingestion left open', function 
         ->toBe(['needs_attention' => false, 'closed' => true]);
 });
 
-it('never touches a manual row', function () {
+it('never touches a manual row that is already closed', function () {
     $e = cdEmployee();
-    $manual = Attendance::factory()->create(['employee_id' => $e->id, 'date' => '2026-11-23', 'is_manual' => true, 'needs_rebuild' => true]);
+    $manual = Attendance::factory()->create(['employee_id' => $e->id, 'date' => '2026-11-23', 'is_manual' => true, 'needs_rebuild' => true, 'closed' => true]);
     punch($e, '2026-11-23 10:00:00');
     $before = (array) DB::table('attendances')->where('id', $manual->id)->first();
 
     $this->artisan('hrm:attendance-close', ['date' => '2026-11-23'])->assertSuccessful();
 
     expect((array) DB::table('attendances')->where('id', $manual->id)->first())->toBe($before);
+});
+
+it('finalises a manual row still open from its stored times with closed-day rules and its snapshot', function () {
+    $e = cdEmployee();
+    // Entered on the open day as 09:00-12:30 and stored with open-day values (present, no early minutes).
+    $manual = Attendance::factory()->create([
+        'employee_id' => $e->id, 'date' => '2026-11-23', 'is_manual' => true, 'closed' => false,
+        'clock_in' => '2026-11-23 09:00:00', 'clock_out' => '2026-11-23 12:30:00', 'worked_minutes' => 210, 'note' => 'Correction request #3',
+        'shift_rules' => ['shift_id' => null, 'name' => 'Old', 'start_time' => '09:00', 'end_time' => '18:00', 'grace_minutes' => 15,
+            'half_day_hours' => 4.0, 'weekly_offs' => ['saturday', 'sunday']],
+    ]);
+    shiftFor($e, ['start_time' => '07:00', 'end_time' => '11:00']); // a later shift change must not matter
+    punch($e, '2026-11-23 08:00:00');
+    punch($e, '2026-11-23 20:00:00');
+
+    $this->artisan('hrm:attendance-close', ['date' => '2026-11-23'])->assertSuccessful();
+
+    $row = Attendance::query()->findOrFail($manual->id);
+    expect($row->only(['status', 'worked_minutes', 'early_minutes', 'late_minutes', 'is_manual', 'closed', 'note']))
+        ->toBe(['status' => 'half_day', 'worked_minutes' => 210, 'early_minutes' => 330, 'late_minutes' => 0, 'is_manual' => true,
+            'closed' => true, 'note' => 'Correction request #3'])
+        ->and($row->clock_in->format('Y-m-d H:i:s'))->toBe('2026-11-23 09:00:00')
+        ->and($row->clock_out->format('Y-m-d H:i:s'))->toBe('2026-11-23 12:30:00')
+        ->and($row->shift_rules['name'])->toBe('Old')
+        ->and($row->shift_rules)->toHaveKeys(['overtime_min_minutes', 'duplicate_punch_minutes', 'attendance_exempt']);
+});
+
+it('only marks a still-open manual override row closed', function () {
+    $e = cdEmployee();
+    $manual = Attendance::factory()->create([
+        'employee_id' => $e->id, 'date' => '2026-11-23', 'is_manual' => true, 'status_overridden' => true, 'closed' => false,
+        'clock_in' => '2026-11-23 09:00:00', 'clock_out' => '2026-11-23 13:00:00', 'worked_minutes' => 240, 'status' => 'present',
+    ]);
+    $before = (array) DB::table('attendances')->where('id', $manual->id)->first();
+
+    $this->artisan('hrm:attendance-close', ['date' => '2026-11-23'])->assertSuccessful();
+
+    $after = (array) DB::table('attendances')->where('id', $manual->id)->first();
+    expect((bool) $after['closed'])->toBeTrue()
+        ->and(array_diff_key($after, ['closed' => 1, 'updated_at' => 1]))->toBe(array_diff_key($before, ['closed' => 1, 'updated_at' => 1]));
 });
 
 it('changes nothing when run twice', function () {

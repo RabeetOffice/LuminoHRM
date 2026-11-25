@@ -65,7 +65,7 @@ it('creates the attendance tables and the two employee columns', function () {
         'devices' => ['id', 'name', 'serial_no', 'is_active', 'last_seen_at', 'last_stamp', 'last_punch_at', 'created_at', 'updated_at'],
         'device_punches' => ['id', 'device_id', 'device_user_id', 'employee_id', 'punch_time', 'punch_date', 'verify_type', 'status_code', 'source', 'created_at'],
         'device_commands' => ['id', 'device_id', 'command', 'status', 'sent_at', 'result', 'created_by', 'created_at', 'updated_at'],
-        'attendances' => ['id', 'employee_id', 'date', 'shift_id', 'shift_rules', 'clock_in', 'clock_out', 'worked_minutes', 'late_minutes', 'early_minutes', 'overtime_minutes', 'status', 'is_manual', 'needs_attention', 'needs_rebuild', 'closed', 'note', 'created_at', 'updated_at'],
+        'attendances' => ['id', 'employee_id', 'date', 'shift_id', 'shift_rules', 'clock_in', 'clock_out', 'worked_minutes', 'late_minutes', 'early_minutes', 'overtime_minutes', 'status', 'is_manual', 'status_overridden', 'needs_attention', 'needs_rebuild', 'closed', 'note', 'created_at', 'updated_at'],
         'attendance_corrections' => ['id', 'employee_id', 'date', 'requested_in', 'requested_out', 'reason', 'status', 'manager_id', 'manager_decided_at', 'hr_id', 'hr_decided_at', 'decision_note', 'created_at', 'updated_at'],
         'holidays' => ['id', 'name', 'date', 'created_at', 'updated_at'],
     ];

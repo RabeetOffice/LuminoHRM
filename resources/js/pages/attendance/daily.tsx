@@ -50,7 +50,7 @@ type DailyRow = {
     shift: string | null;
     /** The person has a row for the day. */
     has_record: boolean;
-    /** No row on the open day: "Not in yet". */
+    /** No row and not an off day: "Not in yet" (open day) or "No record" (past day). */
     not_in: boolean;
     /** "H:i" wall-clock times. */
     clock_in: string | null;
@@ -60,10 +60,15 @@ type DailyRow = {
     late_minutes: number;
     early_minutes: number;
     overtime_minutes: number;
+    /** With no record: the open day's Holiday / Weekend for this person, else null. */
     status: AttendanceStatusValue;
     is_manual: boolean;
+    /** The manual row's status was chosen by hand. */
+    status_overridden: boolean;
     needs_attention: boolean;
     note: string | null;
+    /** The viewer may correct this person on this day. */
+    can_edit: boolean;
 };
 
 type Summary = {
@@ -97,6 +102,7 @@ type Props = {
     rows: DailyRow[];
     filters: Filters;
     departments: { id: number; name: string }[];
+    overrideStatuses: string[];
     can: { edit: boolean };
 };
 
@@ -110,14 +116,6 @@ type Chip = {
     filter: string;
     dot: string;
 };
-
-const DOT = {
-    green: 'bg-emerald-500',
-    amber: 'bg-amber-500',
-    red: 'bg-red-500',
-    blue: 'bg-blue-500',
-    grey: 'bg-neutral-400',
-} as const;
 
 const STATUS_FILTERS: { value: string; label: string }[] = [
     { value: 'present', label: STATUS_META.present.label },
@@ -135,6 +133,18 @@ const dash = <span className="text-muted-foreground">–</span>;
 const minutesCell = (value: number, tone?: string) =>
     value > 0 ? <span className={tone}>{formatMinutes(value)}</span> : dash;
 
+/** On a phone the worked / late / early / overtime columns are hidden: one compact line instead. */
+function compactMinutes(row: DailyRow): string {
+    return [
+        row.worked_minutes > 0 && `Worked ${formatMinutes(row.worked_minutes)}`,
+        row.late_minutes > 0 && `Late ${formatMinutes(row.late_minutes)}`,
+        row.early_minutes > 0 && `Early ${formatMinutes(row.early_minutes)}`,
+        row.overtime_minutes > 0 && `OT ${formatMinutes(row.overtime_minutes)}`,
+    ]
+        .filter(Boolean)
+        .join(' · ');
+}
+
 export default function Daily({
     date,
     today,
@@ -145,6 +155,7 @@ export default function Daily({
     rows,
     filters,
     departments,
+    overrideStatuses,
     can,
 }: Props) {
     const { url, props } = usePage();
@@ -176,52 +187,52 @@ export default function Daily({
             label: 'Present',
             count: summary.present,
             filter: 'present',
-            dot: DOT.green,
+            dot: STATUS_META.present.dotClass,
         },
         {
             key: 'late',
             label: 'Late',
             count: summary.late,
             filter: 'late',
-            dot: DOT.amber,
+            dot: STATUS_META.late.dotClass,
         },
         {
             key: 'half_day',
             label: 'Half Day',
             count: summary.half_day,
             filter: 'half_day',
-            dot: 'bg-orange-500',
+            dot: STATUS_META.half_day.dotClass,
         },
         {
             key: 'absent',
             label: 'Absent',
             count: summary.absent,
             filter: 'absent',
-            dot: DOT.red,
+            dot: STATUS_META.absent.dotClass,
         },
         {
             key: 'on_leave',
             label: 'On Leave',
             count: summary.on_leave,
             filter: 'on_leave',
-            dot: DOT.blue,
+            dot: STATUS_META.on_leave.dotClass,
         },
         {
             key: 'holiday_weekend',
             label: 'Holiday / Weekend',
             count: summary.holiday_weekend,
             filter: 'holiday_weekend',
-            dot: 'bg-violet-500',
+            dot: STATUS_META.holiday.dotClass,
         },
     ];
 
     if (summary.not_in > 0) {
         chips.push({
             key: 'not_in',
-            label: 'Not in yet',
+            label: isOpen ? 'Not in yet' : 'No record',
             count: summary.not_in,
             filter: 'not_in',
-            dot: DOT.grey,
+            dot: STATUS_META.pending.dotClass,
         });
     }
 
@@ -231,17 +242,17 @@ export default function Daily({
             label: 'Pending',
             count: summary.pending,
             filter: 'pending',
-            dot: DOT.grey,
+            dot: STATUS_META.pending.dotClass,
         });
     }
 
     const statusCell = (row: DailyRow) => {
         let pill;
 
-        if (!row.has_record) {
+        if (!row.has_record && row.status === null) {
             pill = (
                 <StatusPill tone="grey">
-                    {row.not_in ? 'Not in yet' : 'No record'}
+                    {isOpen ? 'Not in yet' : 'No record'}
                 </StatusPill>
             );
         } else {
@@ -249,24 +260,35 @@ export default function Daily({
         }
 
         return (
-            <div className="flex flex-wrap items-center gap-1.5">
-                {pill}
-                {row.is_manual && (
-                    <span
-                        className="rounded-full border px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
-                        title={row.note ?? 'Corrected by hand'}
-                    >
-                        Manual
-                    </span>
-                )}
-                {row.needs_attention && (
-                    <span
-                        className="inline-flex text-amber-600 dark:text-amber-400"
-                        title="Needs attention"
-                    >
-                        <AlertTriangle aria-hidden="true" className="size-4" />
-                        <span className="sr-only">Needs attention</span>
-                    </span>
+            <div className="grid gap-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                    {pill}
+                    {row.is_manual && (
+                        <span
+                            className="rounded-full border px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                            title={row.note ?? 'Corrected by hand'}
+                        >
+                            Manual
+                        </span>
+                    )}
+                    {row.needs_attention && (
+                        <span
+                            className="inline-flex text-amber-600 dark:text-amber-400"
+                            title="Needs attention"
+                        >
+                            <AlertTriangle
+                                aria-hidden="true"
+                                className="size-4"
+                            />
+                            <span className="sr-only">Needs attention</span>
+                        </span>
+                    )}
+                </div>
+                {row.is_manual && row.note && (
+                    // Visible text, so the note is readable by keyboard, touch and screen readers alike.
+                    <p className="max-w-56 text-xs break-words text-muted-foreground">
+                        {row.note}
+                    </p>
                 )}
             </div>
         );
@@ -309,8 +331,20 @@ export default function Daily({
             key: 'in',
             header: 'Clock-in',
             className: 'whitespace-nowrap tabular-nums',
-            cell: (row) =>
-                row.clock_in ? formatClockTime(row.clock_in) : dash,
+            cell: (row) => {
+                const compact = compactMinutes(row);
+
+                return (
+                    <div>
+                        {row.clock_in ? formatClockTime(row.clock_in) : dash}
+                        {compact !== '' && (
+                            <p className="mt-0.5 text-xs whitespace-normal text-muted-foreground lg:hidden">
+                                {compact}
+                            </p>
+                        )}
+                    </div>
+                );
+            },
         },
         {
             key: 'out',
@@ -379,7 +413,8 @@ export default function Daily({
             header: <span className="sr-only">Actions</span>,
             className: 'w-12',
             cell: (row) =>
-                can.edit && (
+                can.edit &&
+                row.can_edit && (
                     <div className="flex justify-end">
                         <Button
                             variant="ghost"
@@ -652,7 +687,9 @@ export default function Daily({
                         clock_out: editing.clock_out,
                         status: editing.status,
                         is_manual: editing.is_manual,
+                        status_overridden: editing.status_overridden,
                     }}
+                    overrideStatuses={overrideStatuses}
                 />
             )}
         </>
