@@ -7,8 +7,10 @@ use App\Http\Requests\LeaveTypeRequest;
 use App\Models\LeaveBalance;
 use App\Models\LeaveRequest;
 use App\Models\LeaveType;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -20,11 +22,12 @@ use Inertia\Response;
  * Adding a paid type creates no balance rows: they appear on demand and through the allocation job. Making a type
  * inactive keeps its history; inactive types are not offered when applying. A type with any request or balance row
  * cannot be deleted, only made inactive. The system Unpaid type is never deleted, never made paid and never made
- * inactive (it is the fallback staff are pointed to), and a type's paid flag is fixed once it has requests. Every write
- * goes through the model instance (fill/save, delete) so the model's guards and audit always run.
+ * inactive (it is the fallback staff are pointed to), and a type's paid flag is fixed once it has leave history (any
+ * request or balance row). Every write goes through the model instance (fill/save, delete) so the model's guards and
+ * audit always run.
  *
- * Carried days are worked out when read, so changing a type's carry-forward flag or cap changes the carried days of
- * this year and later years (plan open decision 6); nothing is rewritten here.
+ * Carried days are derived when read, never frozen, so changing a type's carry-forward flag or cap changes the carried
+ * days of every year, past ones included (plan open decision 6; owner default); nothing is rewritten here.
  */
 class LeaveTypeController extends Controller
 {
@@ -36,7 +39,7 @@ class LeaveTypeController extends Controller
 
     public const SYSTEM_ACTIVE_MESSAGE = 'The Unpaid leave type is always active: it is the type staff use when their paid leave runs out.';
 
-    public const PAID_LOCKED_MESSAGE = 'This type already has leave requests, so it cannot change between paid and unpaid.';
+    public const PAID_LOCKED_MESSAGE = 'This type has leave history, so it cannot change between paid and unpaid.';
 
     public function index(): Response
     {
@@ -102,7 +105,7 @@ class LeaveTypeController extends Controller
                     return self::SYSTEM_ACTIVE_MESSAGE;
                 }
 
-                if ($locked->is_paid !== $attributes['is_paid'] && $locked->requests()->exists()) {
+                if ($locked->is_paid !== $attributes['is_paid'] && $this->hasHistory($locked)) {
                     return self::PAID_LOCKED_MESSAGE;
                 }
 
@@ -121,20 +124,57 @@ class LeaveTypeController extends Controller
         return back()->with('success', 'Leave type updated.');
     }
 
-    public function destroy(LeaveType $leaveType): RedirectResponse
+    /**
+     * Make a type active or inactive, touching nothing else (the "Make inactive" action on the list: it must not send
+     * back a possibly stale copy of every other field). The system Unpaid type is never made inactive.
+     */
+    public function setActive(Request $request, LeaveType $leaveType): RedirectResponse
     {
-        // Asked inside the transaction, just before the delete. The foreign keys restrict the delete as a backstop.
-        $reason = DB::transaction(function () use ($leaveType): ?string {
+        $active = (bool) $request->validate(['is_active' => ['required', 'boolean']])['is_active'];
+
+        $refusal = DB::transaction(function () use ($leaveType, $active): ?string {
             $locked = LeaveType::query()->whereKey($leaveType->getKey())->lockForUpdate()->firstOrFail();
 
-            if ($reason = $this->deleteBlocker($locked)) {
-                return $reason;
+            if ($locked->is_system && ! $active) {
+                return self::SYSTEM_ACTIVE_MESSAGE;
             }
 
-            $locked->delete();
+            $locked->fill(['is_active' => $active])->save();
 
             return null;
         });
+
+        if ($refusal !== null) {
+            return back()->withErrors(['is_active' => $refusal]);
+        }
+
+        return back()->with('success', $active ? 'Leave type made active.' : 'Leave type made inactive.');
+    }
+
+    public function destroy(LeaveType $leaveType): RedirectResponse
+    {
+        // Asked inside the transaction, just before the delete. The foreign keys restrict the delete as a backstop: a
+        // request or balance row written between the check and the delete makes it fail with an integrity violation,
+        // which is answered with the same history message instead of an error page.
+        try {
+            $reason = DB::transaction(function () use ($leaveType): ?string {
+                $locked = LeaveType::query()->whereKey($leaveType->getKey())->lockForUpdate()->firstOrFail();
+
+                if ($reason = $this->deleteBlocker($locked)) {
+                    return $reason;
+                }
+
+                $locked->delete();
+
+                return null;
+            });
+        } catch (QueryException $e) {
+            if (! self::isIntegrityViolation($e)) {
+                throw $e;
+            }
+
+            $reason = self::HISTORY_MESSAGE;
+        }
 
         return $reason !== null
             ? back()->with('error', $reason)
@@ -148,10 +188,24 @@ class LeaveTypeController extends Controller
             return self::SYSTEM_DELETE_MESSAGE;
         }
 
-        if ($type->requests()->exists() || $type->balances()->exists()) {
+        if ($this->hasHistory($type)) {
             return self::HISTORY_MESSAGE;
         }
 
         return null;
+    }
+
+    /** Any request (any status) or balance row of this type. */
+    private function hasHistory(LeaveType $type): bool
+    {
+        return $type->requests()->exists() || $type->balances()->exists();
+    }
+
+    /** SQLSTATE class 23 (integrity constraint violation), e.g. a foreign key still referencing the row. */
+    private static function isIntegrityViolation(QueryException $e): bool
+    {
+        $state = $e->errorInfo[0] ?? (string) $e->getCode();
+
+        return str_starts_with((string) $state, '23');
     }
 }

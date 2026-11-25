@@ -1,6 +1,7 @@
 import { Head, router } from '@inertiajs/react';
-import { Pencil, Plus, Trash2 } from 'lucide-react';
+import { Archive, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
+import { toast } from 'sonner';
 import LeaveTypeController from '@/actions/App/Http/Controllers/Leave/LeaveTypeController';
 import { ConfirmDialog } from '@/components/hrm/confirm-dialog';
 import { DataTable } from '@/components/hrm/data-table';
@@ -59,7 +60,14 @@ export default function LeaveTypes({ types, colours }: Props) {
         const options = {
             preserveScroll: true,
             onStart: () => setBusy(true),
-            // Success and refusal both end here; the toast says which.
+            // A refusal sent back as a validation error (not a flash message) would otherwise show nothing.
+            onError: (errors: Record<string, string>) => {
+                toast.error(
+                    Object.values(errors)[0] ??
+                        'Something went wrong. Please try again.',
+                );
+            },
+            // Success and flash refusals both end here; the flash toast says which.
             onFinish: () => {
                 setBusy(false);
                 setConfirmOpen(false);
@@ -67,18 +75,11 @@ export default function LeaveTypes({ types, colours }: Props) {
         };
 
         if (deleting.has_history) {
-            // A type with history is never deleted: offer to make it inactive instead (same rules as the dialog).
-            router.put(
-                LeaveTypeController.update(deleting.id).url,
-                {
-                    name: deleting.name,
-                    yearly_quota: deleting.yearly_quota,
-                    is_paid: deleting.is_paid,
-                    carry_forward: deleting.carry_forward,
-                    carry_forward_cap: deleting.carry_forward_cap,
-                    is_active: false,
-                    colour: deleting.colour,
-                },
+            // A type with history is never deleted: make it inactive instead. Only the flag is sent, so a stale copy
+            // of the other fields can never overwrite someone else's edit.
+            router.patch(
+                LeaveTypeController.setActive(deleting.id).url,
+                { is_active: false },
                 options,
             );
         } else {
@@ -162,7 +163,19 @@ export default function LeaveTypes({ types, colours }: Props) {
                         </Button>
                         {/* The system type is never deleted; an inactive type with history has nothing left to offer. */}
                         {!type.is_system &&
-                            !(type.has_history && !type.is_active) && (
+                            !(type.has_history && !type.is_active) &&
+                            (type.has_history ? (
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="size-8"
+                                    aria-label={`Make ${type.name} inactive`}
+                                    title="Make inactive"
+                                    onClick={() => askDelete(type)}
+                                >
+                                    <Archive />
+                                </Button>
+                            ) : (
                                 <Button
                                     variant="ghost"
                                     size="icon"
@@ -173,7 +186,7 @@ export default function LeaveTypes({ types, colours }: Props) {
                                 >
                                     <Trash2 />
                                 </Button>
-                            )}
+                            ))}
                     </div>
                 ),
         },

@@ -158,11 +158,31 @@ it('rejects invalid values', function (array $overrides, string $field) {
 
 it('accepts the edges: 0 and 365 days, halves', function (float $quota) {
     $this->actingAs(userWithRole('admin'))
-        ->post('/leave/types', ltPayload(['yearly_quota' => $quota, 'carry_forward' => true, 'carry_forward_cap' => $quota]))
+        ->post('/leave/types', ltPayload(['yearly_quota' => $quota, 'carry_forward' => true, 'carry_forward_cap' => max($quota, 0.5)]))
         ->assertSessionHasNoErrors();
 
     expect(LeaveType::where('name', 'Study')->value('yearly_quota'))->toEqual($quota);
 })->with([0.0, 0.5, 365.0, 364.5]);
+
+it('needs a cap of at least half a day when carry forward is on', function () {
+    $admin = userWithRole('admin');
+
+    $this->actingAs($admin)->post('/leave/types', ltPayload(['carry_forward' => true, 'carry_forward_cap' => 0]))
+        ->assertSessionHasErrors('carry_forward_cap');
+    $this->actingAs($admin)->post('/leave/types', ltPayload(['carry_forward' => true, 'carry_forward_cap' => 0.5]))
+        ->assertSessionHasNoErrors();
+
+    expect(LeaveType::where('name', 'Study')->value('carry_forward_cap'))->toEqual(0.5);
+});
+
+it('stores quota and cap rounded to the nearest half day', function () {
+    $this->actingAs(userWithRole('admin'))
+        ->post('/leave/types', ltPayload(['yearly_quota' => '7.4999999999', 'carry_forward' => true, 'carry_forward_cap' => '2.5000000001']))
+        ->assertSessionHasNoErrors();
+
+    $type = LeaveType::where('name', 'Study')->firstOrFail();
+    expect($type->yearly_quota)->toBe(7.5)->and($type->carry_forward_cap)->toBe(2.5);
+});
 
 it('rejects a duplicate name ignoring case and spaces, but lets a type keep its own name', function () {
     $admin = userWithRole('admin');
@@ -310,6 +330,18 @@ it('refuses to change the paid flag once the type has requests', function (strin
     expect($type->fresh()->is_paid)->toBe($from === 'paid');
 })->with(['paid', 'unpaid']);
 
+it('refuses to change the paid flag when the type has only balance rows', function () {
+    $study = LeaveType::factory()->create(['name' => 'Study', 'yearly_quota' => 4]);
+    LeaveBalance::factory()->create(['employee_id' => Employee::factory()->create()->id, 'leave_type_id' => $study->id]);
+
+    $this->actingAs(userWithRole('admin'))
+        ->put("/leave/types/{$study->id}", ltPayload(['is_paid' => false]))
+        ->assertSessionHasErrors(['is_paid' => LeaveTypeController::PAID_LOCKED_MESSAGE]);
+
+    expect(LeaveTypeController::PAID_LOCKED_MESSAGE)->toContain('has leave history')
+        ->and($study->fresh()->is_paid)->toBeTrue();
+});
+
 it('lets the paid flag change while the type has no requests', function () {
     $study = LeaveType::factory()->create(['name' => 'Study', 'yearly_quota' => 4]);
 
@@ -364,3 +396,62 @@ it('refuses to delete a type with leave history', function (string $history) {
 
     expect(LeaveType::find($sick->id))->not->toBeNull();
 })->with(['request', 'balance']);
+
+it('answers a foreign-key violation on delete with the history message, not an error page', function () {
+    $study = LeaveType::factory()->create(['name' => 'Study']);
+    $employee = Employee::factory()->create();
+
+    // History written after the check, just before the DELETE (the race the foreign keys backstop).
+    LeaveType::deleting(function (LeaveType $type) use ($employee): void {
+        LeaveBalance::factory()->create(['employee_id' => $employee->id, 'leave_type_id' => $type->id]);
+    });
+
+    $this->actingAs(userWithRole('admin'))->delete("/leave/types/{$study->id}")
+        ->assertRedirect()
+        ->assertSessionHas('error', LeaveTypeController::HISTORY_MESSAGE);
+
+    expect(LeaveType::find($study->id))->not->toBeNull();
+});
+
+// ---------------------------------------------------------------- make active / inactive
+
+it('makes a type inactive and active again without touching other fields', function () {
+    $casual = leaveType('Casual');
+    leaveRequest(Employee::factory()->create(), ['leave_type_id' => $casual->id]);
+    $before = $casual->only(['name', 'yearly_quota', 'is_paid', 'carry_forward', 'carry_forward_cap', 'colour']);
+    $admin = userWithRole('hr');
+
+    $this->actingAs($admin)->patch("/leave/types/{$casual->id}/active", ['is_active' => false])
+        ->assertSessionHas('success', 'Leave type made inactive.');
+    expect($casual->fresh()->is_active)->toBeFalse()
+        ->and($casual->fresh()->only(array_keys($before)))->toBe($before);
+
+    $this->actingAs($admin)->patch("/leave/types/{$casual->id}/active", ['is_active' => true])
+        ->assertSessionHas('success', 'Leave type made active.');
+    expect($casual->fresh()->is_active)->toBeTrue();
+
+    $entry = Activity::where('log_name', 'leave')->where('subject_id', $casual->id)->latest('id')->first();
+    expect($entry->properties['attributes'])->toBe(['is_active' => true]);
+});
+
+it('never makes the system type inactive through the active action', function () {
+    $unpaid = ltSystem();
+
+    $this->actingAs(userWithRole('admin'))->patch("/leave/types/{$unpaid->id}/active", ['is_active' => false])
+        ->assertSessionHasErrors(['is_active' => LeaveTypeController::SYSTEM_ACTIVE_MESSAGE]);
+
+    expect($unpaid->fresh()->is_active)->toBeTrue();
+});
+
+it('validates the active flag and guards the active action', function () {
+    $sick = leaveType('Sick');
+
+    $this->actingAs(userWithRole('admin'))->patch("/leave/types/{$sick->id}/active", ['is_active' => 'maybe'])
+        ->assertSessionHasErrors('is_active');
+    $this->actingAs(userWithRole('manager'))->patch("/leave/types/{$sick->id}/active", ['is_active' => false])
+        ->assertForbidden();
+    $this->actingAs(userWithRole('admin'))->patch('/leave/types/999999/active', ['is_active' => false])
+        ->assertNotFound();
+
+    expect($sick->fresh()->is_active)->toBeTrue();
+});

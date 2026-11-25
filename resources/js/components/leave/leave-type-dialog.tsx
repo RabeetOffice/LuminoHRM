@@ -1,6 +1,6 @@
 import { useForm } from '@inertiajs/react';
 import { Check } from 'lucide-react';
-import type { FormEvent, ReactNode } from 'react';
+import type { FormEvent, KeyboardEvent, ReactNode } from 'react';
 import LeaveTypeController from '@/actions/App/Http/Controllers/Leave/LeaveTypeController';
 import {
     leaveColourDot,
@@ -36,9 +36,9 @@ export type LeaveTypeRow = {
     is_system: boolean;
     /** A name from config('hrm.leave.colours'). */
     colour: string;
-    /** Any request of this type, whatever its status: the paid flag is fixed. */
+    /** Any request of this type, whatever its status. */
     has_requests: boolean;
-    /** Any request or balance row: the type can be made inactive, not deleted. */
+    /** Any request or balance row: the paid flag is fixed, and the type can be made inactive, not deleted. */
     has_history: boolean;
 };
 
@@ -50,9 +50,35 @@ type Props = {
     onClose: () => void;
 };
 
-/** Carried days are worked out when read (plan open decision 6). */
+/** Carried days are derived when read, never frozen (plan open decision 6, owner default). */
 export const CARRY_FORWARD_NOTE =
-    'Changes the carried days of this year and later years.';
+    'Changes carried days for all years, including past ones shown on the balances screen.';
+
+/** The swatch index an arrow / Home / End key moves to, or null for any other key. Wraps at both ends. */
+export function swatchIndexForKey(
+    key: string,
+    current: number,
+    count: number,
+): number | null {
+    if (count === 0) {
+        return null;
+    }
+
+    switch (key) {
+        case 'ArrowRight':
+        case 'ArrowDown':
+            return (current + 1) % count;
+        case 'ArrowLeft':
+        case 'ArrowUp':
+            return (current - 1 + count) % count;
+        case 'Home':
+            return 0;
+        case 'End':
+            return count - 1;
+        default:
+            return null;
+    }
+}
 
 /** A number of days as typed back into the form: 14 → "14", 7.5 → "7.5". */
 const daysValue = (value: number) => String(value);
@@ -70,12 +96,33 @@ export function LeaveTypeDialog({ type, colours, onClose }: Props) {
     });
     const { data, errors } = form;
 
-    const paidLocked = Boolean(type && (type.is_system || type.has_requests));
+    const paidLocked = Boolean(type && (type.is_system || type.has_history));
     const paidHint = type?.is_system
         ? 'This is the type staff use when their paid leave runs out. It is always unpaid and cannot be deleted.'
-        : type?.has_requests
-          ? 'This type already has leave requests, so it cannot change between paid and unpaid.'
+        : type?.has_history
+          ? 'This type has leave history, so it cannot change between paid and unpaid.'
           : 'Paid types have a yearly quota and a balance. Unpaid leave has no limit and is deducted from pay.';
+
+    // Roving tabindex: the radiogroup is one tab stop (the selected swatch, else the first); arrows move and select.
+    const selectedIndex = colours.indexOf(data.colour);
+    const tabStop = selectedIndex >= 0 ? selectedIndex : 0;
+
+    const onSwatchKeyDown = (
+        event: KeyboardEvent<HTMLButtonElement>,
+        index: number,
+    ) => {
+        const next = swatchIndexForKey(event.key, index, colours.length);
+
+        if (next === null) {
+            return;
+        }
+
+        event.preventDefault();
+        form.setData('colour', colours[next]);
+        event.currentTarget.parentElement
+            ?.querySelectorAll<HTMLButtonElement>('[role="radio"]')
+            [next]?.focus();
+    };
 
     const submit = (event: FormEvent) => {
         event.preventDefault();
@@ -213,7 +260,7 @@ export function LeaveTypeDialog({ type, colours, onClose }: Props) {
                             Calendar colour
                         </span>
                         <div className="flex flex-wrap gap-2">
-                            {colours.map((colour) => {
+                            {colours.map((colour, index) => {
                                 const selected = data.colour === colour;
 
                                 return (
@@ -222,6 +269,10 @@ export function LeaveTypeDialog({ type, colours, onClose }: Props) {
                                         type="button"
                                         role="radio"
                                         aria-checked={selected}
+                                        tabIndex={index === tabStop ? 0 : -1}
+                                        onKeyDown={(e) =>
+                                            onSwatchKeyDown(e, index)
+                                        }
                                         aria-label={leaveColourLabel(colour)}
                                         title={leaveColourLabel(colour)}
                                         onClick={() =>
