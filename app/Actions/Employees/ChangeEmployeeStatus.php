@@ -49,6 +49,17 @@ class ChangeEmployeeStatus
     }
 
     /**
+     * After handle(): sentences for the person who saved (flash), e.g. hand-corrected attendance days whose leave the
+     * trim removed (they keep their leave status: check them). Empty when there is nothing to say.
+     *
+     * @return list<string>
+     */
+    public function notices(): array
+    {
+        return $this->changed ? $this->trim->notices() : [];
+    }
+
+    /**
      * @throws AccountRuleViolation the account rules refused (nothing is saved)
      * @throws ValidationException resigned or terminated without a last working day
      */

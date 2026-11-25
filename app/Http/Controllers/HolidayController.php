@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Actions\Leave\HolidayLeaveRefund;
+use App\Actions\Leave\LeaveDayRemoval;
 use App\Http\Requests\HolidayRequest;
 use App\Mail\LeaveRequestDecided;
 use App\Models\Employee;
@@ -242,29 +243,33 @@ class HolidayController extends Controller
      * " 2 people · 1.5 days went back to their balance." People and days of APPROVED leave refunded; an open request
      * cancelled here held nothing.
      *
-     * @param  list<array{request: LeaveRequest, outcome: string, refunded: float}>  $changed
+     * @param  list<array{request: LeaveRequest, outcome: string, refunded: float, manual?: list<string>}>  $changed
      */
     private function refundNote(array $changed): string
     {
         $people = [];
         $halves = 0;
+        $manual = '';
 
         foreach ($changed as $c) {
             if ($c['refunded'] > 0) {
                 $people[(int) $c['request']->employee_id] = true;
                 $halves += LeaveDays::halves($c['refunded']);
             }
+
+            // A hand-corrected attendance day keeps its leave status: HR is told to check it.
+            $manual .= LeaveDayRemoval::manualNote($c['manual'] ?? [], $c['request']->employee?->full_name);
         }
 
         if ($halves === 0) {
-            return '';
+            return $manual;
         }
 
         $count = count($people);
         $days = rtrim(rtrim(number_format(LeaveDays::fromHalves($halves), 1, '.', ''), '0'), '.');
 
         return sprintf(' %d %s · %s %s went back to their balance.',
-            $count, $count === 1 ? 'person' : 'people', $days, $halves === 2 ? 'day' : 'days');
+            $count, $count === 1 ? 'person' : 'people', $days, $halves === 2 ? 'day' : 'days').$manual;
     }
 
     /** The list for the year of a saved date, so a holiday saved into another year does not seem to vanish. */

@@ -252,9 +252,11 @@ class LeaveDecisions
         }
 
         $summary = [];
+        $manual = [];
 
-        $result = DB::transaction(function () use ($by, $request, &$from, $reason, &$summary): LeaveRequest {
+        $result = DB::transaction(function () use ($by, $request, &$from, $reason, &$summary, &$manual): LeaveRequest {
             $summary = []; // a deadlock retry starts clean
+            $manual = [];
             $locked = $this->lock($request);
             $own = $this->routing->isRequester($by, $locked);
 
@@ -309,6 +311,7 @@ class LeaveDecisions
             ])->save();
 
             $summary = ['whole' => $whole, ...$removed];
+            $manual = $removed['manual'];
 
             $this->audit($whole ? 'Leave cancelled' : 'Leave partly cancelled', $locked, $by, [
                 'step' => 'cancel',
@@ -316,6 +319,8 @@ class LeaveDecisions
                 'removed' => $removed['removed'],
                 'refunded' => $removed['amount'],
                 'kept_locked' => $removed['kept_locked'] === [] ? null : $removed['kept_locked'],
+                // Hand-corrected days among the removed ones keep their leave status: HR is told (flash, request page).
+                'manual' => $removed['manual'] === [] ? null : $removed['manual'],
                 'days' => $whole ? 0 : $locked->days,
                 'own_request' => $own ? true : null,
                 'note' => $reason,
@@ -329,9 +334,11 @@ class LeaveDecisions
         $name = $result->employee->full_name;
         $refunded = $this->daysText((float) $summary['amount']);
 
-        return $summary['whole']
+        $manualNote = LeaveDayRemoval::manualNote($manual);
+
+        return ($summary['whole']
             ? "The leave of {$name} was cancelled; {$refunded} went back to the balance."
-            : "The leave of {$name} was cancelled from {$this->dayLabel($from)}; {$refunded} went back to the balance.";
+            : "The leave of {$name} was cancelled from {$this->dayLabel($from)}; {$refunded} went back to the balance.").$manualNote;
     }
 
     /**

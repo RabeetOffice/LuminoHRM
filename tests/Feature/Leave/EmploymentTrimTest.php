@@ -51,6 +51,7 @@ it('removes approved days after a new last working day and cancels open requests
     $hr = userWithRole('hr');
     $partly = approvedLeave($employee, '2026-12-03', '2026-12-08');
     $whole = approvedLeave($employee, '2026-12-14', '2026-12-15');
+    $wholeDays = (float) $whole->days;
     $inside = approvedLeave($employee, '2026-11-26');
     $open = leaveRequest($employee, ['from_date' => '2026-12-21', 'to_date' => '2026-12-22', 'days' => 2]);
     $openInside = leaveRequest($employee, ['from_date' => '2026-12-02', 'to_date' => '2026-12-02']);
@@ -66,6 +67,8 @@ it('removes approved days after a new last working day and cancels open requests
         ->and(etrDates($partly))->toBe(['2026-12-03', '2026-12-04']);
 
     expect($whole->fresh()->status)->toBe('cancelled')->and(etrDates($whole))->toBe([])
+        // A wholly cancelled request keeps the days it was approved for (final fix round M3).
+        ->and($whole->fresh()->days)->toBe($wholeDays)
         ->and($whole->fresh()->cancel_reason)->toBe('Employment ends Fri 4 Dec 2026.');
 
     // Days inside the window are untouched.

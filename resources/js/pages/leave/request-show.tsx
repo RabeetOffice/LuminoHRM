@@ -67,6 +67,8 @@ type Props = {
     /** Paid types, shown to the requester and the approvers only. */
     balance: { year: number; before: number | null; now: BalanceNow }[] | null;
     needs_attention: string[];
+    /** Days whose leave was removed while their attendance row was corrected by hand (it still shows leave). */
+    removed_manual: string[];
     history: {
         description: string;
         by: string;
@@ -85,6 +87,7 @@ export default function LeaveRequestShow({
     plan_refusal,
     balance,
     needs_attention,
+    removed_manual,
     history,
     today,
 }: Props) {
@@ -323,7 +326,8 @@ export default function LeaveRequestShow({
                             </dl>
                         </Card>
 
-                        {needs_attention.length > 0 && (
+                        {(needs_attention.length > 0 ||
+                            removed_manual.length > 0) && (
                             <div
                                 role="note"
                                 className="flex gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200"
@@ -340,6 +344,15 @@ export default function LeaveRequestShow({
                                                 corrected by hand on the Daily
                                                 screen; leave was not applied to
                                                 this day.
+                                            </li>
+                                        ))}
+                                        {removed_manual.map((date) => (
+                                            <li key={`removed-${date}`}>
+                                                {leaveDateLabel(date)}: leave
+                                                was removed, but the day was
+                                                corrected by hand on the Daily
+                                                screen and still shows leave.
+                                                Check it.
                                             </li>
                                         ))}
                                     </ul>

@@ -22,8 +22,9 @@ use LogicException;
  *   pending(Y)   = days of that type in Y of the employee's open requests (pending / manager_approved)
  *   available(Y) = remaining(Y) − pending(Y)
  *   carried(Y)   = 0 for a type without carry-forward, or when there is no Y−1 balance row;
- *                  else min(max(0, remaining(Y−1)), carry_forward_cap). When Y is after the current leave year
- *                  (a projection), remaining(Y−1) − pending(Y−1) replaces remaining(Y−1).
+ *                  else min(max(0, remaining(Y−1) − pending(Y−1)), carry_forward_cap). Open requests of Y−1 always
+ *                  reserve: also after 1 January, a December request still waiting (or applied backdated) lowers what
+ *                  carries into the new year until it is decided (owner ruling, phase 4 final fix round).
  *
  * Carried is never stored: it is worked out by walking the employee's balance rows for that type from the earliest
  * year up to Y, in memory, so a backdated leave day, an adjustment or a refund in an earlier year flows forward by
@@ -141,7 +142,7 @@ class LeaveBalances
      * SQLite (tests) ignores both locks; it serialises writers anyway.
      *
      * $extraPending (year => days) adds days to pending as if one more open request held them: they count in every
-     * year's pending AND in the carry walk (a share in Y lowers what carries into a projected Y+1). The submit and
+     * year's pending AND in the carry walk (a share in Y lowers what carries into Y+1). The submit and
      * approval checks pass the request's own per-year shares here, so a request across 31 Dec cannot use the same
      * days twice (once in Y, once again as carry into Y+1). A caller checking a request must then check every year
      * from its first year up to lastYearInUse(), not only the years it touches.
@@ -244,7 +245,15 @@ class LeaveBalances
             $used[(int) $r->employee_id][(int) $r->leave_type_id][(int) $r->yr] = LeaveDays::halves($r->total);
         }
 
-        $pending = $this->pendingHalves($employees, $typeIds, min($year, $current), $year, $ignoreRequestId, $locking);
+        // Pending from the earliest balance row year: an open request of any earlier year lowers what carries forward.
+        $earliestRow = $year;
+        foreach ($rows as $byType) {
+            foreach ($byType as $byYear) {
+                $earliestRow = min($earliestRow, min(array_keys($byYear)));
+            }
+        }
+
+        $pending = $this->pendingHalves($employees, $typeIds, min($year, $current, $earliestRow), $year, $ignoreRequestId, $locking);
 
         if ($onlyType !== null) {
             foreach ($extraPending as $y => $days) {
@@ -269,7 +278,7 @@ class LeaveBalances
 
                 $result[$id][$type->id] = $type->isUnpaid()
                     ? $this->unpaidLine($type, $year, $typeUsed[$year] ?? 0, $typePending[$year] ?? 0)
-                    : $this->paidLine($employee, $type, $year, $current, $prorate, $typeRows, $typeUsed, $typePending);
+                    : $this->paidLine($employee, $type, $year, $prorate, $typeRows, $typeUsed, $typePending);
             }
         }
 
@@ -281,7 +290,7 @@ class LeaveBalances
      * @param  array<int, int>  $used  year => halves
      * @param  array<int, int>  $pending  year => halves
      */
-    private function paidLine(Employee $employee, LeaveType $type, int $year, int $current, bool $prorate, array $rows, array $used, array $pending): BalanceLine
+    private function paidLine(Employee $employee, LeaveType $type, int $year, bool $prorate, array $rows, array $used, array $pending): BalanceLine
     {
         $cap = LeaveDays::halves($type->carry_forward_cap);
         $carried = 0; // carried into $y, walking up from the earliest row year (nothing carries into it)
@@ -295,11 +304,9 @@ class LeaveBalances
                 }
 
                 [$allocated, $adjustment, $openingUsed] = $rows[$y];
-                $remaining = $allocated + $carried + $adjustment - $openingUsed - ($used[$y] ?? 0);
-
-                if ($y + 1 > $current) { // carrying into a projected year: this year's pending is already spoken for
-                    $remaining -= $pending[$y] ?? 0;
-                }
+                // Open requests of year y are already spoken for, whether y is past (a December request still waiting
+                // in January) or this year (carrying into a projected next year): they never carry.
+                $remaining = $allocated + $carried + $adjustment - $openingUsed - ($used[$y] ?? 0) - ($pending[$y] ?? 0);
 
                 $carried = min(max(0, $remaining), $cap);
             }

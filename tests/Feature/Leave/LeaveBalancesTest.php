@@ -269,13 +269,14 @@ it('lowers this year\'s carry when leave is backdated into last December', funct
         ->and(lbLine($e, 'Annual', 2026)->remaining)->toBe(16.0);
 });
 
-it('does not take last year\'s leftover pending off this year\'s carry', function () {
+it('takes last year\'s still-open requests off this year\'s carry (owner ruling, final fix round)', function () {
     $e = lbEmployee();
     lbRow($e, 'Annual', 2025, 3);
     lbRow($e, 'Annual', 2026, 14);
     leaveRequest($e, ['from_date' => '2025-12-01', 'to_date' => '2025-12-02', 'days' => 2]); // a stale open request
 
-    expect(lbLine($e, 'Annual', 2026)->carried)->toBe(3.0); // 2026 is the current year: no projection
+    // An open request of last year reserves its days until it is decided: they never carry.
+    expect(lbLine($e, 'Annual', 2026)->carried)->toBe(1.0);
 });
 
 it('projects next year with this year\'s pending taken off the carry', function () {

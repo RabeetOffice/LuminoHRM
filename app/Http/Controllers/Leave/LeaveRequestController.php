@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Leave;
 
 use App\Actions\Leave\ApplyForLeave;
+use App\Actions\Leave\LeaveDayRemoval;
 use App\Actions\Leave\LeaveDecisions;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\LeaveCancelRequest;
@@ -190,6 +191,16 @@ class LeaveRequestController extends Controller
         $stage = $this->routing->stage($found);
         $onBehalf = $found->appliedBy !== null && (int) $found->appliedBy->employee_id !== (int) $found->employee_id;
         $history = $this->history($found);
+
+        // Days whose leave was removed (cancelled, refunded, trimmed) while their attendance row was corrected by hand:
+        // the row keeps its leave status, so it is listed until someone changes it (still manual now; one query).
+        $removed = [];
+        foreach ($history as $entry) {
+            foreach ($entry['manual'] as $date) {
+                $removed[$date] = true;
+            }
+        }
+        $removedManual = array_values(array_diff(LeaveDayRemoval::manualDates((int) $employee->id, array_keys($removed)), $needsAttention));
         $window = $found->status === 'approved' ? ($this->cancelWindows([$found->id])[$found->id] ?? null) : null;
 
         // Where "back" goes: the requests list for approvers, My Leaves for everyone else (they cannot open the list).
@@ -227,7 +238,8 @@ class LeaveRequestController extends Controller
             'plan_refusal' => $planRefusal,
             'balance' => $balance,
             'needs_attention' => $needsAttention,
-            'history' => array_map(fn (array $h): array => array_diff_key($h, ['step' => true]), $history),
+            'removed_manual' => $removedManual,
+            'history' => array_map(fn (array $h): array => array_diff_key($h, ['step' => true, 'manual' => true]), $history),
             'today' => $this->clock->attendanceToday(),
         ]);
     }
@@ -447,7 +459,7 @@ class LeaveRequestController extends Controller
     /**
      * The request's audit entries, oldest first: what, who, when, note.
      *
-     * @return list<array{description: string, by: string, on: string|null, time: string|null, note: string|null, step: string|null}>
+     * @return list<array{description: string, by: string, on: string|null, time: string|null, note: string|null, step: string|null, manual: list<string>}>
      */
     private function history(LeaveRequest $r): array
     {
@@ -461,6 +473,7 @@ class LeaveRequestController extends Controller
             ->map(function (Activity $a): array {
                 $note = $a->properties['note'] ?? ($a->properties['reason'] ?? null);
                 $causer = $a->causer;
+                $manual = $a->properties['manual'] ?? [];
 
                 return [
                     'description' => $a->description,
@@ -469,6 +482,7 @@ class LeaveRequestController extends Controller
                     'time' => $a->created_at?->format('H:i'),
                     'note' => is_string($note) ? $note : null,
                     'step' => is_string($a->properties['step'] ?? null) ? $a->properties['step'] : null,
+                    'manual' => is_array($manual) ? array_values(array_filter($manual, fn ($d): bool => is_string($d) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $d) === 1)) : [],
                 ];
             })
             ->all());

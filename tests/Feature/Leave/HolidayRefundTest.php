@@ -91,8 +91,9 @@ it('cancels a one-day request whose only day becomes a holiday', function () {
     $this->actingAs(userWithRole('admin'))->post('/leave/holidays', ['name' => 'Founders Day', 'date' => '2026-12-01'])->assertSessionHasNoErrors();
 
     $r->refresh();
+    // A wholly cancelled request keeps the days it was approved for (final fix round M3).
     expect($r->status)->toBe('cancelled')
-        ->and($r->days)->toBe(0.0)
+        ->and($r->days)->toBe(1.0)
         ->and($r->cancel_reason)->toBe('Every day became a holiday.')
         ->and($r->cancelled_at)->not->toBeNull()
         ->and(hlrDates($r))->toBe([]);
@@ -163,7 +164,7 @@ it('recounts open requests covering the new holiday and cancels one whose every 
     $this->actingAs($hr)->post('/leave/holidays', ['name' => 'Day B', 'date' => '2026-12-14'])->assertSessionHasNoErrors();
 
     expect($week->fresh()->days)->toBe(4.0)->and($week->fresh()->status)->toBe('pending')
-        ->and($single->fresh()->days)->toBe(0.0)->and($single->fresh()->status)->toBe('cancelled')
+        ->and($single->fresh()->days)->toBe(1.0)->and($single->fresh()->status)->toBe('cancelled')
         ->and($single->fresh()->cancel_reason)->toBe('Every day became a holiday.')
         ->and($single->fresh()->cancelled_by)->toBe($hr->id);
 
@@ -173,7 +174,8 @@ it('recounts open requests covering the new holiday and cancels one whose every 
         ->and($entry->properties['attributes'])->toEqual(['days' => 4]);
     $cancelled = Activity::where('log_name', 'leave')->where('properties->request', $single->id)->sole();
     expect($cancelled->properties['cancelled'])->toBeTrue()
-        ->and($cancelled->properties['attributes'])->toEqual(['days' => 0, 'status' => 'cancelled']);
+        ->and($cancelled->properties['old'])->toEqual(['days' => 1, 'status' => 'manager_approved'])
+        ->and($cancelled->properties['attributes'])->toEqual(['status' => 'cancelled']);
 
     // Only the cancelled one is mailed (withdrawn: it was never decided); the recount is not.
     Mail::assertQueued(LeaveRequestDecided::class, 1);
@@ -324,9 +326,10 @@ it('refunds many people with a bounded number of queries per request', function 
     $eight = $run('2026-12-15', 8);
 
     // Each affected request costs its own save and audit entry (2 queries); the rest is a fixed number of statements
-    // (12 today: locking reads, employees, requests and their types, one delete, one rebuild flag, what is left, plans).
+    // (13 today: locking reads, employees, requests and their types, one delete, one rebuild flag, the hand-corrected
+    // rows on the date, what is left, plans).
     expect(($eight - $two) / 12)->toBeLessThanOrEqual(2.0)
-        ->and($two)->toBeLessThanOrEqual(12 + 4 * 2);
+        ->and($two)->toBeLessThanOrEqual(13 + 4 * 2);
 });
 
 it('says how many people and days went back, halves included', function () {

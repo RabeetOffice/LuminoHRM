@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Attendance;
 
+use App\Actions\Leave\WeeklyOffLeaveRefund;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\ShiftRequest;
 use App\Models\Attendance;
@@ -10,6 +11,7 @@ use App\Models\Shift;
 use App\Support\Attendance\RebuildMarks;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -21,6 +23,10 @@ use Inertia\Response;
  * Changing a shift's rules flags today's and later pending days of its people for a rebuild (RebuildMarks); closed
  * days are not flagged, though something else (a late punch, a holiday change) may still recalculate them later.
  * A shift recorded on any attendance day cannot be deleted, so those days keep naming the shift they were worked with.
+ *
+ * Leave: when the weekly offs its people work change (a shift's weekly offs, or another default shift for people
+ * without one), approved leave days that are now weekly offs are refunded from each person's first unclosed day
+ * (WeeklyOffLeaveRefund, same transaction); the flash lists who, and the employees are mailed after the commit.
  */
 class ShiftController extends Controller
 {
@@ -69,36 +75,53 @@ class ShiftController extends Controller
         return back()->with('success', 'Shift added.');
     }
 
-    public function update(ShiftRequest $request, Shift $shift): RedirectResponse
+    public function update(ShiftRequest $request, Shift $shift, WeeklyOffLeaveRefund $refund): RedirectResponse
     {
         try {
-            DB::transaction(function () use ($request, $shift): void {
-                $shift->fill($request->shiftAttributes())->save();
+            // Retries: the leave refund locks employee and request rows, so it can deadlock with a leave decision.
+            $changed = DB::transaction(function () use ($request, $shift, $refund): array {
+                // Read again under a lock: a deadlock retry starts from the stored row (the bound model may already
+                // hold the new values after a rolled-back attempt, so saving it would change nothing).
+                $current = Shift::query()->whereKey($shift->id)->lockForUpdate()->firstOrFail();
+                $current->fill($request->shiftAttributes())->save();
 
-                if ($shift->wasChanged(self::RULE_FIELDS)) {
-                    RebuildMarks::forShift($shift);
+                if ($current->wasChanged(self::RULE_FIELDS)) {
+                    RebuildMarks::forShift($current);
                 }
-            });
+
+                // Approved leave on days that are now weekly offs is refunded from the first unclosed day.
+                return $current->wasChanged('weekly_offs') ? $refund->forShift($current, $request->user()) : [];
+            }, 3);
         } catch (UniqueConstraintViolationException) {
             return back()->withErrors(['name' => 'A shift with this name already exists.']);
         }
 
-        return back()->with('success', 'Shift updated.');
+        $refund->mail($changed);
+
+        return back()->with('success', 'Shift updated.'.WeeklyOffLeaveRefund::note($changed));
     }
 
-    public function makeDefault(Shift $shift): RedirectResponse
+    public function makeDefault(Request $request, Shift $shift, WeeklyOffLeaveRefund $refund): RedirectResponse
     {
         if ($shift->is_default) {
             return back()->with('info', "{$shift->name} is already the default shift.");
         }
 
-        DB::transaction(function () use ($shift): void {
+        $changed = DB::transaction(function () use ($request, $shift, $refund): array {
+            $before = Shift::default();
             Shift::makeDefault($shift);
             // People with no shift of their own now work this one.
             RebuildMarks::forEmployeesWithoutShift();
-        });
 
-        return back()->with('success', "{$shift->name} is now the default shift.");
+            // Their weekly offs changed with it: approved leave on days that are now offs is refunded.
+            $offs = fn (Shift $s): array => collect((array) $s->weekly_offs)->map(fn ($d): string => strtolower((string) $d))->sort()->values()->all();
+
+            return $offs($before) !== $offs($shift->fresh() ?? $shift) ? $refund->forEmployeesWithoutShift($request->user()) : [];
+        }, 3);
+
+        $refund->mail($changed);
+
+        return back()->with('success', "{$shift->name} is now the default shift.".WeeklyOffLeaveRefund::note($changed));
     }
 
     public function destroy(Shift $shift): RedirectResponse

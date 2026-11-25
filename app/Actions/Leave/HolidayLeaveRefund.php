@@ -2,6 +2,7 @@
 
 namespace App\Actions\Leave;
 
+use App\Models\Attendance;
 use App\Models\Employee;
 use App\Models\LeaveDay;
 use App\Models\LeaveRequest;
@@ -20,12 +21,13 @@ use InvalidArgumentException;
  * - Approved leave days on that date are deleted in ONE statement for everybody (the balance is refunded by
  *   derivation); the date's attendance days are flagged with RebuildMarks::forDate (every non-manual row on the date,
  *   closed or not), so they become Holiday. A request left with no day becomes cancelled ("Every day became a
- *   holiday."); otherwise it stays approved with `days` reduced. One audit entry `Leave day refunded (holiday)` per
- *   request (date, amount, holiday).
+ *   holiday.", keeping its days for display); otherwise it stays approved with `days` reduced. One audit entry
+ *   `Leave day refunded (holiday)` per request (date, amount, holiday, and `manual` when that person's attendance row on
+ *   the date was corrected by hand: it keeps its leave status, so HR is told).
  * - Open requests covering the date get `days` counted again (LeaveDays::planMany), so My Leaves and the pending figure
  *   stop holding the holiday (audited `Leave days recounted (holiday)`, old / new days, when the count changes). One
  *   whose dates are now all offs or holidays is cancelled by the system like an approved one ("Every day became a
- *   holiday.", `days` 0, `cancelled` in the audit entry).
+ *   holiday.", `days` kept, `cancelled` in the audit entry).
  * - A date in a locked payroll month (PayrollLock) is left alone entirely.
  * - Removing a holiday adds nothing back (the controller does not call this on delete).
  *
@@ -44,11 +46,12 @@ final class HolidayLeaveRefund
 
     /**
      * @param  string  $date  "Y-m-d", the holiday's (new) date
-     * @return list<array{request: LeaveRequest, outcome: 'refunded'|'cancelled'|'withdrawn', refunded: float}>
+     * @return list<array{request: LeaveRequest, outcome: 'refunded'|'cancelled'|'withdrawn', refunded: float, manual: list<string>}>
      *
      * Each request changed for its employee (employee relation set), for the mails and the flash: `refunded` approved
      * leave that keeps other days, `cancelled` approved leave that lost every day, `withdrawn` an open request cancelled
-     * because every day became a holiday; `refunded` = the days that went back to the balance.
+     * because every day became a holiday; `refunded` = the days that went back to the balance; `manual` = [the date] when
+     * that person's attendance row on it was corrected by hand (it keeps its leave status).
      *
      * @throws InvalidArgumentException a malformed date
      */
@@ -106,7 +109,7 @@ final class HolidayLeaveRefund
     /**
      * @param  array<int, LeaveRequest>  $approved  approved, locked, by id
      * @param  array<int, \stdClass>  $dayRows  the leave days on $date (id, leave_request_id, amount)
-     * @return list<array{request: LeaveRequest, outcome: 'refunded'|'cancelled', refunded: float}>
+     * @return list<array{request: LeaveRequest, outcome: 'refunded'|'cancelled', refunded: float, manual: list<string>}>
      */
     private function refundApproved(array $approved, array $dayRows, string $date, string $holidayName, User $by): array
     {
@@ -133,6 +136,16 @@ final class HolidayLeaveRefund
         LeaveDay::query()->whereIn('id', $ids)->delete();
         RebuildMarks::forDate($date);
 
+        // Hand-corrected attendance rows on the date keep their leave status (forDate skips manual rows): one query
+        // for everybody touched, so HR is told (audit entry, flash, request page).
+        $manualPeople = Attendance::query()->toBase()
+            ->where('date', $date)
+            ->where('is_manual', true)
+            ->whereIn('employee_id', array_values(array_unique(array_map(fn (LeaveRequest $r): int => (int) $r->employee_id, array_intersect_key($approved, $halvesByRequest)))))
+            ->pluck('employee_id')
+            ->mapWithKeys(fn ($id): array => [(int) $id => true])
+            ->all();
+
         // What each touched request has left, in one query.
         $left = [];
 
@@ -146,7 +159,11 @@ final class HolidayLeaveRefund
             $request = $approved[$id];
             $amount = LeaveDays::fromHalves($halves);
             $none = ! isset($left[$id]);
-            $request->fill(['days' => LeaveDays::fromHalves($left[$id] ?? 0)]);
+
+            // A wholly cancelled request keeps the days it was approved for (as HR cancels do); balances read leave_days.
+            if (! $none) {
+                $request->fill(['days' => LeaveDays::fromHalves($left[$id])]);
+            }
 
             if ($none) {
                 $request->fill([
@@ -160,15 +177,18 @@ final class HolidayLeaveRefund
 
             $request->save();
 
+            $manual = isset($manualPeople[(int) $request->employee_id]) ? [$date] : [];
+
             $this->audit('Leave day refunded (holiday)', $request, $by, [
                 'date' => $date,
                 'holiday' => $holidayName,
                 'refunded' => $amount,
-                'days' => $request->days,
+                'days' => $none ? 0 : $request->days,
                 'cancelled' => $none ? true : null,
+                'manual' => $manual === [] ? null : $manual,
             ]);
 
-            $changed[] = ['request' => $request, 'outcome' => $none ? 'cancelled' : 'refunded', 'refunded' => $amount];
+            $changed[] = ['request' => $request, 'outcome' => $none ? 'cancelled' : 'refunded', 'refunded' => $amount, 'manual' => $manual];
         }
 
         return $changed;
@@ -176,7 +196,7 @@ final class HolidayLeaveRefund
 
     /**
      * @param  list<LeaveRequest>  $requests  open, locked, covering $date
-     * @return list<array{request: LeaveRequest, outcome: 'withdrawn', refunded: float}> the requests cancelled here
+     * @return list<array{request: LeaveRequest, outcome: 'withdrawn', refunded: float, manual: list<string>}> the requests cancelled here
      */
     private function recountOpen(array $requests, string $date, string $holidayName, User $by): array
     {
@@ -200,8 +220,8 @@ final class HolidayLeaveRefund
             if ($plan->isRefused() && $plan->refusal === LeaveDays::REFUSAL_NOTHING_TO_COUNT) {
                 // Every day is now an off or a holiday: cancelled by the system, like approved leave.
                 $oldStatus = $request->status;
+                // It keeps its days (a wholly cancelled request shows what was asked, as HR cancels do).
                 $request->fill([
-                    'days' => 0,
                     'status' => 'cancelled',
                     'cancelled_from' => null,
                     'cancelled_by' => $by->id,
@@ -213,11 +233,11 @@ final class HolidayLeaveRefund
                     'date' => $date,
                     'holiday' => $holidayName,
                     'old' => ['days' => $old, 'status' => $oldStatus],
-                    'attributes' => ['days' => 0, 'status' => 'cancelled'],
+                    'attributes' => ['status' => 'cancelled'],
                     'cancelled' => true,
                 ]);
 
-                $withdrawn[] = ['request' => $request, 'outcome' => 'withdrawn', 'refunded' => 0.0];
+                $withdrawn[] = ['request' => $request, 'outcome' => 'withdrawn', 'refunded' => 0.0, 'manual' => []];
 
                 continue;
             }

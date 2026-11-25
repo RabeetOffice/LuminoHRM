@@ -213,9 +213,14 @@ class EmployeeController extends Controller
         }
 
         // Asking for the status the person already has is not a change: say so instead of announcing one.
-        return $change->changed()
-            ? back()->with('success', 'Status changed to '.ucfirst($request->validated('status')).'.')
-            : back()->with('info', 'No change.');
+        if (! $change->changed()) {
+            return back()->with('info', 'No change.');
+        }
+
+        $redirect = back()->with('success', 'Status changed to '.ucfirst($request->validated('status')).'.');
+
+        // Hand-corrected attendance days whose leave the trim removed (they still show leave): HR is told.
+        return $change->notices() === [] ? $redirect : $redirect->with('info', implode(' ', $change->notices()));
     }
 
     public function destroy(Request $request, Employee $employee, DeleteEmployee $delete): RedirectResponse

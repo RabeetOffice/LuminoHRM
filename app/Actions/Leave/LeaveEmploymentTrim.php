@@ -44,15 +44,34 @@ use Throwable;
  */
 final class LeaveEmploymentTrim
 {
+    /** @var list<string> hand-corrected dates whose leave the last apply() removed */
+    private array $manual = [];
+
     public function __construct(
         private readonly LeaveDayRemoval $removal,
         private readonly AttendanceClock $clock,
     ) {}
 
+    /**
+     * Sentences for the person who saved (flash) after apply(): hand-corrected attendance days whose leave was removed
+     * and which still show leave ("3 Dec was corrected by hand … — check it."), or none.
+     *
+     * @return list<string>
+     */
+    public function notices(): array
+    {
+        $note = trim(LeaveDayRemoval::manualNote($this->manual));
+
+        return $note === '' ? [] : [$note];
+    }
+
     /** @return int the number of requests touched */
     public function apply(Employee $employee, User $by): int
     {
+        $this->manual = [];
+
         return DB::transaction(function () use ($employee, $by): int {
+            $this->manual = []; // a deadlock retry starts clean
             // The employee row first (the callers hold it already; locking it again is harmless and makes this safe on
             // its own), then the leave rows.
             $current = Employee::query()->whereKey($employee->getKey())->lockForUpdate()->firstOrFail();
@@ -129,7 +148,10 @@ final class LeaveEmploymentTrim
             $beforeStart = array_values(array_filter($removed, fn (string $d): bool => $d < $from));
             $reason = $this->reason($beforeStart !== [] ? $from : null, $afterEnd !== [] ? $to : null);
 
-            $request->fill(['days' => LeaveDays::fromHalves($left[$id] ?? 0)]);
+            // A wholly cancelled request keeps the days it was approved for (as HR cancels do); balances read leave_days.
+            if (! $none) {
+                $request->fill(['days' => LeaveDays::fromHalves($left[$id])]);
+            }
 
             if ($none) {
                 $outcome = 'cancelled';
@@ -154,9 +176,13 @@ final class LeaveEmploymentTrim
                 'removed' => $removed,
                 'refunded' => $result['amount'],
                 'kept_locked' => $result['kept_locked'] === [] ? null : $result['kept_locked'],
-                'days' => $request->days,
+                'manual' => $result['manual'] === [] ? null : $result['manual'],
+                'days' => $none ? 0 : $request->days,
                 'reason' => $reason,
             ]);
+
+            $this->manual = array_values(array_unique([...$this->manual, ...$result['manual']]));
+            sort($this->manual);
 
             $mails[] = [$request, $outcome === 'trimmed_start' ? 'refunded' : 'cancelled', $reason];
         }

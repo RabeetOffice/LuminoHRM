@@ -3,9 +3,11 @@
 namespace App\Actions\Employees;
 
 use App\Actions\Leave\LeaveEmploymentTrim;
+use App\Actions\Leave\WeeklyOffLeaveRefund;
 use App\Exceptions\AccountRuleViolation;
 use App\Models\Employee;
 use App\Models\LeaveBalance;
+use App\Models\LeaveRequest;
 use App\Models\User;
 use App\Support\Attendance\PunchIngestor;
 use App\Support\Attendance\RebuildMarks;
@@ -35,6 +37,9 @@ class UpdateEmployee
 
     /** @var list<string> */
     private array $warnings = [];
+
+    /** @var list<array{request: LeaveRequest, outcome: string, refunded: float, removed: list<string>, manual: list<string>}> */
+    private array $weeklyOffRefunds = [];
 
     public function __construct(private readonly EmployeeWriter $writer) {}
 
@@ -67,11 +72,13 @@ class UpdateEmployee
     {
         $this->linkSent = false;
         $this->warnings = [];
+        $this->weeklyOffRefunds = [];
         $this->writer->reset();
 
         $saved = DB::transaction(function () use ($employee, $data, $by, $syncAccount): Employee {
             $this->writer->reset(); // a deadlock retry runs this again
             $this->warnings = [];
+            $this->weeklyOffRefunds = [];
             $current = Employee::query()->whereKey($employee->getKey())->lockForUpdate()->firstOrFail();
 
             // A privileged account (admin or hr, as stored now) is only edited by an Admin: nothing is written otherwise.
@@ -117,7 +124,20 @@ class UpdateEmployee
             if ($current->wasChanged(['joining_date', 'last_working_day', 'status'])) {
                 RebuildMarks::outsideEmployment($current);
                 // Leave outside the new window goes too (removed and refunded, open requests cancelled; audited).
-                app(LeaveEmploymentTrim::class)->apply($current, $by);
+                $trim = app(LeaveEmploymentTrim::class);
+                $trim->apply($current, $by);
+                // Hand-corrected days whose leave went keep their leave status: HR is told.
+                array_push($this->warnings, ...$trim->notices());
+            }
+
+            // Another shift may make leave days weekly offs: those are refunded from the first unclosed day.
+            if ($current->wasChanged('shift_id')) {
+                $this->weeklyOffRefunds = app(WeeklyOffLeaveRefund::class)->forEmployees([(int) $current->getKey()], $by);
+                $note = trim(WeeklyOffLeaveRefund::note($this->weeklyOffRefunds));
+
+                if ($note !== '') {
+                    $this->warnings[] = $note;
+                }
             }
 
             if ($current->wasChanged('joining_date')) {
@@ -155,6 +175,8 @@ class UpdateEmployee
             return $current;
         }, attempts: 3);
 
+        app(WeeklyOffLeaveRefund::class)->mail($this->weeklyOffRefunds);
+
         $created = $this->writer->createdUser();
 
         if ($created !== null) {
@@ -166,7 +188,8 @@ class UpdateEmployee
 
     /**
      * Messages for the person who saved (shown as a flash): a recalculated allocation that leaves a balance overdrawn,
-     * e.g. "Annual 2026 is now overdrawn by 3 days." The save still happened.
+     * e.g. "Annual 2026 is now overdrawn by 3 days."; leave refunded because another shift made days weekly offs; and
+     * hand-corrected attendance days whose leave was removed. The save still happened.
      *
      * @return list<string>
      */

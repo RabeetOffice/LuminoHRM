@@ -218,6 +218,6 @@ it('removes leave days only through LeaveDayRemoval, reporting what was removed'
         return app(LeaveDayRemoval::class)->remove($locked, ['2026-12-01', '2026-12-02', '2026-12-09'], 'Test', null);
     });
 
-    expect($result)->toBe(['removed' => ['2026-12-01', '2026-12-02'], 'amount' => 2.0, 'kept_locked' => []])
+    expect($result)->toBe(['removed' => ['2026-12-01', '2026-12-02'], 'amount' => 2.0, 'kept_locked' => [], 'manual' => []])
         ->and(caDates($r))->toBe(['2026-11-30']);
 });
