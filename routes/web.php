@@ -14,6 +14,7 @@ use App\Http\Controllers\EmployeeFileController;
 use App\Http\Controllers\EmployeeImportController;
 use App\Http\Controllers\EmployeeLinkController;
 use App\Http\Controllers\HolidayController;
+use App\Http\Controllers\Leave\LeaveTypeController;
 use App\Http\Controllers\MyProfileController;
 use App\Http\Controllers\OrganizationChartController;
 use App\Http\Controllers\Settings\HrmSettingsController;
@@ -157,6 +158,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::post('/', [HolidayController::class, 'store'])->name('store');
         Route::put('{holiday}', [HolidayController::class, 'update'])->whereNumber('holiday')->name('update');
         Route::delete('{holiday}', [HolidayController::class, 'destroy'])->whereNumber('holiday')->name('destroy');
+    });
+
+    // Leave > Leave Types (Admin, HR: the attendance and leave rules permission). The model audits each change.
+    Route::middleware('can:settings.attendance-leave')->prefix('leave/types')->name('leave.types.')->group(function () {
+        Route::get('/', [LeaveTypeController::class, 'index'])->name('index');
+        Route::post('/', [LeaveTypeController::class, 'store'])->name('store');
+        Route::put('{leaveType}', [LeaveTypeController::class, 'update'])->whereNumber('leaveType')->name('update');
+        Route::delete('{leaveType}', [LeaveTypeController::class, 'destroy'])->whereNumber('leaveType')->name('destroy');
     });
 
     // Users and roles. No delete route: accounts are disabled, never removed.

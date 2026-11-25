@@ -174,7 +174,6 @@ return [
         ],
         'leave' => [
             'hr_step_enabled' => true,
-            'carry_forward_cap' => 0,
             'prorate_new_joiners' => true,
         ],
         'payroll' => [

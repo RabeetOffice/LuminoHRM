@@ -41,7 +41,6 @@ export type AttendanceValues = {
 
 export type LeaveValues = {
     hr_step_enabled: boolean;
-    carry_forward_cap: number;
     prorate_new_joiners: boolean;
 };
 

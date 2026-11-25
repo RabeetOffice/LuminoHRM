@@ -1,5 +1,5 @@
 import { useForm } from '@inertiajs/react';
-import { CheckField, NumberField } from '@/components/settings/fields';
+import { CheckField } from '@/components/settings/fields';
 import {
     type Editable,
     SettingsCard,
@@ -35,20 +35,9 @@ export function LeavePanel({ values }: { values: LeaveValues }) {
 
             <SettingsCard
                 title="Balances"
-                description="What happens to leave at the turn of the year and for new joiners."
-                {...card(['carry_forward_cap', 'prorate_new_joiners'])}
+                description="How much leave new joiners get. The carry-forward cap is set on each leave type."
+                {...card(['prorate_new_joiners'])}
             >
-                <NumberField
-                    id="leave-carry"
-                    label="Carry-forward cap"
-                    hint="The most days that move into next year. 0 means nothing carries over."
-                    suffix="days"
-                    min={0}
-                    max={365}
-                    value={data.carry_forward_cap}
-                    error={errors.carry_forward_cap}
-                    onChange={(v) => setData('carry_forward_cap', v)}
-                />
                 <CheckField
                     id="leave-prorate"
                     label="Pro-rate leave for new joiners"

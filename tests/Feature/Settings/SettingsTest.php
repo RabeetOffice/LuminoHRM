@@ -2,6 +2,7 @@
 
 use App\Http\Requests\Settings\BrandingRequest;
 use App\Mail\TestMail;
+use App\Models\Setting;
 use App\Support\Settings;
 use App\Support\SettingsStore;
 use Illuminate\Http\UploadedFile;
@@ -106,10 +107,26 @@ it('saves a weekly off list and an empty one', function () {
 
 it('saves leave rules with the right types', function () {
     $admin = userWithRole('admin');
-    $this->actingAs($admin)->put('/hrm-settings/leave', ['hr_step_enabled' => false, 'carry_forward_cap' => 5, 'prorate_new_joiners' => false])->assertSessionHasNoErrors();
+    $this->actingAs($admin)->put('/hrm-settings/leave', ['hr_step_enabled' => false, 'prorate_new_joiners' => false])->assertSessionHasNoErrors();
     expect(settings('leave.hr_step_enabled'))->toBeFalse();
-    expect(settings('leave.carry_forward_cap'))->toBe(5);
-    $this->actingAs($admin)->put('/hrm-settings/leave', ['hr_step_enabled' => true, 'carry_forward_cap' => -1, 'prorate_new_joiners' => true])->assertSessionHasErrors('carry_forward_cap');
+    expect(settings('leave.prorate_new_joiners'))->toBeFalse();
+    $this->actingAs($admin)->put('/hrm-settings/leave', ['hr_step_enabled' => 'maybe', 'prorate_new_joiners' => true])->assertSessionHasErrors('hr_step_enabled');
+});
+
+it('has no carry-forward cap in leave settings: the cap lives on each leave type', function () {
+    $admin = userWithRole('admin');
+
+    // An old form posting the key, even an invalid value, is neither validated nor stored.
+    $this->actingAs($admin)->put('/hrm-settings/leave', ['hr_step_enabled' => true, 'carry_forward_cap' => -1, 'prorate_new_joiners' => true])
+        ->assertSessionHasNoErrors();
+    $this->actingAs($admin)->put('/hrm-settings/leave', ['hr_step_enabled' => true, 'carry_forward_cap' => 7, 'prorate_new_joiners' => true])
+        ->assertSessionHasNoErrors();
+
+    expect(Setting::query()->where('group', 'leave')->where('key', 'carry_forward_cap')->exists())->toBeFalse()
+        ->and(Settings::group('leave'))->toBe(['hr_step_enabled' => true, 'prorate_new_joiners' => true]);
+
+    $this->actingAs($admin)->get('/hrm-settings?group=leave')
+        ->assertInertia(fn ($p) => $p->missing('values.leave.carry_forward_cap')->where('values.leave.prorate_new_joiners', true));
 });
 
 it('validates and saves company details', function () {
@@ -387,7 +404,7 @@ function matrixCases(): array
         'company' => [['name' => 'Matrix Co', 'address' => null, 'currency' => 'USD', 'timezone' => 'UTC', 'date_format' => 'Y-m-d'], ['company.name', 'Matrix Co']],
         'branding' => [['accent' => '#112233'], ['branding.accent', '#112233']],
         'attendance' => [validAttendance(['grace_minutes' => 33]), ['attendance.grace_minutes', 33]],
-        'leave' => [['hr_step_enabled' => true, 'carry_forward_cap' => 7, 'prorate_new_joiners' => true], ['leave.carry_forward_cap', 7]],
+        'leave' => [['hr_step_enabled' => false, 'prorate_new_joiners' => true], ['leave.hr_step_enabled', false]],
         'payroll' => [['day_pay_basis' => 'thirty', 'default_tax_mode' => 'none', 'leave_encashment' => false, 'notice_period_days' => 45, 'payslip_footer' => null], ['payroll.notice_period_days', 45]],
         'email' => [validEmail(['host' => 'matrix.example.com']), ['email.host', 'matrix.example.com']],
         'letters' => [['experience_template' => 'Matrix {company_name}'], ['letters.experience_template', 'Matrix {company_name}']],

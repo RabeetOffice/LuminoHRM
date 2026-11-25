@@ -100,6 +100,7 @@ describe('ready flag', () => {
             'Raw Punches',
         ]);
         expect(r[1].items[4].children?.map((c) => c.title)).toEqual([
+            'Leave Types',
             'Holidays',
         ]);
         expect(r[2].items.map((i) => i.title)).toEqual([
@@ -446,6 +447,10 @@ describe('shifts and holidays', () => {
         expect(toUrl(child(r, 'Leave', 'Holidays')?.href ?? '')).toBe(
             '/leave/holidays',
         );
+        expect(child(r, 'Leave', 'Leave Types')?.soon).toBe(false);
+        expect(toUrl(child(r, 'Leave', 'Leave Types')?.href ?? '')).toBe(
+            '/leave/types',
+        );
     });
 
     test('are hidden from a manager', () => {
@@ -457,6 +462,7 @@ describe('shifts and holidays', () => {
         );
         expect(child(r, 'Attendance', 'Shifts')).toBeUndefined();
         expect(child(r, 'Leave', 'Holidays')).toBeUndefined();
+        expect(child(r, 'Leave', 'Leave Types')).toBeUndefined();
     });
 });
 
