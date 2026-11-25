@@ -140,6 +140,16 @@ class HrmSettingsController extends Controller
     }
 
     /**
+     * The settings groups $user may open, in display order (the ZKTeco Device page uses it for the same left-hand list).
+     *
+     * @return list<string>
+     */
+    public static function groupsFor(?User $user): array
+    {
+        return (new self)->allowedGroups($user);
+    }
+
+    /**
      * What the browser may see of a group. Secrets and raw file paths stay on the server.
      *
      * @return array<string, mixed>

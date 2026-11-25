@@ -96,6 +96,7 @@ describe('ready flag', () => {
             'Daily',
             'Monthly',
             'Shifts',
+            'Raw Punches',
         ]);
         expect(r[1].items[4].children?.map((c) => c.title)).toEqual([
             'Holidays',
@@ -485,5 +486,20 @@ describe('monthly attendance', () => {
             expect(entry?.soon).toBe(false);
             expect(toUrl(entry?.href ?? '')).toBe('/attendance/monthly');
         }
+    });
+});
+
+describe('raw punches', () => {
+    test('is ready for Admin and HR (attendance.view-all) only', () => {
+        const find = (permissions: string[]) =>
+            filterNavigation(navigation, permissions)
+                .flatMap((g) => g.items)
+                .find((i) => i.title === 'Attendance')
+                ?.children?.find((c) => c.title === 'Raw Punches');
+
+        const entry = find(['attendance.view-all']);
+        expect(entry?.soon).toBe(false);
+        expect(toUrl(entry?.href ?? '')).toBe('/attendance/punches');
+        expect(find(['attendance.view-team'])).toBeUndefined();
     });
 });

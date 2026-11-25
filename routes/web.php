@@ -127,6 +127,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::post('{shift}/make-default', [ShiftController::class, 'makeDefault'])->whereNumber('shift')->name('make-default');
     });
 
+    // Attendance > Raw Punches: every punch the machines sent (Admin, HR). Giving an unknown machine user ID to an
+    // employee also needs attendance.edit (and employees.manage, checked in the controller): it is an employee update.
+    Route::get('attendance/punches', [\App\Http\Controllers\Attendance\PunchController::class, 'index'])
+        ->middleware('can:attendance.view-all')->name('attendance.punches');
+    Route::post('attendance/punches/assign', [\App\Http\Controllers\Attendance\PunchController::class, 'assign'])
+        ->middleware('can:attendance.edit')->name('attendance.punches.assign');
+
     // Leave > Holidays: the company holiday calendar (Admin, HR: the attendance and leave rules permission).
     Route::middleware('can:settings.attendance-leave')->prefix('leave/holidays')->name('holidays.')->group(function () {
         Route::get('/', [HolidayController::class, 'index'])->name('index');
@@ -153,6 +160,15 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::post('email/test', [HrmSettingsController::class, 'testEmail'])
             ->middleware(['can:settings.manage', 'throttle:5,1'])
             ->name('email.test');
+        // Settings > ZKTeco Device (Admin). Registered before the {group} route.
+        Route::middleware('can:settings.manage')->prefix('devices')->name('devices.')->controller(\App\Http\Controllers\Settings\DeviceController::class)->group(function () {
+            Route::get('/', 'index')->name('index');
+            Route::post('/', 'store')->name('store');
+            Route::put('{device}', 'update')->whereNumber('device')->name('update');
+            Route::patch('{device}/active', 'toggle')->whereNumber('device')->name('toggle');
+            Route::delete('{device}', 'destroy')->whereNumber('device')->name('destroy');
+            Route::post('{device}/resend', 'resend')->whereNumber('device')->name('resend');
+        });
         Route::put('{group}', [HrmSettingsController::class, 'update'])->name('update');
     });
 });

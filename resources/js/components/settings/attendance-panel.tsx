@@ -3,10 +3,13 @@ import { Clock } from 'lucide-react';
 import { CheckField, NumberField } from '@/components/settings/fields';
 import {
     type Editable,
+    Field,
     SettingsCard,
+    fieldAria,
     useSettingsSubmit,
 } from '@/components/settings/settings-form';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { useCan } from '@/hooks/use-can';
 import { index as shiftsIndex } from '@/routes/attendance/shifts';
 import type { AttendanceValues } from '@/types/hrm-settings';
@@ -17,7 +20,11 @@ import type { AttendanceValues } from '@/types/hrm-settings';
  * edited here.
  */
 export function AttendancePanel({ values }: { values: AttendanceValues }) {
-    const form = useForm<Editable<AttendanceValues>>(values);
+    // An empty start date is sent as null ("not started"); the date input holds '' meanwhile.
+    const form = useForm<Editable<AttendanceValues>>({
+        ...values,
+        start_date: values.start_date ?? '',
+    });
     const { card, state } = useSettingsSubmit('attendance', form);
     const { data, errors, setData } = form;
     const canEditShifts = useCan()('attendance.edit');
@@ -50,6 +57,73 @@ export function AttendancePanel({ values }: { values: AttendanceValues }) {
                     Working hours are set per shift. Each person works their own
                     shift, or the default shift when they have none.
                 </p>
+            </SettingsCard>
+
+            <SettingsCard
+                title="Attendance rules"
+                description="When attendance starts counting, repeat punches and where one day ends."
+                {...card([
+                    'start_date',
+                    'duplicate_punch_minutes',
+                    'day_cutoff_time',
+                ])}
+            >
+                <div className="grid gap-5 sm:grid-cols-2">
+                    <Field
+                        id="att-start-date"
+                        label="Attendance starts on"
+                        hint="No absences are recorded before this date. Leave empty until the machine is switched over to this system."
+                        error={errors.start_date}
+                    >
+                        <Input
+                            {...fieldAria(
+                                'att-start-date',
+                                errors.start_date,
+                                true,
+                            )}
+                            type="date"
+                            value={data.start_date ?? ''}
+                            className="w-44"
+                            onChange={(e) =>
+                                setData('start_date', e.target.value || null)
+                            }
+                        />
+                    </Field>
+                    <Field
+                        id="att-day-cutoff"
+                        label="Day ends at"
+                        hint="A punch before this time counts for the previous day. Changing it affects new punches only."
+                        error={errors.day_cutoff_time}
+                    >
+                        <Input
+                            {...fieldAria(
+                                'att-day-cutoff',
+                                errors.day_cutoff_time,
+                                true,
+                            )}
+                            type="time"
+                            min="00:00"
+                            max="06:00"
+                            step={60}
+                            value={data.day_cutoff_time}
+                            className="w-36"
+                            onChange={(e) =>
+                                setData('day_cutoff_time', e.target.value)
+                            }
+                        />
+                    </Field>
+                    <NumberField
+                        id="att-duplicate"
+                        label="Ignore repeat punches within"
+                        hint="A second punch this soon after the last one is a double tap and is ignored. 0 turns this off."
+                        suffix="minutes"
+                        min={0}
+                        max={60}
+                        value={data.duplicate_punch_minutes}
+                        error={errors.duplicate_punch_minutes}
+                        onChange={(v) => setData('duplicate_punch_minutes', v)}
+                    />
+                </div>
             </SettingsCard>
 
             <SettingsCard

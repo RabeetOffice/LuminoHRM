@@ -24,7 +24,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { toUrl } from '@/lib/utils';
 import { dashboard } from '@/routes';
-import { daily, monthly } from '@/routes/attendance';
+import { daily, monthly, punches } from '@/routes/attendance';
 import { index as shiftsIndex } from '@/routes/attendance/shifts';
 import { index as auditLogIndex } from '@/routes/audit-log';
 import { index as holidaysIndex } from '@/routes/holidays';
@@ -124,8 +124,9 @@ export const navigation: NavGroup[] = [
                     },
                     {
                         title: 'Raw Punches',
-                        href: '/attendance/punches',
-                        ...unready,
+                        href: punches(),
+                        // Every punch from every machine: Admin / HR only.
+                        permission: 'attendance.view-all',
                     },
                 ],
             },

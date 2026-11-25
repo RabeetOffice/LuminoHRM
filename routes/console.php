@@ -59,3 +59,9 @@ Schedule::command('hrm:attendance-rebuild')
 Schedule::command('hrm:attendance-close')
     ->hourlyAt(30)
     ->withoutOverlapping(30);
+
+// Machine request log (device_logs, accepted and rejected rows): kept for 7 days, the sync log window in Settings.
+Schedule::command('hrm:prune-device-logs')
+    ->dailyAt('03:40')
+    ->timezone(config('app.timezone'))
+    ->withoutOverlapping(30);

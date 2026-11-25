@@ -32,6 +32,11 @@ export type AttendanceValues = {
     half_day_hours: number;
     overtime_enabled: boolean;
     overtime_min_minutes: number;
+    /** "Y-m-d", or null while attendance has not started. */
+    start_date: string | null;
+    duplicate_punch_minutes: number;
+    /** "H:i", 00:00 to 06:00. */
+    day_cutoff_time: string;
 };
 
 export type LeaveValues = {
