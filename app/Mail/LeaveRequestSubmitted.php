@@ -43,12 +43,13 @@ class LeaveRequestSubmitted extends Mailable implements ShouldQueue
         $r = $this->request;
 
         return new Content(markdown: 'mail.leave.submitted', with: [
-            'recipientName' => $this->recipientName,
-            'employeeName' => $r->employee->full_name,
-            'typeName' => $r->type->name,
+            // Typed text goes through Markdown after Blade: escaped so a reason like "[x](https://…)" stays literal.
+            'recipientName' => self::plain($this->recipientName),
+            'employeeName' => self::plain($r->employee->full_name),
+            'typeName' => self::plain($r->type->name),
             'dates' => self::dates($r->from_date->format('Y-m-d'), $r->to_date->format('Y-m-d'), $r->half),
             'days' => self::days((float) $r->days),
-            'reason' => $r->reason,
+            'reason' => self::plain((string) $r->reason),
             'afterManager' => $this->afterManager,
             'url' => self::link($r),
         ]);
@@ -75,6 +76,19 @@ class LeaveRequestSubmitted extends Mailable implements ShouldQueue
         $text = fmod($days, 1.0) === 0.0 ? (string) (int) $days : number_format($days, 1, '.', '');
 
         return $text.' '.Str::plural('day', $days <= 1 ? 1 : 2);
+    }
+
+    /**
+     * Text typed by a person, made safe for the Markdown mail template: line breaks become spaces (no new block can
+     * start) and every Markdown punctuation mark is backslash-escaped, so links, images, emphasis, headings and lists
+     * appear literally. & < > " ' are left alone: Blade's {{ }} turns them into HTML entities, which Markdown shows as
+     * the characters themselves.
+     */
+    public static function plain(string $text): string
+    {
+        $oneLine = trim((string) preg_replace('/\s+/u', ' ', $text));
+
+        return (string) preg_replace('/[\\\\`*_{}\[\]()#+\-.!|~=:]/', '\\\\$0', $oneLine);
     }
 
     /** The request's detail page (Task 6); My Leaves until that route exists. */

@@ -438,3 +438,64 @@ export function leaveStageLabel(
 
     return stage === 'final' ? 'Waiting for HR' : null;
 }
+
+/** What the apply dialog knows from its live preview (see ApplyLeaveDialog). */
+export type PreviewCheck = {
+    loading: boolean;
+    /** The preview request failed (429, network): nothing is known, the submit checks everything again. */
+    failed: boolean;
+    data: {
+        refusal: string | null;
+        overlap: string | null;
+        years: { asked: number; available: number | null }[];
+    } | null;
+};
+
+/**
+ * Whether Send stays disabled: while the preview is loading or has not answered, or when it refused (a refusal, an
+ * overlap, or a year short of balance). A FAILED preview never blocks: the server checks the request again on submit.
+ */
+export function previewBlocksSubmit(preview: PreviewCheck): boolean {
+    if (preview.failed) {
+        return false;
+    }
+
+    if (preview.loading || preview.data === null) {
+        return true;
+    }
+
+    const { refusal, overlap, years } = preview.data;
+
+    return (
+        refusal !== null ||
+        overlap !== null ||
+        years.some(
+            (y) =>
+                y.available !== null &&
+                toHalves(y.asked) > toHalves(y.available),
+        )
+    );
+}
+
+/** The message shown when the preview could not be fetched. */
+export const PREVIEW_FAILED_MESSAGE =
+    'Could not check — you can still submit; it will be checked again.';
+
+/**
+ * A paid balance card's figures: `available` (remaining − pending, the same figure the apply dialog's "Left after
+ * this" starts from) is the main number; the remaining before pending is a secondary line, only when something is
+ * pending (otherwise both are the same).
+ */
+export function balanceCardFigures(
+    remaining: number,
+    available: number,
+    pending: number,
+): { main: string; secondary: string | null } {
+    return {
+        main: `${formatDayAmount(available)} available`,
+        secondary:
+            toHalves(pending) > 0
+                ? `${formatDayAmount(remaining)} remaining before pending`
+                : null,
+    };
+}

@@ -31,6 +31,8 @@ import {
     halfLabel,
     leaveDateLabel,
     leftAfterLabel,
+    PREVIEW_FAILED_MESSAGE,
+    previewBlocksSubmit,
 } from '@/lib/leave';
 import type { LeaveHalf } from '@/lib/leave';
 
@@ -79,7 +81,8 @@ const PREVIEW_DELAY_MS = 300;
  * calls `onClose` on success; the page reloads its props. Mount it once and toggle `open`; the form starts fresh each
  * time it opens. While the dates are filled in it asks the server (leave.requests.preview, 300 ms after the last
  * change) which days count and what is left, and shows the refusal instead when the request cannot be made; Submit
- * stays disabled until the preview allows it. Every rule is checked again on submit.
+ * stays disabled until the preview allows it. A preview that fails (rate limit, network) does not lock Submit: it
+ * offers Try again, and the request may still be sent. Every rule is checked again on submit.
  */
 export function ApplyLeaveDialog({
     open,
@@ -148,15 +151,7 @@ function ApplyForm({
         half: data.half,
     });
 
-    const short = preview.data?.years.some(
-        (y) => y.available !== null && y.asked > y.available,
-    );
-    const blocked =
-        !preview.data ||
-        preview.loading ||
-        preview.data.refusal !== null ||
-        preview.data.overlap !== null ||
-        Boolean(short);
+    const blocked = previewBlocksSubmit(preview);
 
     const submit = (event: FormEvent) => {
         event.preventDefault();
@@ -367,6 +362,8 @@ type PreviewState = {
     data: LeavePreview | null;
     loading: boolean;
     failed: boolean;
+    /** Asks again with the same values (after a failure). */
+    retry: () => void;
 };
 
 type PreviewAsk = {
@@ -379,11 +376,12 @@ type PreviewAsk = {
 
 /** Asks the server which days count, 300 ms after the last change; nothing until a type and both dates are set. */
 function usePreview(ask: PreviewAsk): PreviewState {
-    const [state, setState] = useState<PreviewState>({
+    const [state, setState] = useState<Omit<PreviewState, 'retry'>>({
         data: null,
         loading: false,
         failed: false,
     });
+    const [attempt, setAttempt] = useState(0);
     const ready = ask.type !== '' && ask.from !== '' && ask.to !== '';
 
     useEffect(() => {
@@ -433,9 +431,9 @@ function usePreview(ask: PreviewAsk): PreviewState {
             window.clearTimeout(timer);
             controller.abort();
         };
-    }, [ready, ask.employee, ask.type, ask.from, ask.to, ask.half]);
+    }, [ready, attempt, ask.employee, ask.type, ask.from, ask.to, ask.half]);
 
-    return state;
+    return { ...state, retry: () => setAttempt((n) => n + 1) };
 }
 
 function PreviewPanel({ preview }: { preview: PreviewState }) {
@@ -443,9 +441,20 @@ function PreviewPanel({ preview }: { preview: PreviewState }) {
 
     if (failed) {
         return (
-            <p role="alert" className="text-sm text-destructive">
-                The days could not be counted. Try again in a moment.
-            </p>
+            <div
+                role="alert"
+                className="flex flex-wrap items-center justify-between gap-2 rounded-[10px] border bg-muted/30 px-3 py-2 text-sm text-muted-foreground"
+            >
+                <span>{PREVIEW_FAILED_MESSAGE}</span>
+                <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={preview.retry}
+                >
+                    Try again
+                </Button>
+            </div>
         );
     }
 

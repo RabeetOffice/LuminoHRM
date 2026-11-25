@@ -35,8 +35,10 @@ use Throwable;
  * a half day over two dates and dates outside the employment window); no counted day overlaps a counted day of the
  * employee's open requests (re-planned now) or approved leave (their leave_days), where an "am" and a "pm" half on one
  * date may coexist but a full day and any half may not (the database does not enforce this, so it is checked here);
- * for a paid type each year's share (LeavePlan::byYear) fits that year's available balance (remaining − pending, rows
- * created first with LeaveBalances::ensureYear). Unpaid leave is never limited.
+ * for a paid type, with the request's per-year shares (LeavePlan::byYear) counted as pending, every year from its
+ * first year up to LeaveBalances::lastYearInUse() keeps an available balance of at least zero (rows created first with
+ * LeaveBalances::ensureYear) — so a share in Y cannot also be used again as carry into Y+1. Unpaid leave is never
+ * limited.
  *
  * Submit runs in one transaction whose first statement locks the employee row, so two applications by (or for) the
  * same person run one after the other and the second sees the first's pending days. Every check is made inside it.
@@ -94,7 +96,11 @@ class ApplyForLeave
                 if ($assessment['problem'] !== null) {
                     [$key, $message] = $assessment['problem'];
 
-                    throw ValidationException::withMessages([$key === 'overlap' ? 'from_date' : $key => $message]);
+                    throw ValidationException::withMessages([match ($key) {
+                        'overlap' => 'from_date',
+                        'carry' => 'days',
+                        default => $key,
+                    } => $message]);
                 }
 
                 /** @var LeavePlan $plan */
@@ -158,7 +164,8 @@ class ApplyForLeave
     /**
      * What the apply dialog shows while dates are typed (GET leave.requests.preview): the same checks as handle(),
      * without the lock or any request written. Balance rows of the years touched are created (ensureYear) so the
-     * figures match what the submit will check.
+     * figures match what the submit will check. This GET writing rows is deliberate: ensureYear is idempotent
+     * (insertOrIgnore, never changes an existing row) and the rows would be created by the submit anyway.
      *
      * @return array{days: list<array{date: string, label: string, amount: float, half: string}>, total: float, years: list<array{year: int, asked: float, available: float|null}>, refusal: string|null, overlap: string|null}
      */
@@ -179,7 +186,8 @@ class ApplyForLeave
             ], $plan->days),
             'total' => $plan === null ? 0.0 : $plan->total,
             'years' => $assessment['years'],
-            // A short balance is shown per year from `years`; refusal and overlap are the other problems.
+            // A short balance is shown per year from `years`; refusal (including a later year left short through
+            // carry, key "carry") and overlap are the other problems.
             'refusal' => $key !== null && $key !== 'days' && $key !== 'overlap' ? $message : null,
             'overlap' => $key === 'overlap' ? $message : null,
         ];
@@ -300,16 +308,17 @@ class ApplyForLeave
         }
 
         $today = $this->clock->attendanceToday();
-        $locked = $this->firstLockedMonth(array_values(array_filter(self::datesBetween($from, $last), fn (string $d): bool => $d < $today)));
-
-        if ($locked !== null) {
-            return $none('from_date', 'Payroll for '.(new DateTimeImmutable($locked.'-01'))->format('F Y').' is locked, so leave cannot be added in that month.');
-        }
-
-        $plan = LeaveDays::plan($employee, $from, $half !== null ? $from : $to, $half);
+        $plan = LeaveDays::plan($employee, $from, $last, $half);
 
         if ($plan->isRefused()) {
             return $none('from_date', (string) $plan->refusal);
+        }
+
+        // Only counted days matter: a weekend or holiday in a locked month gets no leave day, so it does not block.
+        $locked = $this->firstLockedMonth(array_values(array_filter($plan->dates(), fn (string $d): bool => $d < $today)));
+
+        if ($locked !== null) {
+            return $none('from_date', 'Payroll for '.(new DateTimeImmutable($locked.'-01'))->format('F Y').' is locked, so leave cannot be added in that month.');
         }
 
         $years = [];
@@ -320,28 +329,55 @@ class ApplyForLeave
             $problem = ['overlap', 'You already have leave on '.self::dateLabel($overlap).'.'];
         }
 
-        if ($type->is_paid) {
-            $current = (int) substr($today, 0, 4);
-            $firstYear = (int) substr($plan->days[0]['date'], 0, 4);
-            $lastYear = (int) substr($plan->days[count($plan->days) - 1]['date'], 0, 4);
+        $shares = $plan->byYear();
 
-            // Rows for every year touched and the years between now and them, so carry projections use real rows.
-            for ($y = min($current, $firstYear); $y <= $lastYear; $y++) {
-                $this->balances->ensureYear($employee, $y);
+        if (! $type->is_paid) {
+            foreach ($shares as $year => $asked) {
+                $years[] = ['year' => $year, 'asked' => $asked, 'available' => null];
             }
+
+            return ['plan' => $plan, 'years' => $years, 'problem' => $problem];
         }
 
-        foreach ($plan->byYear() as $year => $asked) {
-            $available = $type->is_paid ? $this->balances->line($employee, $type, $year)->available : null;
-            $years[] = ['year' => $year, 'asked' => $asked, 'available' => $available];
+        $current = (int) substr($today, 0, 4);
+        $firstYear = (int) array_key_first($shares);
+        $lastYear = (int) array_key_last($shares);
 
-            if ($problem === null && $available !== null && LeaveDays::halves($asked) > LeaveDays::halves($available)) {
-                $problem = ['days', sprintf(
-                    'Not enough %s leave for %d: %s left, %s asked. Apply for the extra days as Unpaid leave.',
+        // Rows for every year touched and the years between now and them, so carry projections use real rows.
+        for ($y = min($current, $firstYear); $y <= $lastYear; $y++) {
+            $this->balances->ensureYear($employee, $y);
+        }
+
+        // With this request's shares counted as pending (also in the carry walk), every year from its first year up
+        // to the last year in use must stay at or above zero: a share in Y lowers what carries into Y+1, which may
+        // already be booked by this request's own Y+1 share or by another request there.
+        $checkTo = max($lastYear, $this->balances->lastYearInUse($employee, $type) ?? $lastYear);
+
+        for ($year = $firstYear; $year <= $checkTo; $year++) {
+            $after = $this->balances->line($employee, $type, $year, extraPending: $shares)->available;
+            $asked = $shares[$year] ?? null;
+
+            if ($asked !== null) {
+                // What this request may use in this year, its own earlier shares already taken out of the carry.
+                $available = LeaveDays::fromHalves(LeaveDays::halves($after) + LeaveDays::halves($asked));
+                $years[] = ['year' => $year, 'asked' => $asked, 'available' => $available];
+
+                if ($problem === null && LeaveDays::halves($after) < 0) {
+                    $problem = ['days', sprintf(
+                        'Not enough %s leave for %d: %s left, %s asked. Apply for the extra days as Unpaid leave.',
+                        $type->name,
+                        $year,
+                        self::amount($available),
+                        self::amount($asked),
+                    )];
+                }
+            } elseif ($problem === null && LeaveDays::halves($after) < 0) {
+                $problem = ['carry', sprintf(
+                    'Not enough %s leave: these days would be taken from what carries into %d, and %d would end %s short. Apply for fewer days or as Unpaid leave.',
                     $type->name,
                     $year,
-                    self::amount($available),
-                    self::amount($asked),
+                    $year,
+                    self::amount(-$after),
                 )];
             }
         }

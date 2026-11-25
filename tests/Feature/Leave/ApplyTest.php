@@ -13,6 +13,7 @@ use App\Support\Leave\LeaveRouting;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
@@ -501,4 +502,203 @@ it('renders the mail with the employee, type, dates, days and reason only', func
     expect((new LeaveRequestSubmitted($half, 'Ali', true))->render())
         ->toContain('Mon 7 Dec 2026, first half')->toContain('0.5 day')->toContain('approved by their manager');
     expect((new LeaveRequestSubmitted($r, 'Ali', false))->envelope()->subject)->toBe('Leave request from Sara Khan');
+});
+
+// ---------------------------------------------------------------- fix round: carry across 31 December
+
+it('refuses a request across 31 December whose 2026 share would also be carried into 2027', function () {
+    [$user, $employee] = apPerson();
+
+    // 14 days in December 2026 (14–31 Dec) and 16 in January 2027 (1–22 Jan). 2026 alone fits (14 ≤ 14) and 2027
+    // alone would fit with the 5 carried days (16 ≤ 19), but those 5 days are the ones this request takes in 2026.
+    apApply($user, ['from_date' => '2026-12-14', 'to_date' => '2027-01-22'])
+        ->assertSessionHasErrors(['days' => 'Not enough Annual leave for 2027: 14 days left, 16 days asked. Apply for the extra days as Unpaid leave.']);
+    expect(LeaveRequest::query()->count())->toBe(0);
+
+    // The same span ending on 20 Jan (14 + 14) fits exactly and leaves no year below zero.
+    apApply($user, ['from_date' => '2026-12-14', 'to_date' => '2027-01-20'])->assertSessionHasNoErrors();
+    expect(apLatest()->days)->toBe(28.0)->and(apLatest()->balance_before)->toBe(['2026' => 14, '2027' => 14]);
+
+    $balances = app(LeaveBalances::class);
+    expect($balances->line($employee, leaveType('Annual'), 2027)->available)->toBe(0.0)
+        ->and($balances->line($employee, leaveType('Annual'), 2026)->available)->toBe(0.0);
+});
+
+it('refuses a 2026 request that would take days already booked as carry by a pending 2027 request', function () {
+    [$user, $employee] = apPerson();
+    // 1–25 Feb 2027 weekdays = 19 days: 14 of 2027 plus the 5 carried from 2026.
+    leaveRequest($employee, ['from_date' => '2027-02-01', 'to_date' => '2027-02-25', 'days' => 19]);
+
+    // 10 days in December: 2026 would keep 4, so only 4 carry and 2027 ends 1 day short.
+    apApply($user, ['from_date' => '2026-12-07', 'to_date' => '2026-12-18'])
+        ->assertSessionHasErrors(['days' => 'Not enough Annual leave: these days would be taken from what carries into 2027, and 2027 would end 1 day short. Apply for fewer days or as Unpaid leave.']);
+
+    $json = apPreview($user, ['type' => leaveType('Annual')->id, 'from' => '2026-12-07', 'to' => '2026-12-18'])->assertOk()->json();
+    expect($json['refusal'])->toStartWith('Not enough Annual leave: these days would be taken from what carries into 2027')
+        ->and($json['years'])->toEqual([['year' => 2026, 'asked' => 10, 'available' => 14]]);
+
+    // 9 days keep 5 to carry: fine.
+    apApply($user, ['from_date' => '2026-12-07', 'to_date' => '2026-12-17'])->assertSessionHasNoErrors();
+    expect(app(LeaveBalances::class)->line($employee, leaveType('Annual'), 2027)->available)->toBe(0.0);
+});
+
+it('leaves a type without carry-forward unaffected across 31 December', function () {
+    [$user] = apPerson();
+
+    // Sick 8 a year, no carry: 8 days in December (22–31) and 8 in January (1–12) fit each year on its own.
+    apApply($user, ['leave_type_id' => leaveType('Sick')->id, 'from_date' => '2026-12-22', 'to_date' => '2027-01-12'])->assertSessionHasNoErrors();
+    expect(apLatest()->days)->toBe(16.0)->and(apLatest()->balance_before)->toBe(['2026' => 8, '2027' => 8]);
+});
+
+// ---------------------------------------------------------------- fix round: payroll lock, overlaps, preview
+
+it('checks the payroll lock on counted days only: a locked weekend does not block', function () {
+    [$user] = apPerson();
+    // Pretend Saturday 31 Oct 2026 is in a locked month (the only October date of the request).
+    app()->bind(ApplyForLeave::class, fn ($app) => new class($app->make(AttendanceClock::class), $app->make(LeaveBalances::class), new LeaveRouting) extends ApplyForLeave
+    {
+        protected function firstLockedMonth(array $dates): ?string
+        {
+            return collect($dates)->contains(fn ($d) => str_starts_with($d, '2026-10')) ? '2026-10' : null;
+        }
+    });
+
+    // Sat 31 Oct – Tue 3 Nov: only 2 and 3 Nov count.
+    apApply($user, ['from_date' => '2026-10-31', 'to_date' => '2026-11-03'])->assertSessionHasNoErrors();
+    expect(apLatest()->days)->toBe(2.0);
+
+    // Fri 30 Oct counts: refused.
+    apApply($user, ['from_date' => '2026-10-30', 'to_date' => '2026-10-30'])
+        ->assertSessionHasErrors(['from_date' => 'Payroll for October 2026 is locked, so leave cannot be added in that month.']);
+});
+
+it('refuses a half day over a pending full day', function () {
+    [$user, $employee] = apPerson();
+    leaveRequest($employee, ['from_date' => '2026-12-07', 'to_date' => '2026-12-07']);
+
+    apApply($user, ['from_date' => '2026-12-07', 'half' => 'am'])->assertSessionHasErrors(['from_date' => 'You already have leave on Mon 7 Dec 2026.']);
+    apApply($user, ['from_date' => '2026-12-07', 'half' => 'pm'])->assertSessionHasErrors('from_date');
+    expect(LeaveRequest::query()->count())->toBe(1);
+});
+
+it('refuses an overlap with a pending request across 31 December, on its January days too', function () {
+    [$user, $employee] = apPerson();
+    leaveRequest($employee, ['leave_type_id' => leaveType('Unpaid')->id, 'from_date' => '2026-12-30', 'to_date' => '2027-01-05', 'days' => 5]);
+
+    apApply($user, ['from_date' => '2027-01-04', 'to_date' => '2027-01-06'])->assertSessionHasErrors(['from_date' => 'You already have leave on Mon 4 Jan 2027.']);
+    apApply($user, ['from_date' => '2026-12-28', 'to_date' => '2026-12-30'])->assertSessionHasErrors(['from_date' => 'You already have leave on Wed 30 Dec 2026.']);
+    apApply($user, ['from_date' => '2027-01-06', 'to_date' => '2027-01-07'])->assertSessionHasNoErrors();
+});
+
+it('previews refusals: an inactive type, a date outside the window and a short balance', function () {
+    [$user] = apPerson();
+
+    $json = apPreview($user, ['type' => leaveType('Garden', ['is_active' => false])->id, 'from' => '2026-12-07', 'to' => '2026-12-07'])->assertOk()->json();
+    expect($json['refusal'])->toBe('This leave type is not available any more.')->and($json['days'])->toBe([]);
+
+    $json = apPreview($user, ['type' => leaveType('Annual')->id, 'from' => '2026-10-20', 'to' => '2026-10-21'])->assertOk()->json();
+    expect($json['refusal'])->toBe('Leave can be requested from 25 Oct 2026 up to 31 Dec 2027.');
+
+    // Casual 10, three working weeks asked: shown per year, not as a refusal.
+    $json = apPreview($user, ['type' => leaveType('Casual')->id, 'from' => '2026-12-07', 'to' => '2026-12-25'])->assertOk()->json();
+    expect($json['refusal'])->toBeNull()->and($json['years'])->toEqual([['year' => 2026, 'asked' => 15, 'available' => 10]]);
+});
+
+// ---------------------------------------------------------------- fix round: cancelling, mail, queries
+
+it('refuses HR cancelling an HR colleague\'s open request, lets an Admin, with the Admin in the audit', function () {
+    [, $hrEmployee] = apPerson('hr');
+    [$otherHr] = apPerson('hr');
+    [$admin] = apPerson('admin');
+    $r = leaveRequest($hrEmployee);
+
+    $this->actingAs($otherHr)->post("/leave/requests/{$r->id}/cancel")->assertForbidden();
+    expect($r->fresh()->status)->toBe('pending');
+
+    $this->actingAs($admin)->post("/leave/requests/{$r->id}/cancel")->assertSessionHas('success');
+    expect($r->fresh()->status)->toBe('cancelled')->and($r->fresh()->cancelled_by)->toBe($admin->id);
+    expect(Activity::query()->where('description', 'Leave request cancelled')->where('subject_id', $hrEmployee->id)->sole()->causer_id)->toBe($admin->id);
+});
+
+it('mails the final approvers instead when the manager cannot approve: no team right, or a disabled login', function () {
+    [$hr] = apPerson('hr');
+
+    // A manager whose login is a plain employee (no leave.approve-team).
+    [$plainUser, $plain] = apPerson('employee');
+    [$user] = apPerson('employee', ['manager_id' => $plain->id]);
+    apApply($user)->assertSessionHasNoErrors();
+    Mail::assertQueued(LeaveRequestSubmitted::class, fn ($m) => $m->hasTo($hr->email));
+    Mail::assertNotQueued(LeaveRequestSubmitted::class, fn ($m) => $m->hasTo($plainUser->email));
+
+    // A manager whose login is disabled.
+    [$disabledUser, $disabled] = apPerson('manager');
+    $disabledUser->forceFill(['is_active' => false])->save();
+    [$user2] = apPerson('employee', ['manager_id' => $disabled->id]);
+    apApply($user2)->assertSessionHasNoErrors();
+    Mail::assertQueued(LeaveRequestSubmitted::class, fn ($m) => $m->hasTo($hr->email) && $m->request->employee_id === $user2->employee_id);
+    Mail::assertNotQueued(LeaveRequestSubmitted::class, fn ($m) => $m->hasTo($disabledUser->email));
+});
+
+it('mails an HR requester\'s Admin manager as a final approver, never another HR person', function () {
+    [$adminUser, $adminEmployee] = apPerson('admin');
+    [$hrUser] = apPerson('hr', ['manager_id' => $adminEmployee->id]);
+    [$otherHr] = apPerson('hr');
+
+    apApply($hrUser)->assertSessionHasNoErrors();
+
+    // The Admin manager has leave.approve-all, so there is no manager step; the Admin decides as final approver.
+    Mail::assertQueued(LeaveRequestSubmitted::class, fn ($m) => $m->hasTo($adminUser->email) && ! $m->afterManager);
+    Mail::assertNotQueued(LeaveRequestSubmitted::class, fn ($m) => $m->hasTo($otherHr->email) || $m->hasTo($hrUser->email));
+});
+
+it('escapes Markdown in the reason and names of the approver mail', function () {
+    [, $employee] = apPerson('employee', ['first_name' => 'Sara', 'last_name' => 'Khan']);
+    $r = leaveRequest($employee, [
+        'from_date' => '2026-12-01', 'to_date' => '2026-12-01',
+        'reason' => "See [link](https://evil.example) and ![](https://evil.example/p.png)\n\n# Heading **bold** <b>x</b>",
+    ]);
+
+    $html = (new LeaveRequestSubmitted($r, 'Ali', false))->render();
+
+    expect($html)->not->toContain('href="https://evil.example"')
+        ->not->toContain('<img')
+        ->not->toContain('<h1')
+        ->not->toContain('<strong>bold</strong>')
+        ->not->toContain('<b>x</b>')
+        ->toContain('[link](https://evil.example)')
+        ->toContain('![](https://evil.example/p.png)')
+        ->toContain('**bold**');
+});
+
+it('submits with a fixed number of queries whatever the number of other open requests', function () {
+    [$user, $employee] = apPerson();
+    $count = function (string $from) use ($user): int {
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        apApply($user, ['leave_type_id' => leaveType('Unpaid')->id, 'from_date' => $from, 'to_date' => $from])->assertSessionHasNoErrors();
+        $n = count(DB::getQueryLog());
+        DB::disableQueryLog();
+
+        return $n;
+    };
+
+    $count('2026-11-30'); // warm-up: balance rows, settings
+    leaveRequest($employee, ['from_date' => '2026-12-14', 'to_date' => '2026-12-14']);
+    $few = $count('2026-12-01');
+
+    foreach (['2026-12-15', '2026-12-16', '2026-12-17', '2026-12-18', '2026-12-21'] as $d) {
+        leaveRequest($employee, ['from_date' => $d, 'to_date' => $d]);
+    }
+    $many = $count('2026-12-02');
+
+    expect($many)->toBe($few);
+});
+
+it('says whose request was sent: own, or on behalf by name', function () {
+    [$user, $me] = apPerson();
+    [$hr] = apPerson('hr');
+    [, $employee] = apPerson();
+
+    apApply($user, ['employee_id' => $me->id])->assertSessionHas('success', 'Leave request sent.');
+    apApply($hr, ['employee_id' => $employee->id])->assertSessionHas('success', "Leave request sent for {$employee->full_name}.");
 });

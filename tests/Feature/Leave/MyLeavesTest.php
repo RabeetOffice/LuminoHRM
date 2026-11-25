@@ -2,6 +2,7 @@
 
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
 use Inertia\Testing\AssertableInertia as Assert;
 
 /*
@@ -80,4 +81,37 @@ it('shows "Waiting for HR" data when there is no manager step and picks the year
 
 it('needs a login', function () {
     $this->get('/my/leaves')->assertRedirect('/login');
+});
+
+it('loads My Leaves with a fixed number of queries whatever the number of requests', function () {
+    $managerUser = userWithRole('manager');
+    $manager = employeeFor($managerUser, ['first_name' => 'Ahmed', 'joining_date' => '2026-01-01']);
+    $user = userWithRole('employee');
+    $me = employeeFor($user, ['joining_date' => '2026-01-01', 'manager_id' => $manager->id]);
+
+    $count = function () use ($user): int {
+        test()->actingAs($user)->get('/my/leaves')->assertOk(); // warm-up: balance rows
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        test()->actingAs($user)->get('/my/leaves')->assertOk();
+        $n = count(DB::getQueryLog());
+        DB::disableQueryLog();
+
+        return $n;
+    };
+
+    approvedLeave($me, '2026-11-02');
+    leaveRequest($me, ['from_date' => '2026-12-07', 'to_date' => '2026-12-07']);
+    $few = $count();
+
+    foreach (['2026-11-03', '2026-11-04', '2026-11-05'] as $d) {
+        approvedLeave($me, $d);
+    }
+    foreach (['2026-12-08', '2026-12-09', '2026-12-10', '2026-12-11'] as $d) {
+        leaveRequest($me, ['from_date' => $d, 'to_date' => $d, 'attachment_path' => null]);
+    }
+    leaveRequest($me, ['from_date' => '2026-12-14', 'to_date' => '2026-12-14', 'status' => 'manager_approved']);
+    leaveRequest($me, ['from_date' => '2026-12-15', 'to_date' => '2026-12-15', 'status' => 'rejected']);
+
+    expect($count())->toBe($few);
 });

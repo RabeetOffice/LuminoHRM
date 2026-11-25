@@ -302,6 +302,44 @@ it('refuses the approval when another approval used up the balance since applyin
     expect($r->fresh()->status)->toBe('pending')->and(lvDays($r))->toBe([]);
 });
 
+it('refuses approving a request across 31 December whose 2026 share would also be carried into 2027', function () {
+    [, $employee] = lvPerson('employee');
+    [$hrUser] = lvPerson('hr');
+    // 14 days in December 2026 and 16 in January 2027 (Annual 14, carry cap 5).
+    $r = lvRequest($employee, '2026-12-14', '2027-01-22');
+
+    lvDecide($hrUser, $r, 'final')->assertSessionHas('error',
+        'Not enough Annual leave for 2027: 14 left, 16 needed. Reject it, or ask for the extra days as Unpaid leave.');
+    expect($r->fresh()->status)->toBe('pending')->and(lvDays($r))->toBe([]);
+
+    // Ending on 20 Jan (14 + 14) it fits exactly.
+    $fits = lvRequest($employee, '2026-12-14', '2027-01-20');
+    $r->forceFill(['status' => 'cancelled'])->save();
+    lvDecide($hrUser, $fits, 'final')->assertSessionHas('success');
+    expect($fits->fresh()->status)->toBe('approved')->and($fits->fresh()->balance_before)->toBe(['2026' => 14, '2027' => 14])
+        ->and(app(LeaveBalances::class)->line($employee, leaveType('Annual'), 2027)->available)->toBe(0.0);
+});
+
+it('refuses approving a 2026 request that would take days a pending 2027 request holds as carry', function () {
+    [, $employee] = lvPerson('employee');
+    [$hrUser] = lvPerson('hr');
+    lvRequest($employee, '2027-02-01', '2027-02-25'); // 19 days: 14 of 2027 plus the 5 carried
+    $r = lvRequest($employee, '2026-12-07', '2026-12-18'); // 10 days: only 4 would carry
+
+    lvDecide($hrUser, $r, 'final')->assertSessionHas('error',
+        'Not enough Annual leave: these days would be taken from what carries into 2027, and 2027 would end 1 short. Reject it, or ask for the extra days as Unpaid leave.');
+    expect($r->fresh()->status)->toBe('pending')->and(lvDays($r))->toBe([]);
+});
+
+it('approves a request across 31 December of a type without carry-forward on each year alone', function () {
+    [, $employee] = lvPerson('employee');
+    [$hrUser] = lvPerson('hr');
+    $r = lvRequest($employee, '2026-12-22', '2027-01-12', null, 'Sick'); // 8 + 8, Sick 8 a year
+
+    lvDecide($hrUser, $r, 'final')->assertSessionHas('success');
+    expect($r->fresh()->status)->toBe('approved')->and(lvDays($r))->toHaveCount(16);
+});
+
 it('never limits unpaid leave', function () {
     [, $employee] = lvPerson('employee');
     [$hrUser] = lvPerson('hr');

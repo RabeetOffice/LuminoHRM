@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+    balanceCardFigures,
     formatDayAmount,
     formatLeaveDays,
     leaveDateLabel,
@@ -8,6 +9,8 @@ import {
     leaveStatusLabel,
     leaveStatusTone,
     leftAfterLabel,
+    PREVIEW_FAILED_MESSAGE,
+    previewBlocksSubmit,
     weekdayOf,
 } from '@/lib/leave';
 
@@ -101,5 +104,85 @@ describe('status and stage', () => {
         );
         expect(leaveStageLabel('final', 'Ahmed')).toBe('Waiting for HR');
         expect(leaveStageLabel(null, null)).toBeNull();
+    });
+});
+
+describe('apply preview and balance cards', () => {
+    const answer = (
+        over: Partial<{
+            refusal: string | null;
+            overlap: string | null;
+            years: { asked: number; available: number | null }[];
+        }> = {},
+    ) => ({
+        refusal: null,
+        overlap: null,
+        years: [{ asked: 2, available: 10 }],
+        ...over,
+    });
+
+    test('a failed preview never blocks Send; loading, no answer and refusals do', () => {
+        expect(
+            previewBlocksSubmit({ loading: false, failed: true, data: null }),
+        ).toBe(false);
+        expect(
+            previewBlocksSubmit({ loading: true, failed: false, data: null }),
+        ).toBe(true);
+        expect(
+            previewBlocksSubmit({ loading: false, failed: false, data: null }),
+        ).toBe(true);
+        expect(
+            previewBlocksSubmit({
+                loading: false,
+                failed: false,
+                data: answer(),
+            }),
+        ).toBe(false);
+        expect(
+            previewBlocksSubmit({
+                loading: false,
+                failed: false,
+                data: answer({ refusal: 'No.' }),
+            }),
+        ).toBe(true);
+        expect(
+            previewBlocksSubmit({
+                loading: false,
+                failed: false,
+                data: answer({ overlap: 'Taken.' }),
+            }),
+        ).toBe(true);
+        expect(
+            previewBlocksSubmit({
+                loading: false,
+                failed: false,
+                data: answer({ years: [{ asked: 3, available: 2.5 }] }),
+            }),
+        ).toBe(true);
+        expect(
+            previewBlocksSubmit({
+                loading: false,
+                failed: false,
+                data: answer({ years: [{ asked: 30, available: null }] }),
+            }),
+        ).toBe(false);
+        expect(PREVIEW_FAILED_MESSAGE).toBe(
+            'Could not check — you can still submit; it will be checked again.',
+        );
+    });
+
+    test('cards show available first, remaining before pending only when something is pending', () => {
+        expect(balanceCardFigures(10, 7.5, 2.5)).toEqual({
+            main: '7.5 available',
+            secondary: '10 remaining before pending',
+        });
+        expect(balanceCardFigures(10, 10, 0)).toEqual({
+            main: '10 available',
+            secondary: null,
+        });
+        expect(balanceCardFigures(2, -1, 3)).toEqual({
+            main: '-1 available',
+            secondary: '2 remaining before pending',
+        });
     });
 });

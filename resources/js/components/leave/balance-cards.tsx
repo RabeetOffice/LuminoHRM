@@ -1,5 +1,9 @@
 import { LeaveColourDot } from '@/components/leave/leave-type-badge';
-import { formatDayAmount, formatLeaveDays } from '@/lib/leave';
+import {
+    balanceCardFigures,
+    formatDayAmount,
+    formatLeaveDays,
+} from '@/lib/leave';
 import { cn } from '@/lib/utils';
 
 /** One balance line as the server sends it (BalanceLine::toArray()). Unpaid: unlimited, with nulls. */
@@ -24,7 +28,7 @@ export type BalanceLineData = {
     label: string;
 };
 
-/** A card per leave type: remaining of entitlement (or "No limit" for unpaid), used and pending. */
+/** A card per leave type: available (or "No limit" for unpaid), remaining before pending, used and pending. */
 export function BalanceCards({ lines }: { lines: BalanceLineData[] }) {
     if (lines.length === 0) {
         return (
@@ -53,25 +57,7 @@ export function BalanceCards({ lines }: { lines: BalanceLineData[] }) {
                             </p>
                         </div>
                     ) : (
-                        <div>
-                            <p
-                                className={cn(
-                                    'text-2xl font-semibold',
-                                    line.overdrawn && 'text-destructive',
-                                )}
-                            >
-                                {formatDayAmount(line.remaining)}
-                                <span className="ml-1 text-sm font-normal text-muted-foreground">
-                                    of {formatDayAmount(line.entitlement ?? 0)}{' '}
-                                    left
-                                </span>
-                            </p>
-                            {line.overdrawn && (
-                                <p className="text-xs text-destructive">
-                                    Overdrawn: HR will sort this out.
-                                </p>
-                            )}
-                        </div>
+                        <PaidFigures line={line} remaining={line.remaining} />
                     )}
                     <dl className="grid grid-cols-2 gap-2 border-t pt-3 text-xs">
                         <div>
@@ -99,5 +85,42 @@ export function BalanceCards({ lines }: { lines: BalanceLineData[] }) {
                 </li>
             ))}
         </ul>
+    );
+}
+
+/**
+ * Available (remaining − pending) as the main number, matching the apply dialog's "Left after this"; the remaining
+ * before pending and the entitlement underneath.
+ */
+function PaidFigures({
+    line,
+    remaining,
+}: {
+    line: BalanceLineData;
+    remaining: number;
+}) {
+    const available = line.available ?? remaining;
+    const figures = balanceCardFigures(remaining, available, line.pending);
+
+    return (
+        <div className="grid gap-0.5">
+            <p
+                className={cn(
+                    'text-2xl font-semibold',
+                    available < 0 && 'text-destructive',
+                )}
+            >
+                {figures.main}
+            </p>
+            <p className="text-xs text-muted-foreground">
+                {figures.secondary ? `${figures.secondary} · ` : ''}
+                of {formatDayAmount(line.entitlement ?? 0)} this year
+            </p>
+            {line.overdrawn && (
+                <p className="text-xs text-destructive">
+                    Overdrawn: HR will sort this out.
+                </p>
+            )}
+        </div>
     );
 }

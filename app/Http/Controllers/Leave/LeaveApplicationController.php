@@ -50,7 +50,7 @@ class LeaveApplicationController extends Controller
             $request->file('attachment'),
         );
 
-        return back()->with('success', $created->employee_id === $user->employee_id
+        return back()->with('success', $this->routing->isRequester($user, $created)
             ? 'Leave request sent.'
             : "Leave request sent for {$employee->full_name}.");
     }

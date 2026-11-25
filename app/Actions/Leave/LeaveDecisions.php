@@ -351,24 +351,44 @@ class LeaveDecisions
         $balanceBefore = null;
 
         if (! $type->isUnpaid()) {
-            $years = array_keys($plan->byYear());
+            $shares = $plan->byYear();
+            $years = array_keys($shares);
 
             foreach ($years as $year) {
                 $this->balances->ensureYear($employee, $year);
                 $this->balances->ensureRow($employee, $type, $year); // also for an inactive type ensureYear skips
             }
 
-            LeaveBalance::query()->where('employee_id', $employee->id)->whereIn('year', $years)->lockForUpdate()->get();
+            // This request's shares count as pending (also in the carry walk), and every year up to the last year in
+            // use must stay at or above zero: a share in Y lowers what carries into Y+1 (LeaveBalances::line()).
+            $checkTo = max((int) end($years), $this->balances->lastYearInUse($employee, $type, $locked->id) ?? 0);
+
+            LeaveBalance::query()->where('employee_id', $employee->id)->whereBetween('year', [$years[0], $checkTo])->lockForUpdate()->get();
 
             $balanceBefore = [];
 
-            foreach ($plan->byYear() as $year => $asked) {
-                $line = $this->balances->line($employee, $type, $year, $locked->id);
-                $balanceBefore[(string) $year] = $line->available;
+            for ($year = $years[0]; $year <= $checkTo; $year++) {
+                $after = $this->balances->line($employee, $type, $year, $locked->id, extraPending: $shares)->available;
+                $asked = $shares[$year] ?? null;
+                $short = LeaveDays::halves($after) < 0;
 
-                if (LeaveDays::halves($asked) > LeaveDays::halves($line->available)) {
+                if ($asked === null) {
+                    if ($short) {
+                        throw ValidationException::withMessages([
+                            'decision' => "Not enough {$type->name} leave: these days would be taken from what carries into {$year}, and {$year} would end "
+                                .BalanceLine::format(-$after).' short. Reject it, or ask for the extra days as Unpaid leave.',
+                        ]);
+                    }
+
+                    continue;
+                }
+
+                $available = LeaveDays::fromHalves(LeaveDays::halves($after) + LeaveDays::halves($asked));
+                $balanceBefore[(string) $year] = $available;
+
+                if ($short) {
                     throw ValidationException::withMessages([
-                        'decision' => "Not enough {$type->name} leave for {$year}: ".BalanceLine::format($line->available)
+                        'decision' => "Not enough {$type->name} leave for {$year}: ".BalanceLine::format($available)
                             .' left, '.BalanceLine::format($asked).' needed. Reject it, or ask for the extra days as Unpaid leave.',
                     ]);
                 }

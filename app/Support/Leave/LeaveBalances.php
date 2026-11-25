@@ -140,11 +140,42 @@ class LeaveBalances
      *     (LOCK IN SHARE MODE), which reads the latest committed versions and blocks writers to them until commit.
      * SQLite (tests) ignores both locks; it serialises writers anyway.
      *
+     * $extraPending (year => days) adds days to pending as if one more open request held them: they count in every
+     * year's pending AND in the carry walk (a share in Y lowers what carries into a projected Y+1). The submit and
+     * approval checks pass the request's own per-year shares here, so a request across 31 Dec cannot use the same
+     * days twice (once in Y, once again as carry into Y+1). A caller checking a request must then check every year
+     * from its first year up to lastYearInUse(), not only the years it touches.
+     *
+     * @param  array<int, float|int>  $extraPending  year => days
+     *
      * @throws LogicException an employee model without joining_date (see lines())
      */
-    public function line(Employee $employee, LeaveType $type, int $year, ?int $ignoreRequestId = null, bool $locking = false): BalanceLine
+    public function line(Employee $employee, LeaveType $type, int $year, ?int $ignoreRequestId = null, bool $locking = false, array $extraPending = []): BalanceLine
     {
-        return $this->compute(new Collection([$employee]), $year, $type, $ignoreRequestId, $locking)[$employee->id][$type->id];
+        return $this->compute(new Collection([$employee]), $year, $type, $ignoreRequestId, $locking, $extraPending)[$employee->id][$type->id];
+    }
+
+    /**
+     * The last year the employee has a balance row or open-request days for this type ($ignoreRequestId left out),
+     * or null when there is neither. A request's effect on carry can reach any year up to here.
+     */
+    public function lastYearInUse(Employee $employee, LeaveType $type, ?int $ignoreRequestId = null): ?int
+    {
+        $rowYear = DB::table('leave_balances')
+            ->where('employee_id', $employee->id)->where('leave_type_id', $type->id)->max('year');
+
+        $lastTo = DB::table('leave_requests')
+            ->where('employee_id', $employee->id)->where('leave_type_id', $type->id)
+            ->whereIn('status', (array) config('hrm.leave.open_statuses'))
+            ->when($ignoreRequestId !== null, fn ($q) => $q->where('id', '!=', $ignoreRequestId))
+            ->max('to_date');
+
+        $years = array_filter([
+            $rowYear !== null ? (int) $rowYear : null,
+            $lastTo !== null ? (int) substr((string) $lastTo, 0, 4) : null,
+        ], fn (?int $y): bool => $y !== null);
+
+        return $years === [] ? null : max($years);
     }
 
     /**
@@ -168,9 +199,10 @@ class LeaveBalances
 
     /**
      * @param  Collection<int, Employee>  $employees
+     * @param  array<int, float|int>  $extraPending  year => days, added for $onlyType of every employee (line() only)
      * @return array<int, array<int, BalanceLine>>
      */
-    private function compute(Collection $employees, int $year, ?LeaveType $onlyType, ?int $ignoreRequestId, bool $locking): array
+    private function compute(Collection $employees, int $year, ?LeaveType $onlyType, ?int $ignoreRequestId, bool $locking, array $extraPending = []): array
     {
         $employees = $employees->keyBy('id');
 
@@ -213,6 +245,14 @@ class LeaveBalances
         }
 
         $pending = $this->pendingHalves($employees, $typeIds, min($year, $current), $year, $ignoreRequestId, $locking);
+
+        if ($onlyType !== null) {
+            foreach ($extraPending as $y => $days) {
+                foreach ($ids as $id) {
+                    $pending[$id][$onlyType->id][(int) $y] = ($pending[$id][$onlyType->id][(int) $y] ?? 0) + LeaveDays::halves($days);
+                }
+            }
+        }
 
         $result = [];
 

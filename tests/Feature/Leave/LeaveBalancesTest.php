@@ -297,6 +297,48 @@ it('projects next year with this year\'s pending taken off the carry', function 
         ->and(LeaveBalance::query()->where('year', 2027)->exists())->toBeFalse(); // nothing written
 });
 
+it('adds extra pending days to each year and to the carry walk', function () {
+    $e = lbEmployee();
+    lbRow($e, 'Annual', 2026, 14);
+    $annual = leaveType('Annual');
+
+    // A request with 14 days in 2026 and 16 in 2027: 2026 is fully spoken for, so nothing carries into 2027.
+    $y2026 = lbSvc()->line($e, $annual, 2026, extraPending: [2026 => 14, 2027 => 16]);
+    $y2027 = lbSvc()->line($e, $annual, 2027, extraPending: [2026 => 14, 2027 => 16]);
+
+    expect($y2026->pending)->toBe(14.0)->and($y2026->available)->toBe(0.0)
+        ->and($y2027->carried)->toBe(0.0)->and($y2027->pending)->toBe(16.0)->and($y2027->available)->toBe(-2.0);
+
+    // Without the extra days the line is unchanged; real pending and extra days add up.
+    expect(lbLine($e, 'Annual', 2027)->carried)->toBe(5.0);
+    leaveRequest($e, ['from_date' => '2026-12-07', 'to_date' => '2026-12-08', 'days' => 2]);
+    expect(lbSvc()->line($e, $annual, 2026, extraPending: [2026 => 1.5])->pending)->toBe(3.5);
+});
+
+it('leaves a type without carry-forward unaffected by extra pending in another year', function () {
+    $e = lbEmployee();
+    lbRow($e, 'Sick', 2026, 8);
+
+    expect(lbSvc()->line($e, leaveType('Sick'), 2027, extraPending: [2026 => 8])->available)->toBe(8.0);
+});
+
+it('names the last year with a balance row or open request of the type', function () {
+    $e = lbEmployee();
+    $annual = leaveType('Annual');
+
+    expect(lbSvc()->lastYearInUse($e, $annual))->toBeNull();
+
+    lbRow($e, 'Annual', 2026, 14);
+    expect(lbSvc()->lastYearInUse($e, $annual))->toBe(2026);
+
+    $r = leaveRequest($e, ['from_date' => '2027-02-01', 'to_date' => '2027-02-02', 'days' => 2]);
+    leaveRequest($e, ['from_date' => '2028-02-01', 'to_date' => '2028-02-02', 'days' => 2, 'status' => 'rejected']);
+    leaveRequest($e, ['leave_type_id' => leaveType('Sick')->id, 'from_date' => '2028-03-01', 'to_date' => '2028-03-01', 'days' => 1]);
+
+    expect(lbSvc()->lastYearInUse($e, $annual))->toBe(2027)
+        ->and(lbSvc()->lastYearInUse($e, $annual, $r->id))->toBe(2026);
+});
+
 it('projects a year without a row from allocationFor', function () {
     Settings::set('leave', ['prorate_new_joiners' => true]);
     $e = lbEmployee(['joining_date' => '2026-07-15']);
