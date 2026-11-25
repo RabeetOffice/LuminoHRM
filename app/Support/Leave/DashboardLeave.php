@@ -16,11 +16,8 @@ use Illuminate\Database\Eloquent\Builder;
 /**
  * The dashboard's leave figures for one viewer, from a fixed number of queries whatever the number of people:
  *
- *   pending()       open requests in LeaveRouting::scope that the viewer may decide now (decidableStage not null): the
- *                   "Waiting for me" tab of Leave → Requests. HR / Admin: everything waiting that they may decide; a
- *                   Manager: their reports' requests waiting at their step. Queries: the open requests (1), their
- *                   employees (1), the managers' logins with roles and permissions (LeaveRouting::prime, 3), the
- *                   privileged map (2) and the active Admin count (1), the last ones only when there is a request.
+ *   pending()       the count of the "Waiting for me" tab of Leave → Requests (WaitingForMe::count): HR / Admin see
+ *                   final-stage requests they may decide; a Manager their reports' requests waiting at their step.
  *   onLeaveToday()  people with an approved leave day on AttendanceClock::attendanceToday() (full or half), leavers
  *                   excluded: the people (1) and their leave days (LeaveLedger::daysOn, 1, only when someone is off).
  *   byStatus()      this month's requests (from_date in the month of attendanceToday()) by status: one grouped query.
@@ -45,16 +42,8 @@ final class DashboardLeave
     /** @return array{count: int} */
     public function pending(): array
     {
-        $routing = new LeaveRouting;
-
-        $requests = $routing->scope(LeaveRequest::query(), $this->viewer)
-            ->whereIn('status', (array) config('hrm.leave.open_statuses'))
-            ->with('employee:id,manager_id')
-            ->get(['id', 'employee_id', 'status', 'manager_decided_by']);
-
-        $routing->prime($requests);
-
-        return ['count' => $requests->filter(fn (LeaveRequest $r) => $routing->decidableStage($this->viewer, $r) !== null)->count()];
+        // The same rule as the Leave -> Requests "Waiting for me" tab (HR / Admin: final-stage requests only).
+        return ['count' => WaitingForMe::count($this->viewer)];
     }
 
     /**

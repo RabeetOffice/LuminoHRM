@@ -9,6 +9,7 @@ use App\Support\Leave\BalanceLine;
 use App\Support\Leave\DashboardLeave;
 use App\Support\Leave\LeaveBalances;
 use App\Support\Leave\LeaveRouting;
+use App\Support\Leave\WaitingForMe;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
@@ -148,11 +149,11 @@ it('counts for a manager only the requests waiting at their own step', function 
     expect($props['pendingLeaves'])->toBe(['count' => 2]);
 });
 
-it('counts for HR every open request they may decide, at either step, never their own', function () {
+it('counts for HR only the open requests at their own (final) step, never their own', function () {
     [$managerUser, $manager, $a, $b, , $outsider] = dlTeam();
     $hr = userWithRole('hr');
     $hrRecord = employeeFor($hr, ['joining_date' => '2026-01-01']);
-    leaveRequest($a);                                                          // at the manager step: HR may decide
+    leaveRequest($a);                                                          // at the manager step: under "All", not counted
     leaveRequest($b, ['status' => 'manager_approved']);
     leaveRequest($outsider);
     leaveRequest($manager, ['status' => 'approved']);
@@ -160,10 +161,11 @@ it('counts for HR every open request they may decide, at either step, never thei
 
     $props = dlProps($this->actingAs($hr)->get('/dashboard')->assertOk());
 
-    expect($props['pendingLeaves'])->toBe(['count' => 3]);
+    // $b (manager approved) and $outsider (no reporting manager, so straight to the final step).
+    expect($props['pendingLeaves'])->toBe(['count' => 2]);
 });
 
-it('matches the "waiting for me" rule: the requests in scope whose decidable stage is not null', function (string $role) {
+it('matches the "waiting for me" rule of the requests screen', function (string $role) {
     $this->withoutVite();
     [$managerUser, $manager, $a, $b, $indirect, $outsider] = dlTeam();
     $viewer = $role === 'manager' ? $managerUser : userWithRole($role);
@@ -173,7 +175,7 @@ it('matches the "waiting for me" rule: the requests in scope whose decidable sta
 
     $routing = new LeaveRouting;
     $expected = $routing->scope(LeaveRequest::query()->with('employee'), $viewer)->get()
-        ->filter(fn (LeaveRequest $r) => $routing->decidableStage($viewer, $r) !== null)
+        ->filter(fn (LeaveRequest $r) => WaitingForMe::includes($routing, $viewer, $r))
         ->count();
 
     $props = dlProps($this->actingAs($viewer)->get('/dashboard')->assertOk());
