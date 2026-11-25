@@ -95,3 +95,56 @@ it('reports a full row plus an am row on the same date as one full day of the fu
 it('rejects a malformed date', function () {
     LeaveLedger::unpaidDays(1, '2026-11-31', '2026-12-01');
 })->throws(InvalidArgumentException::class);
+
+// ---------------------------------------------------------------- unpaidByDate (payroll)
+
+it('gives unpaid halves per person and date, ignoring paid types and dates outside the range', function () {
+    $a = Employee::factory()->create();
+    $b = Employee::factory()->create();
+    $none = Employee::factory()->create();
+    approvedLeave($a, '2026-11-23', '2026-11-24', type: 'Unpaid');    // 2 + 2
+    approvedLeave($a, '2026-11-25', null, 'pm', 'Unpaid');             // 1
+    approvedLeave($a, '2026-11-26', '2026-11-27');                     // Annual: paid
+    approvedLeave($a, '2026-12-01', null, 'am', 'Unpaid');             // outside
+    approvedLeave($b, '2026-11-30', null, 'am', 'Unpaid');             // 1, last day inclusive
+    approvedLeave($none, '2026-11-24', null, type: 'Sick');
+
+    expect(LeaveLedger::unpaidByDate([$a->id, $b->id, $none->id], '2026-11-01', '2026-11-30'))->toBe([
+        $a->id => ['2026-11-23' => 2, '2026-11-24' => 2, '2026-11-25' => 1],
+        $b->id => ['2026-11-30' => 1],
+    ])
+        ->and(LeaveLedger::unpaidByDate([], '2026-11-01', '2026-11-30'))->toBe([]);
+});
+
+it('sums an am and a pm unpaid half to 2, and a full row wins over a half on the same date', function () {
+    $e = Employee::factory()->create();
+    approvedLeave($e, '2026-11-23', null, 'am', 'Unpaid');
+    approvedLeave($e, '2026-11-23', null, 'pm', 'Unpaid');
+    $request = approvedLeave($e, '2026-11-24', null, type: 'Unpaid');
+    LeaveDay::query()->create([
+        'leave_request_id' => $request->id, 'employee_id' => $e->id, 'leave_type_id' => leaveType('Unpaid')->id,
+        'date' => '2026-11-24', 'amount' => 0.5, 'half' => 'pm',
+    ]);
+
+    expect(LeaveLedger::unpaidByDate([$e->id], '2026-11-23', '2026-11-24'))->toBe([
+        $e->id => ['2026-11-23' => 2, '2026-11-24' => 2],
+    ]);
+});
+
+it('reads unpaid days of many people in one query', function () {
+    $people = Employee::factory()->count(5)->create();
+    foreach ($people as $p) {
+        approvedLeave($p, '2026-11-23', '2026-11-25', type: 'Unpaid');
+    }
+
+    DB::enableQueryLog();
+    DB::flushQueryLog();
+    $result = LeaveLedger::unpaidByDate($people->pluck('id')->all(), '2026-11-01', '2026-11-30');
+
+    expect(DB::getQueryLog())->toHaveCount(1)
+        ->and($result)->toHaveCount(5);
+});
+
+it('rejects a malformed date in unpaidByDate', function () {
+    LeaveLedger::unpaidByDate([1], '2026-11-01', '2026-11-31');
+})->throws(InvalidArgumentException::class);
