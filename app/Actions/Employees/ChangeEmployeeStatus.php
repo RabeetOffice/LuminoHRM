@@ -2,6 +2,7 @@
 
 namespace App\Actions\Employees;
 
+use App\Actions\Leave\LeaveEmploymentTrim;
 use App\Actions\SetUserActive;
 use App\Exceptions\AccountRuleViolation;
 use App\Models\Employee;
@@ -36,7 +37,10 @@ class ChangeEmployeeStatus
 
     private bool $changed = false;
 
-    public function __construct(private readonly SetUserActive $setActive) {}
+    public function __construct(
+        private readonly SetUserActive $setActive,
+        private readonly LeaveEmploymentTrim $trim,
+    ) {}
 
     /** Whether the last handle() changed anything (false when the stored status and day were asked for again). */
     public function changed(): bool
@@ -92,6 +96,11 @@ class ChangeEmployeeStatus
             // leaver without one) are flagged so the rebuild removes them; manual days stay. Days the window gained
             // (a last working day extended or cleared, back to active) are backfilled by the hourly close.
             RebuildMarks::outsideEmployment($current);
+
+            // Leave outside the new window goes too: approved days after the last working day (from today for a leaver
+            // without one) are removed and refunded, open requests reaching past it are cancelled (audited; mail after
+            // the commit, only to an active login, which a leaver's is not once the step below disables it).
+            $this->trim->apply($current, $by);
 
             // The login follows the status only when it moves between "can sign in" and "cannot"; a change inside a
             // group (or a re-post) never touches an account an Admin disabled or enabled on the Users screen.

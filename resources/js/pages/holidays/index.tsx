@@ -21,9 +21,14 @@ import { formatDate } from '@/lib/format-date';
 import { nextTableUrl } from '@/lib/table-query';
 import { index } from '@/routes/holidays';
 
+/** A list row: the holiday plus the approved requests whose range covers its date (people this user may see). */
+type HolidayListRow = HolidayRow & {
+    affected_leave: { request_id: number; employee: string }[];
+};
+
 type Props = {
     /** The chosen year's holidays, by date. */
-    holidays: HolidayRow[];
+    holidays: HolidayListRow[];
     /** Years with holidays, plus last, this and next year, ascending. */
     years: number[];
     filters: { year: number };
@@ -37,7 +42,7 @@ export default function Holidays({ holidays, years, filters }: Props) {
 
     const [editing, setEditing] = useState<HolidayRow | 'new' | null>(null);
     // The last row asked about stays set while the dialog animates closed, so its text does not change mid-close.
-    const [deleting, setDeleting] = useState<HolidayRow | null>(null);
+    const [deleting, setDeleting] = useState<HolidayListRow | null>(null);
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [busy, setBusy] = useState(false);
 
@@ -49,7 +54,7 @@ export default function Holidays({ holidays, years, filters }: Props) {
         );
     };
 
-    const askDelete = (holiday: HolidayRow) => {
+    const askDelete = (holiday: HolidayListRow) => {
         setDeleting(holiday);
         setConfirmOpen(true);
     };
@@ -69,7 +74,7 @@ export default function Holidays({ holidays, years, filters }: Props) {
         });
     };
 
-    const columns: DataTableColumn<HolidayRow>[] = [
+    const columns: DataTableColumn<HolidayListRow>[] = [
         {
             key: 'date',
             header: 'Date',
@@ -211,13 +216,51 @@ export default function Holidays({ holidays, years, filters }: Props) {
                 onOpenChange={setConfirmOpen}
                 title="Delete holiday?"
                 description={
-                    deleting
-                        ? `"${deleting.name}" will be removed from the calendar. Attendance for that day is recalculated.`
-                        : ''
+                    deleting ? <DeleteDescription holiday={deleting} /> : ''
                 }
                 processing={busy}
                 onConfirm={confirmDelete}
             />
+        </>
+    );
+}
+
+/**
+ * The delete confirmation text. Removing a holiday does not add leave days back (they were never counted), so the
+ * people with approved leave around it are named for HR to follow up. Rendered inside the dialog's description
+ * paragraph, so only phrasing elements (spans) are used.
+ */
+function DeleteDescription({ holiday }: { holiday: HolidayListRow }) {
+    const people = holiday.affected_leave;
+
+    return (
+        <>
+            <span className="block">
+                &ldquo;{holiday.name}&rdquo; will be removed from the calendar.
+                Attendance for that day is recalculated.
+            </span>
+            {people.length > 0 && (
+                <>
+                    <span className="mt-3 block">
+                        Removing this holiday does not add leave days back.
+                        These people had approved leave around it:
+                    </span>
+                    <span role="list" className="mt-2 block space-y-1">
+                        {people.map((person) => (
+                            <span
+                                key={person.request_id}
+                                role="listitem"
+                                className="block font-medium text-foreground"
+                            >
+                                {person.employee}
+                            </span>
+                        ))}
+                    </span>
+                    <span className="mt-3 block">
+                        Ask them to apply for that day if needed.
+                    </span>
+                </>
+            )}
         </>
     );
 }

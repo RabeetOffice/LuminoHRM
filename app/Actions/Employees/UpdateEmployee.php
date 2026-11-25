@@ -2,6 +2,7 @@
 
 namespace App\Actions\Employees;
 
+use App\Actions\Leave\LeaveEmploymentTrim;
 use App\Exceptions\AccountRuleViolation;
 use App\Models\Employee;
 use App\Models\LeaveBalance;
@@ -108,6 +109,8 @@ class UpdateEmployee
             // one opens days, which the hourly close backfills.)
             if ($current->wasChanged(['joining_date', 'last_working_day', 'status'])) {
                 RebuildMarks::outsideEmployment($current);
+                // Leave outside the new window goes too (removed and refunded, open requests cancelled; audited).
+                app(LeaveEmploymentTrim::class)->apply($current, $by);
             }
 
             if ($current->wasChanged('joining_date')) {
