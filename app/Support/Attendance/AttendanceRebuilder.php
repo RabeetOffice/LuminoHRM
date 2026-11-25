@@ -25,7 +25,7 @@ use Throwable;
  *   $rebuilder->rebuildRange('2026-11-01', '2026-11-30', [$employee->id]);   // explicit, with the shift rules in force now
  *   $rebuilder->closeDay('2026-11-24');                // the nightly close for one past date
  *   $rebuilder->daysWithMissingRows('2026-09-23', '2026-11-16');   // past days someone expected has no row (backfill)
- *   $rebuilder->rebuildLeaveToday();                   // today's approved leave without a row yet (shows before the close)
+ *   $rebuilder->rebuildLeaveToday();                   // today's approved full leave without a row yet (shows before the close)
  *
  * Rules kept here (the day rules themselves are in DayCalculator):
  *   - A manual row (is_manual) is never written, deleted or marked: not even its needs_rebuild flag is cleared. Pending
@@ -60,8 +60,12 @@ use Throwable;
  *     DayInput::onLeave; one half is DayInput::leaveHalf, written to attendances.leave_half. A closed day whose leave is
  *     cancelled later (its leave_days rows deleted, the day marked by RebuildMarks::forLeaveDays) is decided again with
  *     its snapshot and its punches, so it turns back into absent / present / late. Leave on a date before the attendance
- *     start date (or while it is unset) is ignored: it changes nothing there. Manual rows ignore leave (decideEntered
- *     passes no leave; the rebuild never writes a manual row).
+ *     start date (or while it is unset) is ignored: it changes nothing there. A manual correction keeps the day's leave
+ *     (ApplyManualCorrection and finaliseManual read it by the same rules, leaveOf): a half-leave day is judged on the
+ *     worked half and keeps leave_half; a full leave day stays on_leave with the entered times (withFullLeave) unless
+ *     the status is overridden (then leave_half is null). leave_half is written on every manual save, never left
+ *     stale. The rebuild still never writes a manual row, so a leave change after a correction reaches that day only
+ *     when it is corrected again or its manual flag is cleared.
  *   - One employee-day that cannot be decided (bad data) never blocks the others: it is logged (class and ids only),
  *     its row (if any) gets needs_attention = true and needs_rebuild = false inside the same locked transaction (so it
  *     cannot stay at the head of the pending queue, and a punch stored afterwards re-marks it), and the rest of the
@@ -78,7 +82,9 @@ class AttendanceRebuilder
     /** Default of settings('attendance.duplicate_punch_minutes') when the stored value is unusable. */
     private const DEFAULT_DUPLICATE_MINUTES = 5;
 
-    private const CHUNK = 200; // 200 rows x 17 columns stays under every driver's bindings limit
+    // 200 rows x 18 columns (employee_id, date, is_manual, the 13 DECIDED columns, created_at, updated_at) = 3,600
+    // bindings, well under MariaDB's 65,535 and SQLite's 32,766.
+    private const CHUNK = 200;
 
     /** The columns a decided day writes (besides employee_id, date and is_manual). */
     private const DECIDED = [
@@ -117,22 +123,36 @@ class AttendanceRebuilder
     }
 
     /**
-     * Today's approved leave that has no attendance row yet (nobody punched, the nightly close has not run): those
-     * employee-days are decided now, so a person on leave today shows as On Leave straight away (a half-day leave day
-     * without punches still waits, like any open day). Rows that already exist are kept up to date by the marks a leave
-     * change sets. Two queries when there is nothing to do; idempotent. Returns how many rows were written.
+     * Today's approved FULL leave that has no attendance row yet (nobody punched, the nightly close has not run): those
+     * employee-days are decided now, so a person on leave today shows as On Leave straight away. Rows that already exist
+     * are kept up to date by the marks a leave change sets. Only days this can actually write are candidates, so the
+     * every-minute run stays idle: a full leave day (half 'full', or both 'am' and 'pm' that date; a half-day leave day
+     * without punches waits like any open day), of someone employed today (joined, not past the last working day) who is
+     * not a leaver without a last working day, and only once attendance has started (AttendanceClock::startDate() set and
+     * not after today; leave before it changes nothing). One query when there is nothing to do (none at all before the
+     * start date); idempotent. Returns how many rows were written.
      */
     public function rebuildLeaveToday(): int
     {
         $today = $this->clock->attendanceToday();
+        $start = $this->startDate();
 
-        $have = Attendance::query()->toBase()->where('date', $today)->pluck('employee_id')
-            ->map(fn ($id): int => (int) $id)->all();
+        if ($start === null || $start > $today) {
+            return 0;
+        }
 
-        $pairs = LeaveDay::query()->toBase()->where('date', $today)
-            ->whereNotIn('employee_id', $have)
-            ->distinct()
-            ->pluck('employee_id')
+        $pairs = Leavers::exceptWithoutLastDay(DB::table('leave_days as l')
+            ->join('employees as e', 'e.id', '=', 'l.employee_id')
+            ->where('l.date', $today)
+            ->where('e.joining_date', '<', $this->nextDay($today))
+            ->where(fn ($q) => $q->whereNull('e.last_working_day')->orWhere('e.last_working_day', '>=', $today))
+            ->whereNotExists(fn ($q) => $q->select(DB::raw(1))->from('attendances as a')
+                ->whereColumn('a.employee_id', 'l.employee_id')
+                ->where('a.date', $today)), 'e')
+            ->groupBy('l.employee_id')
+            ->havingRaw("SUM(CASE WHEN l.half = 'full' THEN 1 ELSE 0 END) > 0"
+                ." OR (SUM(CASE WHEN l.half = 'am' THEN 1 ELSE 0 END) > 0 AND SUM(CASE WHEN l.half = 'pm' THEN 1 ELSE 0 END) > 0)")
+            ->pluck('l.employee_id')
             ->map(fn ($id): array => [(int) $id, $today])
             ->all();
 
@@ -342,8 +362,9 @@ class AttendanceRebuilder
      * The manual rows of a closing day that are still open (corrected while the day was open), finalised under a row
      * lock: a row whose status was an explicit override (status_overridden) is only marked closed; any other is decided
      * again from its STORED times (never the punches) with closed-day rules and its own rule snapshot (decideEntered),
-     * keeping is_manual, its times and its note, and marked closed. A row that cannot be decided is marked closed and
-     * flagged. Returns how many rows were finalised.
+     * keeping is_manual, its times and its note, and marked closed. The day's approved leave is applied as in
+     * ApplyManualCorrection (half-day leave judged on the worked half, full leave kept on_leave) and leave_half written
+     * from it. A row that cannot be decided is marked closed and flagged. Returns how many rows were finalised.
      */
     private function finaliseManual(string $date): int
     {
@@ -358,6 +379,11 @@ class AttendanceRebuilder
             $employees = Employee::query()->with('shift')->whereIn('id', $rows->pluck('employee_id')->unique()->all())
                 ->get()->keyBy('id');
             $isHoliday = Holiday::query()->toBase()->where('date', $date)->exists();
+            $leave = $this->leaveOf(
+                array_values(array_map('intval', $rows->pluck('employee_id')->unique()->all())),
+                [$date],
+                $this->startDate(),
+            );
 
             foreach ($rows as $row) {
                 $employee = $employees->get($row->employee_id);
@@ -373,7 +399,12 @@ class AttendanceRebuilder
 
                 try {
                     $rules = $this->rulesFor($employee, $row);
-                    $result = $this->decideEntered($rules, $date, $in, $out, true, $isHoliday);
+                    $dayLeave = $leave[$row->employee_id.'|'.$date] ?? null;
+                    $result = $this->decideEntered($rules, $date, $in, $out, true, $isHoliday, $dayLeave === 'full' ? null : $dayLeave);
+
+                    if ($result !== null && $dayLeave === 'full') {
+                        $result = $this->withFullLeave($result);
+                    }
                 } catch (Throwable $e) {
                     $this->logFailed((int) $row->employee_id, $date, $e);
                     $row->forceFill(['closed' => true, 'needs_attention' => true])->save();
@@ -389,6 +420,7 @@ class AttendanceRebuilder
                     'early_minutes' => $result->earlyMinutes,
                     'overtime_minutes' => $result->overtimeMinutes,
                     'needs_attention' => $result->needsAttention,
+                    'leave_half' => $result->leaveHalf,
                     'closed' => true,
                 ])->save();
             }
@@ -441,14 +473,19 @@ class AttendanceRebuilder
      * singleRole): a clock-in alone is the clock-in (late rule, flagged once closed), a clock-out alone the clock-out
      * (never late), never re-decided by the shift midpoint. $closed true applies the closed-day rules (half day, early
      * minutes, single-time flag). Used by ApplyManualCorrection, by correction-request approval (through it) and by the
-     * nightly close (finaliseManual).
+     * nightly close (finaliseManual). Approved half-day leave is passed as $leaveHalf (a correction on an am-leave day
+     * judges only the afternoon, never late); a full leave day is never passed as onLeave, the caller keeps it on_leave
+     * with withFullLeave() unless the status is overridden.
      *
      * @param  array{start_time: string, end_time: string, grace_minutes: int, half_day_hours: float, weekly_offs: list<string>, overtime_min_minutes: int, attendance_exempt: bool}  $rules  from rulesFor()
      * @param  string|null  $clockIn  naive "Y-m-d H:i:s"
      * @param  string|null  $clockOut  naive "Y-m-d H:i:s" (after midnight: the next calendar day)
      * @param  bool|null  $isHoliday  null: looked up
+     * @param  string|null  $leaveHalf  the day's approved half-day leave ('am' / 'pm', from leaveOn), else null: the
+     *                                  worked half alone is judged (DayInput::leaveHalf). Never a full leave day: the
+     *                                  caller applies withFullLeave() to the result for that
      */
-    public function decideEntered(array $rules, string $date, ?string $clockIn, ?string $clockOut, bool $closed, ?bool $isHoliday = null): ?DayResult
+    public function decideEntered(array $rules, string $date, ?string $clockIn, ?string $clockOut, bool $closed, ?bool $isHoliday = null, ?string $leaveHalf = null): ?DayResult
     {
         $date = $this->date($date);
 
@@ -475,6 +512,7 @@ class AttendanceRebuilder
                 $clockIn === null && $clockOut !== null => 'out',
                 default => null,
             },
+            leaveHalf: $leaveHalf,
         ));
     }
 
@@ -574,15 +612,8 @@ class AttendanceRebuilder
             $holidays = array_flip(Holiday::query()->toBase()->whereIn('date', $dates)->pluck('date')
                 ->map(fn ($d) => substr((string) $d, 0, 10))->all());
 
-            // Approved leave as it is now (data, not part of the snapshot): per employee-day "full", or the halves.
-            $leave = [];
-            LeaveDay::query()->toBase()
-                ->whereIn('employee_id', $employeeIds)
-                ->whereIn('date', $dates)
-                ->get(['employee_id', 'date', 'half'])
-                ->each(function (object $l) use (&$leave): void {
-                    $leave[$l->employee_id.'|'.substr((string) $l->date, 0, 10)][(string) $l->half] = true;
-                });
+            // Approved leave as it is now (data, not part of the snapshot): per employee-day 'full', 'am' or 'pm'.
+            $leave = $this->leaveOf($employeeIds, $dates, $start);
 
             $punches = [];
             DevicePunch::query()->toBase()
@@ -661,10 +692,10 @@ class AttendanceRebuilder
 
                     $closed = $date < $today;
 
-                    // Leave before the attendance start (or while it is unset) changes nothing.
-                    $dayLeave = $start !== null && $date >= $start ? ($leave[$key] ?? []) : [];
-                    $onLeave = isset($dayLeave['full']) || (isset($dayLeave['am']) && isset($dayLeave['pm']));
-                    $leaveHalf = $onLeave ? null : (isset($dayLeave['am']) ? 'am' : (isset($dayLeave['pm']) ? 'pm' : null));
+                    // Leave before the attendance start (or while it is unset) changes nothing (leaveOf leaves it out).
+                    $dayLeave = $leave[$key] ?? null;
+                    $onLeave = $dayLeave === 'full';
+                    $leaveHalf = $onLeave ? null : $dayLeave;
 
                     $result = $this->calculator->calculate(new DayInput(
                         date: $date,
@@ -767,6 +798,68 @@ class AttendanceRebuilder
         }
 
         return $written;
+    }
+
+    /**
+     * The approved leave of the given employee-days as it is now, one query: "id|Y-m-d" => 'full' (a full day, or a
+     * first half and a second half on the same date), 'am' or 'pm'. Days without leave are absent from the map, and so
+     * is leave on a date before the attendance start date (or all of it while that is unset): it changes nothing there.
+     *
+     * @param  list<int>  $employeeIds
+     * @param  list<string>  $dates  "Y-m-d"
+     * @return array<string, 'full'|'am'|'pm'>
+     */
+    private function leaveOf(array $employeeIds, array $dates, ?string $start): array
+    {
+        $dates = array_values(array_filter($dates, fn (string $d): bool => $start !== null && $d >= $start));
+
+        if ($employeeIds === [] || $dates === []) {
+            return [];
+        }
+
+        $halves = [];
+        LeaveDay::query()->toBase()
+            ->whereIn('employee_id', $employeeIds)
+            ->whereIn('date', $dates)
+            ->get(['employee_id', 'date', 'half'])
+            ->each(function (object $l) use (&$halves): void {
+                $halves[$l->employee_id.'|'.substr((string) $l->date, 0, 10)][(string) $l->half] = true;
+            });
+
+        $leave = [];
+        foreach ($halves as $key => $day) {
+            $leave[$key] = isset($day['full']) || (isset($day['am']) && isset($day['pm']))
+                ? 'full'
+                : (isset($day['am']) ? 'am' : 'pm');
+        }
+
+        return $leave;
+    }
+
+    /**
+     * The approved leave of one employee-day, by the same rules as the rebuild (leaveOf): 'full', 'am', 'pm' or null
+     * (none, or a date before the attendance start date). Used by the manual correction.
+     */
+    public function leaveOn(int $employeeId, string $date): ?string
+    {
+        $date = $this->date($date);
+
+        return $this->leaveOf([$employeeId], [$date], $this->startDate())["{$employeeId}|{$date}"] ?? null;
+    }
+
+    /**
+     * A manual correction (calculated, no status override) on a full leave day: the day stays on_leave, the entered times
+     * and worked minutes recorded, no late, early or overtime minutes, never flagged: the same as DayCalculator's full
+     * leave rule. A holiday or weekly off keeps its own status (it wins over leave, as in the calculator). A correction
+     * never sets on_leave by itself: only approved leave does (decideEntered is never given onLeave).
+     */
+    public function withFullLeave(DayResult $result): DayResult
+    {
+        if ($result->status === 'holiday' || $result->status === 'weekend') {
+            return $result;
+        }
+
+        return new DayResult('on_leave', $result->clockIn, $result->clockOut, $result->workedMinutes, 0, 0, 0, false);
     }
 
     /** Logs an employee-day that could not be decided (exception class and ids only, never data). */

@@ -297,10 +297,10 @@ it('decides a day with approved leave', function (array $punches, array $overrid
     'half leave, two punches at the threshold: present, late 0 though the clock-in is late' => [['13:30', '17:30'], ['leaveHalf' => 'am'], ['present', '13:30:00', '17:30:00', 240, 0, 0, 0, false, 'am']],
     'half leave, first half worked, leaves at 13:00: present, no early minutes' => [['09:00', '13:00'], ['leaveHalf' => 'pm'], ['present', '09:00:00', '13:00:00', 240, 0, 0, 0, false, 'pm']],
     'half leave, two punches below the threshold: absent' => [['09:00', '12:59'], ['leaveHalf' => 'pm'], ['absent', '09:00:00', '12:59:00', 239, 0, 0, 0, false, 'pm']],
-    'half leave, one punch: absent and flagged' => [['14:00'], ['leaveHalf' => 'am'], ['absent', null, '14:00:00', 0, 0, 0, 0, true, 'am']],
+    'half leave, one punch: absent and flagged' => [['14:00'], ['leaveHalf' => 'am'], ['absent', '14:00:00', null, 0, 0, 0, 0, true, 'am']],
     'half leave, one late clock-in punch: absent and flagged, never late' => [['10:00'], ['leaveHalf' => 'pm'], ['absent', '10:00:00', null, 0, 0, 0, 0, true, 'pm']],
-    'half leave, two punches under an hour apart: the close-pair rule makes it one punch' => [['13:30', '14:00'], ['leaveHalf' => 'am'], ['absent', null, '13:30:00', 0, 0, 0, 0, true, 'am']],
-    'half leave, a double tap is one punch (the midpoint rule gives its role)' => [['13:30', '13:32'], ['leaveHalf' => 'am'], ['absent', null, '13:30:00', 0, 0, 0, 0, true, 'am']],
+    'half leave, two punches under an hour apart: the close-pair rule makes it one punch' => [['13:30', '14:00'], ['leaveHalf' => 'am'], ['absent', '13:30:00', null, 0, 0, 0, 0, true, 'am']],
+    'half leave, a double tap is one punch (the worked half midpoint gives its role)' => [['13:30', '13:32'], ['leaveHalf' => 'am'], ['absent', '13:30:00', null, 0, 0, 0, 0, true, 'am']],
     'half leave, no punches: absent' => [[], ['leaveHalf' => 'am'], ['absent', null, null, 0, 0, 0, 0, false, 'am']],
     'half leave, overtime by the normal rule' => [['14:00', '19:00'], ['leaveHalf' => 'am'], ['present', '14:00:00', '19:00:00', 300, 0, 0, 60, false, 'am']],
     'half leave, entered times taken literally' => [['13:30', '14:00'], ['leaveHalf' => 'am', 'closePairRule' => false], ['absent', '13:30:00', '14:00:00', 30, 0, 0, 0, false, 'am']],
@@ -322,6 +322,34 @@ it('waits on an open half-leave day without punches', function () {
     expect((new DayCalculator)->calculate(dcInput([], ['closed' => false, 'leaveHalf' => 'am'])))->toBeNull()
         ->and((new DayCalculator)->calculate(dcInput([], ['closed' => false, 'leaveHalf' => 'pm', 'isExempt' => true])))->toBeNull();
 });
+
+/*
+| A lone machine punch on a half-leave day: its role comes from the midpoint of the half actually worked, not of the
+| whole shift. Shift midpoint 13:30. First half on leave ('am'): the worked half is 13:30-18:00, midpoint 15:45.
+| Second half on leave ('pm'): the worked half is 09:00-13:30, midpoint 11:15. Before it: clock-in; at or after it:
+| clock-out. Rows: status, in, out, worked, late, early, overtime, attention, leaveHalf.
+*/
+
+it('decides a lone punch on a half-leave day by the midpoint of the worked half', function (array $punches, array $overrides, array $expected) {
+    $result = (new DayCalculator)->calculate(dcInput($punches, $overrides));
+
+    expect($result)->not->toBeNull()
+        ->and([...dcRow($result), $result->leaveHalf])->toBe($expected);
+})->with([
+    'am leave, arrives 13:45, open day: clock-in, present' => [['13:45'], ['leaveHalf' => 'am', 'closed' => false], ['present', '13:45:00', null, 0, 0, 0, 0, false, 'am']],
+    'am leave, arrives 13:45, closed day: clock-in, absent and flagged' => [['13:45'], ['leaveHalf' => 'am'], ['absent', '13:45:00', null, 0, 0, 0, 0, true, 'am']],
+    'am leave, 15:44:59, closed: still the clock-in' => [['15:44:59'], ['leaveHalf' => 'am'], ['absent', '15:44:59', null, 0, 0, 0, 0, true, 'am']],
+    'am leave, 15:45 exactly, open day: clock-out' => [['15:45'], ['leaveHalf' => 'am', 'closed' => false], ['present', null, '15:45:00', 0, 0, 0, 0, false, 'am']],
+    'am leave, 17:00, closed day: clock-out, absent and flagged' => [['17:00'], ['leaveHalf' => 'am'], ['absent', null, '17:00:00', 0, 0, 0, 0, true, 'am']],
+    'pm leave, 11:00, open day: clock-in, present' => [['11:00'], ['leaveHalf' => 'pm', 'closed' => false], ['present', '11:00:00', null, 0, 0, 0, 0, false, 'pm']],
+    'pm leave, 11:00, closed day: clock-in, absent and flagged' => [['11:00'], ['leaveHalf' => 'pm'], ['absent', '11:00:00', null, 0, 0, 0, 0, true, 'pm']],
+    'pm leave, 11:15 exactly, open day: clock-out' => [['11:15'], ['leaveHalf' => 'pm', 'closed' => false], ['present', null, '11:15:00', 0, 0, 0, 0, false, 'pm']],
+    'pm leave, 12:45, closed day: clock-out, absent and flagged' => [['12:45'], ['leaveHalf' => 'pm'], ['absent', null, '12:45:00', 0, 0, 0, 0, true, 'pm']],
+    'an entered single role still wins: am leave, clock-out entered at 14:00' => [['14:00'], ['leaveHalf' => 'am', 'singleRole' => 'out'], ['absent', null, '14:00:00', 0, 0, 0, 0, true, 'am']],
+    'an entered single role still wins: pm leave, clock-in entered at 12:00' => [['12:00'], ['leaveHalf' => 'pm', 'singleRole' => 'in'], ['absent', '12:00:00', null, 0, 0, 0, 0, true, 'pm']],
+    'half leave ignored on a holiday: the whole-shift midpoint' => [['14:00'], ['leaveHalf' => 'am', 'isHoliday' => true], ['holiday', null, '14:00:00', 0, 0, 0, 0, false, null]],
+    'full leave wins: the whole-shift midpoint' => [['14:00'], ['leaveHalf' => 'am', 'onLeave' => true], ['on_leave', null, '14:00:00', 0, 0, 0, 0, false, null]],
+]);
 
 it('rejects an unknown leave half', function () {
     (new DayCalculator)->calculate(dcInput([], ['leaveHalf' => 'full']));

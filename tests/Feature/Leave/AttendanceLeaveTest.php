@@ -1,5 +1,6 @@
 <?php
 
+use App\Actions\Attendance\ApplyManualCorrection;
 use App\Models\Attendance;
 use App\Models\Employee;
 use App\Models\Holiday;
@@ -259,7 +260,7 @@ it('runs today\'s leave from the minute command', function () {
     expect(alRow($e, '2026-11-24')->status)->toBe('on_leave');
 });
 
-it('needs two queries for today\'s leave when there is nothing to do', function () {
+it('needs one query for today\'s leave when there is nothing to do', function () {
     alEmployee();
     alRebuilder()->rebuildLeaveToday(); // warm-up (settings)
 
@@ -270,7 +271,7 @@ it('needs two queries for today\'s leave when there is nothing to do', function 
 
     alRebuilder()->rebuildLeaveToday();
 
-    expect($count)->toBe(2);
+    expect($count)->toBe(1);
 });
 
 it('reads leave days with one query per batch, whatever the number of days', function () {
@@ -328,3 +329,201 @@ it('sends the half of a half-day leave day on the Daily screen, never for a manu
         ->and($rows[$manual->id]['leave_half'])->toBeNull()
         ->and($response->inertiaProps('summary')['on_leave'])->toBe(1);
 });
+
+/*
+| Fix round (C1, D1, M3, M1). A manual correction on a leave day keeps the leave: a half-leave day is judged on the
+| worked half only (never late, never early) and keeps leave_half; a full leave day corrected without a status override
+| stays on_leave with the entered times recorded (no late / early / overtime, never flagged); a status override wins and
+| clears leave_half. leave_half is always written from the day's approved leave, so it is never stale.
+*/
+
+function alCorrect(Employee $e, string $date, ?string $in, ?string $out, ?string $status = null): Attendance
+{
+    return app(ApplyManualCorrection::class)->handle($e, $date, $in, $out, $status, 'Fixing the day', userWithRole('hr'));
+}
+
+it('clocks an am-leave person in when their lone punch comes before the worked half midpoint', function () {
+    $e = alEmployee();
+    approvedLeave($e, '2026-11-24', half: 'am');
+    punch($e, '2026-11-24 13:45:00');
+
+    alRebuilder()->rebuild($e, '2026-11-24');
+
+    $row = alRow($e, '2026-11-24');
+    expect($row->getRawOriginal('clock_in'))->toBe('2026-11-24 13:45:00')
+        ->and($row->clock_out)->toBeNull()
+        ->and($row->status)->toBe('present')
+        ->and($row->leave_half)->toBe('am');
+});
+
+it('judges only the worked half when a forgotten clock-out is fixed on an am-leave day', function () {
+    $e = alEmployee();
+    approvedLeave($e, '2026-11-23', half: 'am');
+    punch($e, '2026-11-23 13:45:00');
+    alRebuilder()->rebuild($e, '2026-11-23');
+    expect(alRow($e, '2026-11-23')->status)->toBe('absent')->and(alRow($e, '2026-11-23')->needs_attention)->toBeTrue();
+
+    $row = alCorrect($e, '2026-11-23', '13:45', '18:00');
+
+    expect($row->fresh())
+        ->status->toBe('present')
+        ->leave_half->toBe('am')
+        ->late_minutes->toBe(0)
+        ->early_minutes->toBe(0)
+        ->worked_minutes->toBe(255)
+        ->needs_attention->toBeFalse()
+        ->is_manual->toBeTrue();
+});
+
+it('judges the worked first half of a pm-leave day without early minutes', function () {
+    $e = alEmployee();
+    approvedLeave($e, '2026-11-23', half: 'pm');
+
+    $row = alCorrect($e, '2026-11-23', '09:30', '13:30');
+
+    expect($row->fresh())->status->toBe('present')->leave_half->toBe('pm')->late_minutes->toBe(0)->early_minutes->toBe(0);
+
+    $short = alCorrect($e, '2026-11-23', '09:30', '12:00');
+    expect($short->fresh())->status->toBe('absent')->leave_half->toBe('pm');
+});
+
+it('keeps a full leave day on leave when it is corrected without an override, with the entered times', function () {
+    $e = alEmployee();
+    approvedLeave($e, '2026-11-23');
+    alApplyMarks($e, ['2026-11-23']);
+    expect(alRow($e, '2026-11-23')->status)->toBe('on_leave');
+
+    $row = alCorrect($e, '2026-11-23', '09:40', '18:10')->fresh();
+
+    expect($row)
+        ->status->toBe('on_leave')
+        ->leave_half->toBeNull()
+        ->is_manual->toBeTrue()
+        ->status_overridden->toBeFalse()
+        ->worked_minutes->toBe(510)
+        ->late_minutes->toBe(0)
+        ->early_minutes->toBe(0)
+        ->overtime_minutes->toBe(0)
+        ->needs_attention->toBeFalse()
+        ->and($row->getRawOriginal('clock_in'))->toBe('2026-11-23 09:40:00')
+        ->and($row->getRawOriginal('clock_out'))->toBe('2026-11-23 18:10:00');
+});
+
+it('treats a first half and a second half on one date as full leave for a correction', function () {
+    $e = alEmployee();
+    approvedLeave($e, '2026-11-23', half: 'am');
+    approvedLeave($e, '2026-11-23', half: 'pm');
+
+    $row = alCorrect($e, '2026-11-23', '10:00', null)->fresh();
+
+    expect($row)->status->toBe('on_leave')->leave_half->toBeNull()->needs_attention->toBeFalse();
+});
+
+it('lets a status override win over leave and clears the half', function () {
+    $e = alEmployee();
+    approvedLeave($e, '2026-11-23', half: 'am');
+    punch($e, '2026-11-23 13:45:00');
+    punch($e, '2026-11-23 18:00:00');
+    alRebuilder()->rebuild($e, '2026-11-23');
+    expect(alRow($e, '2026-11-23')->leave_half)->toBe('am');
+
+    $row = alCorrect($e, '2026-11-23', '13:45', '18:00', 'late')->fresh();
+    expect($row)->status->toBe('late')->leave_half->toBeNull()->status_overridden->toBeTrue()->late_minutes->toBe(285);
+
+    $full = alEmployee();
+    approvedLeave($full, '2026-11-23');
+    $overridden = alCorrect($full, '2026-11-23', '09:00', '18:00', 'present')->fresh();
+    expect($overridden)->status->toBe('present')->leave_half->toBeNull();
+});
+
+it('never leaves a stale half on a manual correction', function () {
+    $e = alEmployee();
+    // A row decided while an am half was approved; the leave has since been cancelled (no leave_days left).
+    Attendance::factory()->create([
+        'employee_id' => $e->id, 'date' => '2026-11-23', 'status' => 'present', 'leave_half' => 'am', 'closed' => true,
+        'clock_in' => '2026-11-23 13:45:00', 'clock_out' => '2026-11-23 18:00:00', 'worked_minutes' => 255,
+    ]);
+
+    expect(alCorrect($e, '2026-11-23', '13:45', '18:00')->fresh())->leave_half->toBeNull()->status->toBe('late');
+
+    // And the other way round: a pm half approved after a manual row without one.
+    approvedLeave($e, '2026-11-23', half: 'pm');
+    expect(alCorrect($e, '2026-11-23', '09:00', '13:00')->fresh()->leave_half)->toBe('pm');
+});
+
+it('keeps the leave when the nightly close finalises a manual row corrected on the open day', function () {
+    $half = alEmployee();
+    $full = alEmployee();
+    $none = alEmployee();
+    approvedLeave($half, '2026-11-24', half: 'am');
+    approvedLeave($full, '2026-11-24');
+
+    $open = alCorrect($half, '2026-11-24', '13:45', null)->fresh();
+    expect($open)->status->toBe('present')->leave_half->toBe('am')->closed->toBeFalse();
+    expect(alCorrect($full, '2026-11-24', '09:10', null)->fresh()->status)->toBe('on_leave');
+    alCorrect($none, '2026-11-24', '13:45', null);
+    // A stale half on a manual row of someone with no leave is cleared by the close too.
+    Attendance::query()->where('employee_id', $none->id)->update(['leave_half' => 'pm']);
+
+    $this->travelTo(CarbonImmutable::parse('2026-11-25 10:00:00', 'Asia/Karachi'));
+    alRebuilder()->closeDay('2026-11-24');
+
+    expect(alRow($half, '2026-11-24'))
+        ->status->toBe('absent') // a single time on a closed half-leave day
+        ->leave_half->toBe('am')
+        ->late_minutes->toBe(0)
+        ->needs_attention->toBeTrue()
+        ->closed->toBeTrue()
+        ->is_manual->toBeTrue();
+    expect(alRow($full, '2026-11-24'))
+        ->status->toBe('on_leave')->leave_half->toBeNull()->needs_attention->toBeFalse()->closed->toBeTrue();
+    expect(alRow($none, '2026-11-24'))
+        ->status->toBe('late')->leave_half->toBeNull()->needs_attention->toBeTrue();
+});
+
+it('creates today\'s on leave row for a first half and a second half on the same date', function () {
+    $e = alEmployee();
+    approvedLeave($e, '2026-11-24', half: 'am');
+    approvedLeave($e, '2026-11-24', half: 'pm');
+
+    expect(alRebuilder()->rebuildLeaveToday())->toBe(1)
+        ->and(alRow($e, '2026-11-24')->status)->toBe('on_leave');
+});
+
+it('leaves out of today\'s leave run the people it could never write', function () {
+    $count = function (): int {
+        $n = 0;
+        DB::listen(function () use (&$n) {
+            $n++;
+        });
+        expect(alRebuilder()->rebuildLeaveToday())->toBe(0);
+
+        return $n;
+    };
+
+    alEmployee();
+    alRebuilder()->rebuildLeaveToday(); // warm-up (settings)
+    $idle = $count();
+
+    // A half-leave day without punches (it waits), a leaver without a last working day, someone who has left already,
+    // someone joining later.
+    approvedLeave(alEmployee(), '2026-11-24', half: 'pm');
+    approvedLeave(alEmployee(['status' => 'resigned', 'last_working_day' => null]), '2026-11-24');
+    approvedLeave(alEmployee(['last_working_day' => '2026-11-20']), '2026-11-24');
+    approvedLeave(alEmployee(['joining_date' => '2026-11-30']), '2026-11-24');
+
+    expect($count())->toBe($idle)
+        ->and(Attendance::query()->count())->toBe(0);
+});
+
+it('does nothing for today\'s leave before attendance has started', function (?string $start) {
+    Settings::set('attendance', ['start_date' => $start]);
+    $e = alEmployee();
+    approvedLeave($e, '2026-11-24');
+
+    expect(alRebuilder()->rebuildLeaveToday())->toBe(0)
+        ->and(alRow($e, '2026-11-24'))->toBeNull();
+})->with([
+    'no start date' => [null],
+    'start date after today' => ['2026-11-25'],
+]);

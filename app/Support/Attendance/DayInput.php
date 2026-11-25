@@ -28,7 +28,8 @@ namespace App\Support\Attendance;
  *                         day are a single punch (a slow double tap or a forgotten punch). False for times a person
  *                         entered (a manual correction), which are taken literally: 09:00-09:40 is 40 minutes worked
  *   singleRole            null for machine punches (one kept punch is a clock-in before the shift midpoint, a clock-out
- *                         at or after it). 'in' or 'out' when a person entered exactly one time and said which it is:
+ *                         at or after it; on a half-leave working day the midpoint of the half worked: 'am' leave ->
+ *                         midpoint of [shift midpoint, end], 'pm' leave -> midpoint of [start, shift midpoint]). 'in' or 'out' when a person entered exactly one time and said which it is:
  *                         that one kept punch is then always the clock-in ('in': the late rule applies) or always the
  *                         clock-out ('out': never late), whatever the midpoint. Ignored with two or more kept punches
  *   leaveHalf             'am' (first half) or 'pm' (second half) when approved half-day leave covers one half of the day,

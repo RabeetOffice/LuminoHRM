@@ -35,8 +35,13 @@ use InvalidArgumentException;
  *   - A day with a clock-out is decided as a complete day (closed-day rules: half day, early minutes, single-time flag)
  *     even when it is today. A day with a clock-in only on the open day is provisional (open-day rules); the nightly
  *     close finalises it from the stored times (AttendanceRebuilder::closeDay).
- *   - Without a status override the calculator decides everything.
- *   - With an override only the STATUS is forced (status_overridden = true); minutes still come from the entered times:
+ *   - Without a status override the calculator decides everything, and the day's approved leave is kept (read from
+ *     leave_days by the rebuild's rules, AttendanceRebuilder::leaveOn: full or am+pm = full day, leave before the
+ *     attendance start date ignored): on a half-leave day only the worked half is judged (never late, never early) and
+ *     leave_half is kept; a full leave day stays on_leave with the entered times and worked minutes recorded (no late,
+ *     early or overtime minutes, never flagged). A correction never sets on_leave by itself.
+ *   - With an override only the STATUS is forced (status_overridden = true, leave ignored, leave_half null); minutes
+ *     still come from the entered times:
  *       present   late 0; worked, early and overtime as calculated
  *       late      late = the real minutes after the shift start (beyond the grace); worked, early, overtime as calculated
  *       half_day  late 0 (as the calculator does for a half day); worked, early, overtime as calculated
@@ -240,8 +245,18 @@ class ApplyManualCorrection
         $rules = $this->rebuilder->rulesFor($employee, $row);
         $closed = $date < $today;
 
+        // The day's approved leave (same rules as the rebuild) is kept unless the status is overridden: half-day leave
+        // judges only the worked half; a full leave day stays on_leave with the entered times.
+        $leave = $status === null ? $this->rebuilder->leaveOn((int) $employee->id, $date) : null;
+
         // A clock-out means the day is complete as entered: decided with the closed-day rules even when it is today.
-        $result = $this->rebuilder->decideEntered($rules, $date, $in, $out, $closed || $out !== null);
+        $result = $this->rebuilder->decideEntered(
+            $rules, $date, $in, $out, $closed || $out !== null, null, $leave === 'full' ? null : $leave,
+        );
+
+        if ($result !== null && $leave === 'full') {
+            $result = $this->rebuilder->withFullLeave($result);
+        }
 
         $values = $status === null ? $this->calculated($result) : $this->overridden($status, $rules, $date, $in, $out, $result);
 
@@ -255,6 +270,8 @@ class ApplyManualCorrection
             'clock_out' => $status === 'absent' ? null : $out,
             'shift_id' => $rules['shift_id'] ?? $row->shift_id,
             'shift_rules' => $rules,
+            // Always written, never left stale: the half from the day's approved leave, null with an override.
+            'leave_half' => $status === null ? $result?->leaveHalf : null,
             'is_manual' => true,
             'status_overridden' => $status !== null,
             'needs_rebuild' => false,

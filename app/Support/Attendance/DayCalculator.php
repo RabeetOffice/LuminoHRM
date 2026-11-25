@@ -28,6 +28,9 @@ use InvalidArgumentException;
  *   - one kept punch: before the shift midpoint it is the clock-in (the late rule applies); at or after the midpoint it
  *     is the clock-out (never late). Either way the status is present / late and, once closed, needs attention. A
  *     single time a person entered (singleRole 'in' / 'out') keeps the role they gave it instead of the midpoint rule.
+ *     On a half-leave working day the midpoint is that of the half actually worked: 'am' leave -> midpoint of [shift
+ *     midpoint, end] (15:45 for 09:00-18:00), 'pm' leave -> midpoint of [start, shift midpoint] (11:15), so an am-leave
+ *     person arriving at 13:45 is clocked in, not out.
  *
  * Arithmetic is on whole minutes, rounded down from the seconds the machine records:
  *   - late       when the WHOLE minutes from shift start to clock-in are more than the grace, so 09:15:59 is on time
@@ -124,9 +127,19 @@ final class DayCalculator
         $last = count($kept) > 1 ? $kept[count($kept) - 1] : null;
         $onePunch = $first !== null && $last === null;
 
-        // One punch at or after the shift midpoint is a clock-out (the clock-in is missing). A time a person entered alone
-        // keeps the role they gave it (singleRole), whatever the midpoint.
+        // Half-day leave applies on a working day only (a holiday, weekly off or full leave day ignores it).
+        $half = ($in->isHoliday || $offDay || $in->onLeave) ? null : $in->leaveHalf;
+
+        // One punch at or after the midpoint is a clock-out (the clock-in is missing). The midpoint is the shift's, or on
+        // a half-leave day the midpoint of the half actually worked: first half on leave ('am') -> the midpoint of
+        // [shift midpoint, end]; second half on leave ('pm') -> the midpoint of [start, shift midpoint]. A time a person
+        // entered alone keeps the role they gave it (singleRole), whatever the midpoint.
         $midpoint = $start->modify('+'.intdiv($end->getTimestamp() - $start->getTimestamp(), 2).' seconds');
+        $midpoint = match ($half) {
+            'am' => $midpoint->modify('+'.intdiv($end->getTimestamp() - $midpoint->getTimestamp(), 2).' seconds'),
+            'pm' => $start->modify('+'.intdiv($midpoint->getTimestamp() - $start->getTimestamp(), 2).' seconds'),
+            default => $midpoint,
+        };
         $onlyOut = $onePunch && match ($in->singleRole) {
             'in' => false,
             'out' => true,
@@ -151,8 +164,6 @@ final class DayCalculator
         }
 
         // Half-day leave on a working day (a full leave day wins). The status describes the worked half.
-        $half = $in->onLeave ? null : $in->leaveHalf;
-
         if ($half !== null) {
             return $this->halfLeave($in, $half, $first, $last, $onePunch, $clockIn, $clockOut, $worked, $end);
         }

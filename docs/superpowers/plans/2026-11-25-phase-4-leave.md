@@ -77,6 +77,7 @@ The design settles most behaviour. Where it is silent, or where the brief sugges
 - **`App\Support\Leave\LeaveRouting`** (Task 1) is the only place that decides who approves, sees, cancels or administers. Every controller and action calls it; no screen re-implements a rule.
 - **`App\Support\Leave\LeaveDays`** and **`App\Support\Leave\LeaveBalances`** (Task 2) are the only places that count days and compute balances. Screens, the apply check, the approval re-check, the dashboard and the profile all call them.
 - **`App\Support\Attendance\RebuildMarks::forLeaveDays(int $employeeId, array $dates): int`** (Task 1) is how any leave change tells attendance to recompute days.
+- **Attendance on leave days** (Task 7): the Phase 3 exempt rule is kept: an open exempt day without punches is null (nothing recorded yet), also with half-day leave; a lone machine punch on a half-leave day takes its role from the midpoint of the half worked; a manual correction keeps the day's leave (half judged on the worked half, full leave stays `on_leave`; an override wins and clears `leave_half`).
 - **`App\Actions\Leave\LeaveDayRemoval::remove(LeaveRequest $locked, array $dates, string $why, ?User $by): array`** (Task 6) is the one way leave days leave the ledger after approval (HR cancel, holiday refund, exit trimming).
 
 ---
