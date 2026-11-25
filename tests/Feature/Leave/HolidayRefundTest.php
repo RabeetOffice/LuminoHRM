@@ -2,6 +2,7 @@
 
 use App\Actions\Leave\HolidayLeaveRefund;
 use App\Mail\LeaveRequestDecided;
+use App\Models\ActivityEntry;
 use App\Models\Attendance;
 use App\Models\Employee;
 use App\Models\Holiday;
@@ -12,6 +13,8 @@ use App\Support\Attendance\AttendanceRebuilder;
 use App\Support\Leave\LeaveBalances;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Spatie\Activitylog\Models\Activity;
@@ -53,7 +56,7 @@ it('refunds an approved leave day when a holiday is added on it, re-marks attend
 
     $this->actingAs($hr)->post('/leave/holidays', ['name' => 'Snow Day', 'date' => '2026-11-23'])
         ->assertSessionHasNoErrors()
-        ->assertSessionHas('success', 'Holiday added. 1 approved leave day on that date went back to its balance; the employee was told.');
+        ->assertSessionHas('success', 'Holiday added. 1 person · 1 day went back to their balance.');
 
     $r->refresh();
     expect($r->status)->toBe('approved')
@@ -94,7 +97,10 @@ it('cancels a one-day request whose only day becomes a holiday', function () {
         ->and($r->cancelled_at)->not->toBeNull()
         ->and(hlrDates($r))->toBe([]);
     expect(Activity::where('log_name', 'leave')->where('properties->request', $r->id)->sole()->properties['cancelled'])->toBeTrue();
-    Mail::assertQueued(LeaveRequestDecided::class, fn ($m) => $m->outcome === 'refunded');
+    // A whole request gone: the cancelled mail with the holiday note (the mail leaves out "Days: 0").
+    Mail::assertQueued(LeaveRequestDecided::class, 1);
+    Mail::assertQueued(LeaveRequestDecided::class, fn ($m) => $m->outcome === 'cancelled'
+        && $m->note === 'Founders Day on Tue 1 Dec 2026. Every day became a holiday.');
 });
 
 it('refunds a half day and leaves other people and other dates alone', function () {
@@ -147,8 +153,8 @@ it('adds nothing back when a holiday is deleted', function () {
     Mail::assertNothingQueued();
 });
 
-it('recounts open requests covering the new holiday and holds a request of only holidays at zero days', function () {
-    [, $employee] = hlrPerson();
+it('recounts open requests covering the new holiday and cancels one whose every day became a holiday', function () {
+    [$user, $employee] = hlrPerson();
     $week = leaveRequest($employee, ['from_date' => '2026-12-07', 'to_date' => '2026-12-11', 'days' => 5]);
     $single = leaveRequest($employee, ['from_date' => '2026-12-14', 'to_date' => '2026-12-14', 'days' => 1, 'status' => 'manager_approved']);
     $hr = userWithRole('hr');
@@ -157,13 +163,24 @@ it('recounts open requests covering the new holiday and holds a request of only 
     $this->actingAs($hr)->post('/leave/holidays', ['name' => 'Day B', 'date' => '2026-12-14'])->assertSessionHasNoErrors();
 
     expect($week->fresh()->days)->toBe(4.0)->and($week->fresh()->status)->toBe('pending')
-        ->and($single->fresh()->days)->toBe(0.0)->and($single->fresh()->status)->toBe('manager_approved');
+        ->and($single->fresh()->days)->toBe(0.0)->and($single->fresh()->status)->toBe('cancelled')
+        ->and($single->fresh()->cancel_reason)->toBe('Every day became a holiday.')
+        ->and($single->fresh()->cancelled_by)->toBe($hr->id);
 
     $entry = Activity::where('log_name', 'leave')->where('properties->request', $week->id)->sole();
     expect($entry->description)->toBe('Leave days recounted (holiday)')
         ->and($entry->properties['old'])->toEqual(['days' => 5])
         ->and($entry->properties['attributes'])->toEqual(['days' => 4]);
-    Mail::assertNothingQueued();
+    $cancelled = Activity::where('log_name', 'leave')->where('properties->request', $single->id)->sole();
+    expect($cancelled->properties['cancelled'])->toBeTrue()
+        ->and($cancelled->properties['attributes'])->toEqual(['days' => 0, 'status' => 'cancelled']);
+
+    // Only the cancelled one is mailed (withdrawn: it was never decided); the recount is not.
+    Mail::assertQueued(LeaveRequestDecided::class, 1);
+    Mail::assertQueued(LeaveRequestDecided::class, fn ($m) => $m->hasTo($user->email) && $m->request->is($single)
+        && $m->outcome === 'withdrawn' && $m->note === 'Day B on Mon 14 Dec 2026. Every day became a holiday.');
+    // No balance went back: the flash says nothing about refunds.
+    $this->actingAs($hr)->post('/leave/holidays', ['name' => 'Day C', 'date' => '2026-12-10'])->assertSessionHas('success', 'Holiday added.');
 });
 
 it('is idempotent and touches nobody without leave on the date', function () {
@@ -232,4 +249,128 @@ it('keeps the affected list to people the user may see', function () {
 
     $this->actingAs($hr->fresh())->get('/leave/holidays?year=2026')
         ->assertInertia(fn ($p) => $p->where('holidays.0.affected_leave', []));
+});
+
+it('moves the holiday on a deadlock retry, audits it once and refunds only the new date', function () {
+    // Laravel retries only a top-level transaction, and RefreshDatabase wraps every test in one. Run this test on a
+    // fresh in-memory database of its own (migrated here), then put the shared connection back for the teardown.
+    $connection = DB::connection();
+    $shared = $connection->getPdo();
+    $connection->setPdo(app('db.factory')->make(config('database.connections.sqlite'), 'sqlite-deadlock')->getPdo());
+    app(PermissionRegistrar::class)->forgetCachedPermissions();
+
+    try {
+        Artisan::call('migrate', ['--force' => true]);
+        Settings::set('attendance', ['start_date' => '2026-01-01']);
+
+        [$user, $employee] = hlrPerson();
+        $hr = userWithRole('hr');
+        $holiday = Holiday::factory()->create(['name' => 'Eid', 'date' => '2026-12-07']);
+        $r = approvedLeave($employee, '2026-12-08', '2026-12-09');
+        $other = approvedLeave($employee, '2026-12-04'); // a leave day on neither date
+
+        // The first leave audit entry (written after the holiday row was updated) fails once as a deadlock.
+        $thrown = 0;
+        ActivityEntry::creating(function (ActivityEntry $entry) use (&$thrown) {
+            if ($entry->log_name === 'leave' && $thrown++ === 0) {
+                throw new QueryException('sqlite', 'insert into "activity_log"', [],
+                    new PDOException('SQLSTATE[40001]: Serialization failure: 1213 Deadlock found when trying to get lock; try restarting transaction'));
+            }
+        });
+
+        $this->actingAs($hr)->put("/leave/holidays/{$holiday->id}", ['name' => 'Eid', 'date' => '2026-12-08'])
+            ->assertSessionHasNoErrors()->assertSessionHas('success');
+
+        expect($thrown)->toBe(2)
+            ->and($holiday->fresh()->date->format('Y-m-d'))->toBe('2026-12-08')
+            ->and(Activity::where('log_name', 'attendance')->where('description', 'Holiday updated')->count())->toBe(1)
+            ->and(hlrDates($r->fresh()))->toBe(['2026-12-09'])
+            ->and(hlrDates($other->fresh()))->toBe(['2026-12-04'])
+            ->and(Activity::where('log_name', 'leave')->count())->toBe(1);
+        Mail::assertQueued(LeaveRequestDecided::class, 1);
+        Mail::assertQueued(LeaveRequestDecided::class, fn ($m) => $m->hasTo($user->email) && $m->request->is($r));
+    } finally {
+        ActivityEntry::flushEventListeners();
+        $connection->setPdo($shared);
+        (fn () => $this->transactions = 1)->call($connection); // the RefreshDatabase transaction, rolled back after the test
+        app(PermissionRegistrar::class)->forgetCachedPermissions();
+    }
+});
+
+it('refunds many people with a bounded number of queries per request', function () {
+    $hr = userWithRole('hr');
+    leaveType();
+
+    $run = function (string $date, int $people) use ($hr): int {
+        foreach (range(1, $people) as $i) {
+            $e = Employee::factory()->create(['joining_date' => '2026-01-01']);
+            approvedLeave($e, $date, (new DateTimeImmutable($date))->modify('+1 day')->format('Y-m-d'));
+            leaveRequest($e, ['from_date' => $date, 'to_date' => $date]); // an open request of only that date
+        }
+        Holiday::factory()->create(['name' => 'X', 'date' => $date]);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $changed = DB::transaction(fn () => app(HolidayLeaveRefund::class)->forDate($date, 'X', $hr));
+        $queries = count(DB::getQueryLog());
+        DB::disableQueryLog();
+
+        expect($changed)->toHaveCount($people * 2);
+
+        return $queries;
+    };
+
+    $two = $run('2026-12-01', 2);
+    $eight = $run('2026-12-15', 8);
+
+    // Each affected request costs its own save and audit entry (2 queries); the rest is a fixed number of statements
+    // (12 today: locking reads, employees, requests and their types, one delete, one rebuild flag, what is left, plans).
+    expect(($eight - $two) / 12)->toBeLessThanOrEqual(2.0)
+        ->and($two)->toBeLessThanOrEqual(12 + 4 * 2);
+});
+
+it('says how many people and days went back, halves included', function () {
+    [, $a] = hlrPerson();
+    [, $b] = hlrPerson();
+    approvedLeave($a, '2026-12-03', null, 'am');
+    approvedLeave($b, '2026-12-03', '2026-12-04');
+
+    $this->actingAs(userWithRole('hr'))->post('/leave/holidays', ['name' => 'Eid', 'date' => '2026-12-03'])
+        ->assertSessionHas('success', 'Holiday added. 2 people · 1.5 days went back to their balance.');
+});
+
+it('sends no refund mail to an inactive login', function () {
+    [$user, $employee] = hlrPerson();
+    $user->forceFill(['is_active' => false])->save();
+    $r = approvedLeave($employee, '2026-12-01', '2026-12-02');
+
+    $this->actingAs(userWithRole('hr'))->post('/leave/holidays', ['name' => 'X', 'date' => '2026-12-01'])->assertSessionHasNoErrors();
+
+    expect(hlrDates($r->fresh()))->toBe(['2026-12-02']);
+    Mail::assertNothingQueued();
+});
+
+it('leaves out of the affected list leave cancelled before the holiday, and lists each person once', function () {
+    [, $a] = hlrPerson('employee', ['first_name' => 'Zara', 'last_name' => 'Khan']);
+    [, $b] = hlrPerson('employee', ['first_name' => 'Ali', 'last_name' => 'Raza']);
+    [, $c] = hlrPerson('employee', ['first_name' => 'Bilal', 'last_name' => 'Shah']);
+    Holiday::factory()->create(['name' => 'Eid', 'date' => '2026-12-08']);
+
+    // Zara: cancelled from 7 Dec on, so she is back at work before the holiday: not around it.
+    $partly = approvedLeave($a, '2026-12-03', '2026-12-04');
+    $partly->forceFill(['to_date' => '2026-12-10', 'cancelled_from' => '2026-12-07', 'cancelled_at' => now()])->save();
+    // Ali: two requests whose ranges both cover the holiday: listed once.
+    $first = approvedLeave($b, '2026-12-07');
+    $first->forceFill(['to_date' => '2026-12-09'])->save();
+    $second = approvedLeave($b, '2026-12-09', '2026-12-10');
+    $second->forceFill(['from_date' => '2026-12-08'])->save();
+    // Bilal: partly cancelled only after the holiday: still around it.
+    $later = approvedLeave($c, '2026-12-07');
+    $later->forceFill(['to_date' => '2026-12-11', 'cancelled_from' => '2026-12-10', 'cancelled_at' => now()])->save();
+
+    $this->actingAs(userWithRole('hr'))->get('/leave/holidays?year=2026')
+        ->assertInertia(fn ($p) => $p->where('holidays.0.affected_leave', [
+            ['request_id' => $first->id, 'employee' => 'Ali Raza'],
+            ['request_id' => $later->id, 'employee' => 'Bilal Shah'],
+        ]));
 });

@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\RebuildMarks;
 use App\Support\EmployeeAccess;
+use App\Support\Leave\LeaveDays;
 use DateTimeImmutable;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
@@ -30,9 +31,9 @@ use Throwable;
  * move), closed days included: a holiday changes what the day was.
  *
  * Leave (Task 8): a holiday added on, or moved onto, a date with approved leave days refunds those days
- * (HolidayLeaveRefund, in the same transaction) and mails each employee after the commit. Removing a holiday adds
- * nothing back; the list sends, per holiday, the approved requests covering its date (`affected_leave`, people this
- * user may see) for the delete confirmation.
+ * (HolidayLeaveRefund, in the same transaction; an open request whose every day became a holiday is cancelled) and
+ * mails each employee after the commit. Removing a holiday adds nothing back; the list sends, per holiday, the people
+ * with approved leave around its date (`affected_leave`, people this user may see) for the delete confirmation.
  */
 class HolidayController extends Controller
 {
@@ -86,7 +87,7 @@ class HolidayController extends Controller
 
         try {
             // Retries: the refund locks employee rows after leave rows, so it can deadlock with a leave approval.
-            $touched = DB::transaction(function () use ($request, $refund, $date, $name): array {
+            $changed = DB::transaction(function () use ($request, $refund, $date, $name): array {
                 Holiday::create(['name' => $name, 'date' => $date]);
                 RebuildMarks::forDate($date);
 
@@ -96,20 +97,24 @@ class HolidayController extends Controller
             return back()->withErrors(['date' => 'There is already a holiday on this date.']);
         }
 
-        $this->mailRefunds($touched, $name, $date);
+        $this->mailChanges($changed, $name, $date);
 
-        return $this->toYearOf($date)->with('success', 'Holiday added.'.$this->refundNote($touched));
+        return $this->toYearOf($date)->with('success', 'Holiday added.'.$this->refundNote($changed));
     }
 
     public function update(HolidayRequest $request, Holiday $holiday, HolidayLeaveRefund $refund): RedirectResponse
     {
-        $oldDate = $holiday->date->format('Y-m-d');
         $newDate = (string) $request->validated('date');
         $name = (string) $request->validated('name');
 
         try {
-            $touched = DB::transaction(function () use ($request, $holiday, $refund, $oldDate, $newDate, $name): array {
-                $holiday->update(['name' => $name, 'date' => $newDate]);
+            $changed = DB::transaction(function () use ($request, $holiday, $refund, $newDate, $name): array {
+                // Read and lock the row inside the transaction: a deadlock retry runs this again from the stored row
+                // (the bound model may already hold the new values after a rolled-back attempt, so updating it would
+                // write nothing).
+                $current = Holiday::query()->whereKey($holiday->id)->lockForUpdate()->firstOrFail();
+                $oldDate = $current->date->format('Y-m-d');
+                $current->update(['name' => $name, 'date' => $newDate]);
 
                 if ($oldDate === $newDate) {
                     return [];
@@ -125,9 +130,9 @@ class HolidayController extends Controller
             return back()->withErrors(['date' => 'There is already a holiday on this date.']);
         }
 
-        $this->mailRefunds($touched, $name, $newDate);
+        $this->mailChanges($changed, $name, $newDate);
 
-        return $this->toYearOf($newDate)->with('success', 'Holiday updated.'.$this->refundNote($touched));
+        return $this->toYearOf($newDate)->with('success', 'Holiday updated.'.$this->refundNote($changed));
     }
 
     public function destroy(Holiday $holiday): RedirectResponse
@@ -143,8 +148,13 @@ class HolidayController extends Controller
     }
 
     /**
-     * Per holiday of the year: the approved requests (of people this user may see) whose range covers its date, for the
-     * delete confirmation. One query for the year's requests.
+     * Per holiday of the year: the people (this user may see) with approved leave around its date, for the delete
+     * confirmation. A request counts when its range covers the date and it was not cancelled from that date or earlier
+     * (a partly cancelled request whose remaining days end before the holiday is not around it). Each person once per
+     * holiday. One query, limited to ranges covering one of the holiday dates.
+     *
+     * (Leave days on the date itself are no guide: a holiday date holds no leave day, since counting skips holidays and
+     * adding a holiday refunds them.)
      *
      * @param  list<string>  $dates  the holidays' "Y-m-d" dates
      * @return array<string, list<array{request_id: int, employee: string}>> by date
@@ -157,18 +167,33 @@ class HolidayController extends Controller
 
         $requests = LeaveRequest::query()
             ->where('status', 'approved')
-            ->where('from_date', '<=', max($dates))
-            ->where('to_date', '>=', min($dates))
+            ->where(function ($q) use ($dates): void {
+                foreach ($dates as $date) {
+                    $q->orWhere(fn ($q) => $q->where('from_date', '<=', $date)->where('to_date', '>=', $date));
+                }
+            })
             ->whereIn('employee_id', (new EmployeeAccess($request->user()))->scope(Employee::query()->select('id')))
             ->with('employee')
-            ->get(['id', 'employee_id', 'from_date', 'to_date']);
+            ->orderBy('id')
+            ->get(['id', 'employee_id', 'from_date', 'to_date', 'cancelled_from']);
 
         $byDate = [];
 
         foreach ($dates as $date) {
-            $byDate[$date] = array_values($requests
-                ->filter(fn (LeaveRequest $r): bool => $r->from_date->format('Y-m-d') <= $date && $r->to_date->format('Y-m-d') >= $date)
-                ->map(fn (LeaveRequest $r): array => ['request_id' => $r->id, 'employee' => (string) $r->employee?->full_name])
+            $rows = [];
+
+            foreach ($requests as $r) {
+                $cancelledFrom = $r->cancelled_from?->format('Y-m-d');
+
+                if ($r->from_date->format('Y-m-d') > $date || $r->to_date->format('Y-m-d') < $date
+                    || ($cancelledFrom !== null && $cancelledFrom <= $date) || isset($rows[$r->employee_id])) {
+                    continue;
+                }
+
+                $rows[$r->employee_id] = ['request_id' => $r->id, 'employee' => (string) $r->employee?->full_name];
+            }
+
+            $byDate[$date] = array_values(collect($rows)
                 ->sortBy(fn (array $row): string => mb_strtolower($row['employee']).sprintf('%010d', $row['request_id']))
                 ->all());
         }
@@ -176,45 +201,70 @@ class HolidayController extends Controller
         return $byDate;
     }
 
-    /** @param  list<LeaveRequest>  $touched */
-    private function mailRefunds(array $touched, string $holiday, string $date): void
+    /**
+     * After the commit, to each employee's active login (no login, or an inactive one: no mail): `refunded` (days of
+     * approved leave went back), `cancelled` (approved leave lost every day) or `withdrawn` (an open request whose every
+     * day became a holiday).
+     *
+     * @param  list<array{request: LeaveRequest, outcome: string, refunded: float}>  $changed
+     */
+    private function mailChanges(array $changed, string $holiday, string $date): void
     {
-        if ($touched === []) {
+        if ($changed === []) {
             return;
         }
 
-        $label = (new DateTimeImmutable($date))->format('D j M Y');
+        $on = "{$holiday} on ".(new DateTimeImmutable($date))->format('D j M Y');
         $users = User::query()
-            ->whereIn('employee_id', array_map(fn (LeaveRequest $r): int => (int) $r->employee_id, $touched))
+            ->whereIn('employee_id', array_map(fn (array $c): int => (int) $c['request']->employee_id, $changed))
             ->where('is_active', true)
             ->get()
             ->keyBy('employee_id');
 
-        foreach ($touched as $request) {
+        foreach ($changed as ['request' => $request, 'outcome' => $outcome]) {
             $user = $users->get($request->employee_id);
 
             if ($user === null) {
-                continue; // no active login: no mail (the usual rule)
+                continue;
             }
 
+            $note = $outcome === 'refunded' ? $on : "{$on}. ".HolidayLeaveRefund::CANCEL_REASON;
+
             try {
-                Mail::to($user)->queue(new LeaveRequestDecided($request, $user->name, 'refunded', "{$holiday} on {$label}"));
+                Mail::to($user)->queue(new LeaveRequestDecided($request, $user->name, $outcome, $note));
             } catch (Throwable $e) {
                 report($e); // a mail that cannot be queued never undoes the holiday
             }
         }
     }
 
-    /** @param  list<LeaveRequest>  $touched */
-    private function refundNote(array $touched): string
+    /**
+     * " 2 people · 1.5 days went back to their balance." People and days of APPROVED leave refunded; an open request
+     * cancelled here held nothing.
+     *
+     * @param  list<array{request: LeaveRequest, outcome: string, refunded: float}>  $changed
+     */
+    private function refundNote(array $changed): string
     {
-        $count = count($touched);
+        $people = [];
+        $halves = 0;
 
-        return match (true) {
-            $count === 0 => '',
-            $count === 1 => ' 1 approved leave day on that date went back to its balance; the employee was told.',
-            default => " Approved leave on that date went back to {$count} balances; each employee was told.",
-        };
+        foreach ($changed as $c) {
+            if ($c['refunded'] > 0) {
+                $people[(int) $c['request']->employee_id] = true;
+                $halves += LeaveDays::halves($c['refunded']);
+            }
+        }
+
+        if ($halves === 0) {
+            return '';
+        }
+
+        $count = count($people);
+        $days = rtrim(rtrim(number_format(LeaveDays::fromHalves($halves), 1, '.', ''), '0'), '.');
+
+        return sprintf(' %d %s · %s %s went back to their balance.',
+            $count, $count === 1 ? 'person' : 'people', $days, $halves === 2 ? 'day' : 'days');
     }
 
     /** The list for the year of a saved date, so a holiday saved into another year does not seem to vanish. */

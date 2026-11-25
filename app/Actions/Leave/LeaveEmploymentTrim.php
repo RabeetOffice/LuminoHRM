@@ -31,13 +31,14 @@ use Throwable;
  *   removed only before a later joining date → it stays approved with `days` reduced (cancelled_from would wrongly say
  *   "cancelled from" a date whose later days stay).
  * - Open requests with any counted day outside the window → cancelled.
- * - cancel_reason "Employment ends {date}." or "Joining date moved to {date}."; cancelled_by stays empty (the system
- *   cancelled it); one audit entry `Leave trimmed to employment` per request, causer = who changed the employee
- *   (`removed` dates, `refunded`, `outcome`, `automatic` = true).
+ * - cancel_reason "Employment ends {date}.", "Joining date moved to {date}." or both (days removed at both ends);
+ *   cancelled_by stays empty (the system cancelled it). A request HR had already cancelled in part keeps HR's
+ *   cancelled_by / cancelled_at and gets the trim's reason appended to HR's. One audit entry
+ *   `Leave trimmed to employment` per request, causer = who changed the employee (`removed` dates, `refunded`,
+ *   `outcome`, `automatic` = true).
  * - Mail after the commit, only to an active login (a leaver's login is usually disabled in the same transaction, so
  *   they get none): `cancelled` for approved leave cancelled wholly or from a date, `refunded` for days trimmed before
- *   a later joining date. An open request cancelled this way is not mailed: the decided mail's wording is about
- *   approved leave (see the Task 8 report).
+ *   a later joining date, `withdrawn` for an open request cancelled this way (reason as the note).
  *
  * Idempotent: a second run finds no day outside the window and no open request outside it.
  */
@@ -65,7 +66,7 @@ final class LeaveEmploymentTrim
 
             $mails = [];
             $touched = $this->trimApproved($current, $from, $to, $by, $mails)
-                + $this->cancelOpen($current, $from, $to, $by);
+                + $this->cancelOpen($current, $from, $to, $by, $mails);
 
             if ($mails !== []) {
                 $employeeId = (int) $current->id;
@@ -125,19 +126,14 @@ final class LeaveEmploymentTrim
             $none = ! isset($left[$id]);
             $removed = $result['removed'];
             $afterEnd = array_values(array_filter($removed, fn (string $d): bool => $to !== null && $d > $to));
-            $reason = $afterEnd !== [] ? $this->endsReason($to) : $this->joiningReason($from);
+            $beforeStart = array_values(array_filter($removed, fn (string $d): bool => $d < $from));
+            $reason = $this->reason($beforeStart !== [] ? $from : null, $afterEnd !== [] ? $to : null);
 
             $request->fill(['days' => LeaveDays::fromHalves($left[$id] ?? 0)]);
 
             if ($none) {
                 $outcome = 'cancelled';
-                $request->fill([
-                    'status' => 'cancelled',
-                    'cancelled_from' => null,
-                    'cancelled_by' => null,
-                    'cancelled_at' => now(),
-                    'cancel_reason' => $reason,
-                ]);
+                $request->fill(['status' => 'cancelled', 'cancelled_from' => null, ...$this->cancelFields($request, $reason)]);
             } elseif ($afterEnd !== []) {
                 $outcome = 'partly_cancelled';
                 // A request cancelled from a later date before keeps the earlier cancel-from only when it is earlier.
@@ -145,9 +141,7 @@ final class LeaveEmploymentTrim
                 $existing = $request->cancelled_from?->format('Y-m-d');
                 $request->fill([
                     'cancelled_from' => $existing !== null && $existing < $first ? $existing : $first,
-                    'cancelled_by' => null,
-                    'cancelled_at' => now(),
-                    'cancel_reason' => $reason,
+                    ...$this->cancelFields($request, $reason),
                 ]);
             } else {
                 $outcome = 'trimmed_start';
@@ -170,7 +164,10 @@ final class LeaveEmploymentTrim
         return count($results);
     }
 
-    private function cancelOpen(Employee $employee, string $from, ?string $to, User $by): int
+    /**
+     * @param  list<array{0: LeaveRequest, 1: string, 2: string}>  $mails  [request, outcome, note], filled here
+     */
+    private function cancelOpen(Employee $employee, string $from, ?string $to, User $by, array &$mails): int
     {
         $candidates = LeaveRequest::query()
             ->where('employee_id', $employee->id)
@@ -208,7 +205,10 @@ final class LeaveEmploymentTrim
             }
 
             $request->setRelation('employee', $employee);
-            $reason = $request->from_date->format('Y-m-d') < $from ? $this->joiningReason($from) : $this->endsReason((string) $to);
+            $reason = $this->reason(
+                $request->from_date->format('Y-m-d') < $from ? $from : null,
+                $to !== null && $request->to_date->format('Y-m-d') > $to ? $to : null,
+            );
 
             $request->fill([
                 'status' => 'cancelled',
@@ -224,6 +224,7 @@ final class LeaveEmploymentTrim
                 'reason' => $reason,
             ]);
 
+            $mails[] = [$request, 'withdrawn', $reason];
             $count++;
         }
 
@@ -262,14 +263,38 @@ final class LeaveEmploymentTrim
         ], fn ($v) => $v !== null), $by);
     }
 
-    private function endsReason(string $lastDay): string
+    /**
+     * "Joining date moved to {date}.", "Employment ends {date}." or both (a save that moved the joining date later and
+     * the last day earlier removes days at both ends).
+     */
+    private function reason(?string $joining, ?string $lastDay): string
     {
-        return "Employment ends {$this->dayLabel($lastDay)}.";
+        return implode(' ', array_filter([
+            $joining !== null ? "Joining date moved to {$this->dayLabel($joining)}." : null,
+            $lastDay !== null ? "Employment ends {$this->dayLabel($lastDay)}." : null,
+        ]));
     }
 
-    private function joiningReason(string $joining): string
+    /**
+     * The cancel fields for a trim. A request HR had already cancelled in part keeps who cancelled it and when (that
+     * decision stays theirs; the trim is in the audit entry) and the trim's reason is appended to HR's; otherwise the
+     * system cancels it (cancelled_by empty).
+     *
+     * @return array{cancelled_by?: int|null, cancelled_at?: mixed, cancel_reason: string}
+     */
+    private function cancelFields(LeaveRequest $request, string $reason): array
     {
-        return "Joining date moved to {$this->dayLabel($joining)}.";
+        $earlier = trim((string) $request->cancel_reason);
+
+        if ($request->cancelled_at === null) {
+            return ['cancelled_by' => null, 'cancelled_at' => now(), 'cancel_reason' => $reason];
+        }
+
+        if ($earlier === '' || str_contains($earlier, $reason)) {
+            return ['cancel_reason' => $earlier === '' ? $reason : $earlier];
+        }
+
+        return ['cancel_reason' => (preg_match('/[.!?]$/u', $earlier) === 1 ? $earlier : "{$earlier}.").' '.$reason];
     }
 
     /** "Mon 1 Dec 2026" from "Y-m-d" (no time zone involved). */

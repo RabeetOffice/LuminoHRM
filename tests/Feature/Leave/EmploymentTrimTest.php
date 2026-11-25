@@ -135,7 +135,11 @@ it('trims days before a joining date moved later, keeps the rest approved and ma
 
     Mail::assertQueued(LeaveRequestDecided::class, fn ($m) => $m->hasTo($user->email) && $m->request->is($r) && $m->outcome === 'refunded');
     Mail::assertQueued(LeaveRequestDecided::class, fn ($m) => $m->request->is($before) && $m->outcome === 'cancelled');
-    Mail::assertQueued(LeaveRequestDecided::class, 2); // open requests cancelled this way are not mailed
+    // Open requests cancelled this way get the withdrawn mail, the reason as the note.
+    Mail::assertQueued(LeaveRequestDecided::class, fn ($m) => $m->request->is($open) && $m->outcome === 'withdrawn'
+        && $m->note === 'Joining date moved to Tue 10 Nov 2026.');
+    Mail::assertQueued(LeaveRequestDecided::class, fn ($m) => $m->request->is($openOffOnly) && $m->outcome === 'withdrawn');
+    Mail::assertQueued(LeaveRequestDecided::class, 4);
 });
 
 it('keeps an open request whose only days outside the window are weekly offs', function () {
@@ -171,4 +175,77 @@ it('trims when only the last working day moves earlier', function () {
     etrStatus($hr, $employee, 'resigned', '2026-12-14')->assertSessionHasNoErrors();
 
     expect(etrDates($r->fresh()))->toBe(['2026-12-14'])->and($r->fresh()->cancelled_from->format('Y-m-d'))->toBe('2026-12-15');
+});
+
+it('trims and mails an active login when only the last working day moves earlier', function () {
+    // UpdateEmployee never writes the last working day (the employee form has no such field); it changes through the
+    // status change (ChangeEmployeeStatus), which keeps a resigned employee's login active until it is turned off.
+    [$user, $employee] = etrPerson(['status' => 'resigned', 'last_working_day' => '2026-12-31']);
+    $r = approvedLeave($employee, '2026-12-09', '2026-12-11');
+    $open = leaveRequest($employee, ['from_date' => '2026-12-21', 'to_date' => '2026-12-22', 'days' => 2]);
+
+    etrStatus(userWithRole('hr'), $employee, 'resigned', '2026-12-10')->assertSessionHasNoErrors();
+
+    $r->refresh();
+    expect(etrDates($r))->toBe(['2026-12-09', '2026-12-10'])
+        ->and($r->status)->toBe('approved')
+        ->and($r->cancelled_from->format('Y-m-d'))->toBe('2026-12-11')
+        ->and($r->cancel_reason)->toBe('Employment ends Thu 10 Dec 2026.')
+        ->and($open->fresh()->status)->toBe('cancelled');
+
+    // Already resigned: the status change does not touch the login, so it is still active and is mailed.
+    expect($user->fresh()->is_active)->toBeTrue();
+    Mail::assertQueued(LeaveRequestDecided::class, 2);
+    Mail::assertQueued(LeaveRequestDecided::class, fn ($m) => $m->hasTo($user->email) && $m->request->is($r) && $m->outcome === 'cancelled');
+    Mail::assertQueued(LeaveRequestDecided::class, fn ($m) => $m->hasTo($user->email) && $m->request->is($open) && $m->outcome === 'withdrawn'
+        && $m->note === 'Employment ends Thu 10 Dec 2026.');
+});
+
+it('describes both ends when one trim removes days before the joining date and after the last day', function () {
+    [$user, $employee] = etrPerson(['joining_date' => '2026-11-02', 'status' => 'resigned', 'last_working_day' => '2026-12-31']);
+    $r = approvedLeave($employee, '2026-11-09', '2026-11-13');
+    $open = leaveRequest($employee, ['from_date' => '2026-11-09', 'to_date' => '2026-11-13', 'days' => 5]);
+    // Both ends of the window move in at once (no form does this in one save; the trim must still say both).
+    $employee->forceFill(['joining_date' => '2026-11-10', 'last_working_day' => '2026-11-12'])->saveQuietly();
+
+    expect(app(LeaveEmploymentTrim::class)->apply($employee->fresh(), userWithRole('admin')))->toBe(2);
+
+    $r->refresh();
+    expect(etrDates($r))->toBe(['2026-11-10', '2026-11-11', '2026-11-12'])
+        ->and($r->status)->toBe('approved')
+        ->and($r->cancelled_from->format('Y-m-d'))->toBe('2026-11-13')
+        ->and($r->cancel_reason)->toBe('Joining date moved to Tue 10 Nov 2026. Employment ends Thu 12 Nov 2026.');
+    expect($open->fresh()->status)->toBe('cancelled')
+        ->and($open->fresh()->cancel_reason)->toBe('Joining date moved to Tue 10 Nov 2026. Employment ends Thu 12 Nov 2026.');
+
+    $entry = Activity::where('log_name', 'leave')->where('properties->request', $r->id)->sole();
+    expect($entry->properties['outcome'])->toBe('partly_cancelled')
+        ->and($entry->properties['removed'])->toBe(['2026-11-09', '2026-11-13']);
+    Mail::assertQueued(LeaveRequestDecided::class, fn ($m) => $m->hasTo($user->email) && $m->request->is($open) && $m->outcome === 'withdrawn');
+});
+
+it('keeps an earlier HR cancellation on a partly cancelled request and adds the trim to its reason', function () {
+    [, $employee] = etrPerson();
+    $hr = userWithRole('hr');
+    $r = approvedLeave($employee, '2026-12-01', '2026-12-10');
+    // HR cancelled it from 8 Dec on earlier.
+    LeaveDay::query()->where('leave_request_id', $r->id)->where('date', '>=', '2026-12-08')->delete();
+    $r->forceFill(['days' => 7, 'cancelled_from' => '2026-12-08', 'cancelled_by' => $hr->id,
+        'cancelled_at' => '2026-11-20 10:00:00', 'cancel_reason' => 'Needed at work'])->save();
+    $before = $r->fresh()->cancelled_at;
+
+    etrStatus(userWithRole('admin'), $employee, 'resigned', '2026-12-04')->assertSessionHasNoErrors();
+
+    $r->refresh();
+    expect(etrDates($r))->toBe(['2026-12-01', '2026-12-02', '2026-12-03', '2026-12-04'])
+        ->and($r->status)->toBe('approved')
+        ->and($r->days)->toBe(4.0)
+        ->and($r->cancelled_from->format('Y-m-d'))->toBe('2026-12-05')
+        ->and($r->cancelled_by)->toBe($hr->id)
+        ->and($r->cancelled_at->equalTo($before))->toBeTrue()
+        ->and($r->cancel_reason)->toBe('Needed at work. Employment ends Fri 4 Dec 2026.');
+
+    $entry = Activity::where('log_name', 'leave')->where('properties->request', $r->id)->sole();
+    expect($entry->properties['removed'])->toBe(['2026-12-05', '2026-12-06', '2026-12-07'])
+        ->and($entry->properties['reason'])->toBe('Employment ends Fri 4 Dec 2026.');
 });
