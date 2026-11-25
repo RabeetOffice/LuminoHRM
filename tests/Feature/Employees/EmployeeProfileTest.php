@@ -24,7 +24,7 @@ const EPR_ACCOUNT = 'PK99ZETA9988776655443322';
 const EPR_DEVICE = 'MCH-88123-ZQ';
 const EPR_DOC_TITLE = 'Secret Contract Scan';
 
-const EPR_ALL_TABS = ['basic', 'employment', 'contact', 'banking', 'documents', 'attendance'];
+const EPR_ALL_TABS = ['basic', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave'];
 
 /** A fully filled employee: every group has data, and the restricted data is distinctive. */
 function eprRecord(array $attrs = [], ?User $user = null): Employee
@@ -133,7 +133,7 @@ it('shows an admin any record with all six groups and every tab', function () {
     $props = eprProps($this->actingAs($admin)->get("/employees/{$e->id}")->assertOk());
 
     expect($props['tabs'])->toBe(EPR_ALL_TABS)
-        ->and(array_keys($props['employee']))->toBe(['id', 'code', 'name', 'photo_url', 'basic', 'identity', 'employment', 'contact', 'banking', 'documents', 'attendance'])
+        ->and(array_keys($props['employee']))->toBe(['id', 'code', 'name', 'photo_url', 'basic', 'identity', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave'])
         ->and($props['employee']['name'])->toBe('Ayesha Khan')
         ->and($props['employee']['code'])->toBe($e->employee_code)
         ->and($props['employee']['basic'])->toBe([
@@ -188,7 +188,7 @@ it('shows a manager their own record through this route with all six groups and 
     $props = eprProps($this->actingAs($managerUser)->get("/employees/{$manager->id}")->assertOk());
 
     expect($props['tabs'])->toBe(EPR_ALL_TABS)
-        ->and(array_keys($props['employee']))->toBe(['id', 'code', 'name', 'photo_url', 'basic', 'identity', 'employment', 'contact', 'banking', 'documents', 'attendance'])
+        ->and(array_keys($props['employee']))->toBe(['id', 'code', 'name', 'photo_url', 'basic', 'identity', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave'])
         ->and($props['can'])->toBe(['edit' => false, 'changeStatus' => false, 'delete' => false]);
 });
 
@@ -197,8 +197,8 @@ it('gives a manager basic and employment only for a direct report', function () 
 
     $props = eprProps($this->actingAs($managerUser)->get("/employees/{$report->id}")->assertOk());
 
-    expect($props['tabs'])->toBe(['basic', 'employment', 'attendance'])
-        ->and(array_keys($props['employee']))->toBe(['id', 'code', 'name', 'photo_url', 'basic', 'employment', 'attendance'])
+    expect($props['tabs'])->toBe(['basic', 'employment', 'attendance', 'leave'])
+        ->and(array_keys($props['employee']))->toBe(['id', 'code', 'name', 'photo_url', 'basic', 'employment', 'attendance', 'leave'])
         ->and($props['employee']['basic'])->toBe([
             'first_name' => 'Direct', 'last_name' => 'Report', 'email' => $report->email, 'phone' => '0300-1112223', 'gender' => 'female',
         ])

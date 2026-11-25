@@ -13,6 +13,8 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { DocumentsPanel } from '@/components/employees/documents-panel';
 import type { EmployeeDocumentItem } from '@/components/employees/documents-panel';
+import { LeavePanel } from '@/components/employees/leave-panel';
+import type { ProfileLeave } from '@/components/employees/leave-panel';
 import {
     STATUS_LABELS,
     STATUS_TONE,
@@ -84,6 +86,8 @@ export type EmployeeProfile = {
     documents?: { items: EmployeeDocumentItem[] };
     /** Only for viewers allowed to see this person's attendance (the person, view-all, view-team for a report). */
     attendance?: ProfileAttendance;
+    /** Only for the person, leave.approve-all, and leave.approve-team for a direct report. */
+    leave?: ProfileLeave;
 };
 
 /** The current month's attendance summary (MonthGrid totals; pending days never counted, half day = 0.5). */
@@ -240,6 +244,7 @@ export function EmployeeProfileView({
         banking,
         documents,
         attendance,
+        leave,
     } = employee;
 
     const activeTab =
@@ -423,6 +428,7 @@ export function EmployeeProfileView({
             />
         ),
         attendance: attendance && <AttendancePanel attendance={attendance} />,
+        leave: leave && <LeavePanel leave={leave} />,
     };
 
     return (

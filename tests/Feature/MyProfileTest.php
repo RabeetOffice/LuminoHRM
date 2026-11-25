@@ -31,8 +31,8 @@ const MP_OWN_ACCOUNT = 'PK11OWNB0000111122223333';
 const MP_OWN_DOC = 'My Signed Contract';
 const MP_PDF = "%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n";
 
-const MP_ALL_TABS = ['basic', 'employment', 'contact', 'banking', 'documents', 'attendance'];
-const MP_ALL_KEYS = ['id', 'code', 'name', 'photo_url', 'basic', 'identity', 'employment', 'contact', 'banking', 'documents', 'attendance'];
+const MP_ALL_TABS = ['basic', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave'];
+const MP_ALL_KEYS = ['id', 'code', 'name', 'photo_url', 'basic', 'identity', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave'];
 
 beforeEach(function () {
     Notification::fake();

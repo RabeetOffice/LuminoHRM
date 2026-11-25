@@ -8,6 +8,8 @@ use App\Support\Attendance\DashboardAttendance;
 use App\Support\Attendance\MonthGrid;
 use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
+use App\Support\Leave\DashboardLeave;
+use App\Support\Leave\LeaveBalances;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Date;
@@ -32,13 +34,21 @@ use Inertia\Response;
  *   attendanceDay  {date, calendar_date, differs, cutoff}  with either of the above: the attendance day the "today"
  *                  figures belong to. After midnight and before the day cutoff it is the previous calendar day
  *                  (differs = true), and the page labels the figures with it.
+ *   pendingLeaves, onLeaveToday, leaveByStatus
+ *                  for leave.approve-all / leave.approve-team only (App\Support\Leave\DashboardLeave): open requests
+ *                  the viewer may decide now (the "Waiting for me" count), who is on approved leave on the attendance
+ *                  day (names, type, full or half; leavers left out), and this month's requests by status. Everyone for
+ *                  leave.approve-all, else own record + direct reports. Never a reason or an attachment.
+ *   myLeave        {year, lines, total_available}  for everyone with an employee record who lacks payroll.view (the
+ *                  "Leave Balance" tile replaces "Payroll This Month"): their own balance lines for the current leave
+ *                  year; total_available sums the paid lines only.
  */
 class DashboardController extends Controller
 {
     /** The statuses counted as "employed". */
     public const COUNTED = ['active', 'probation'];
 
-    public function index(Request $request, AttendanceClock $clock): Response
+    public function index(Request $request, AttendanceClock $clock, LeaveBalances $balances): Response
     {
         $user = $request->user();
         $access = new EmployeeAccess($user);
@@ -63,6 +73,21 @@ class DashboardController extends Controller
         } elseif ($user->employee_id !== null) {
             $props['attendanceDay'] = DashboardAttendance::day($clock);
             $props['myAttendance'] = $this->myAttendance($clock, (int) $user->employee_id);
+        }
+
+        if ($user->canAny(['leave.approve-all', 'leave.approve-team'])) {
+            $leave = new DashboardLeave($clock, $user);
+            $props['pendingLeaves'] = $leave->pending();
+            $props['onLeaveToday'] = $leave->onLeaveToday();
+            $props['leaveByStatus'] = $leave->byStatus();
+        }
+
+        if ($user->employee_id !== null && ! $user->can('payroll.view')) {
+            $mine = DashboardLeave::mine($balances, $clock, (int) $user->employee_id);
+
+            if ($mine !== null) {
+                $props['myLeave'] = $mine;
+            }
         }
 
         return Inertia::render('dashboard', $props);

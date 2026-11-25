@@ -398,8 +398,9 @@ it('reads a fixed number of queries whatever the number of people and days', fun
     $seed(12);
     $large = $count();
 
-    // Measured: 10 queries for the whole request; the bound leaves a margin of 2.
-    expect($large)->toBe($small)->and($large)->toBeLessThanOrEqual(12);
+    // Measured: 13 queries for the whole request (10 for attendance and the rest, 3 for the Phase 4 leave figures:
+    // open requests, people on leave today, requests by status); the bound leaves a margin of 2.
+    expect($large)->toBe($small)->and($large)->toBeLessThanOrEqual(15);
 });
 
 // ---------------------------------------------------------------- leave (Phase 4)

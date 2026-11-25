@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Models\Employee;
+use App\Models\LeaveRequest;
 use App\Models\Shift;
 use App\Models\User;
 use App\Support\Attendance\AttendanceClock;
@@ -10,6 +11,8 @@ use App\Support\Attendance\MonthGrid;
 use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
 use App\Support\EmployeeRoles;
+use App\Support\Leave\BalanceLine;
+use App\Support\Leave\LeaveBalances;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -33,6 +36,10 @@ use Illuminate\Http\Resources\Json\JsonResource;
  *              for viewers allowed to see this person's attendance: the person themself, attendance.view-all, or
  *              attendance.view-team for their own direct reports. Not an EmployeeAccess field group: it has its own
  *              permissions. Absent (key and tab) for everyone else.
+ *   leave      {year, own, code, lines (BalanceLine::toArray() for the current leave year), recent: the last 5 requests
+ *              [{id, type, colour, from_date, to_date, half, dates, days, status, partly_cancelled}]} for the person
+ *              themself, leave.approve-all, or leave.approve-team for their own direct reports (maySeeLeave). Never a
+ *              reason or an attachment. Absent (key and tab) for everyone else.
  *
  * Never add a field to a group without asking whether the roles that see that group may see it, and never return
  * the model or a relation as it is.
@@ -49,6 +56,7 @@ class EmployeeProfileResource extends JsonResource
         'banking' => 'banking',
         'documents' => 'documents',
         'attendance' => 'attendance',
+        'leave' => 'leave',
     ];
 
     /** @var list<string> */
@@ -69,6 +77,10 @@ class EmployeeProfileResource extends JsonResource
 
         if ($this->own || self::maySeeAttendance($viewer, $resource)) {
             $this->groups[] = 'attendance';
+        }
+
+        if ($this->own || self::maySeeLeave($viewer, $resource)) {
+            $this->groups[] = 'leave';
         }
         $this->viewAll = $viewer->can('employees.view-all');
         $this->manage = $access->canManage();
@@ -145,6 +157,10 @@ class EmployeeProfileResource extends JsonResource
 
         if ($this->allows('attendance')) {
             $data['attendance'] = $this->attendance();
+        }
+
+        if ($this->allows('leave')) {
+            $data['leave'] = $this->leave();
         }
 
         return $data;
@@ -270,6 +286,83 @@ class EmployeeProfileResource extends JsonResource
             'code' => $this->resource->employee_code,
             'totals' => $grid === null ? MonthGrid::emptyTotals() : $grid->rows([$this->resource])[$this->resource->id]['totals'],
         ];
+    }
+
+    /**
+     * Whether the viewer may see this person's leave besides their own: leave.approve-all, or leave.approve-team for a
+     * direct report.
+     */
+    public static function maySeeLeave(User $viewer, Employee $employee): bool
+    {
+        if ($viewer->can('leave.approve-all')) {
+            return true;
+        }
+
+        return $viewer->employee_id !== null
+            && $employee->manager_id !== null
+            && (int) $employee->manager_id === (int) $viewer->employee_id
+            && $viewer->can('leave.approve-team');
+    }
+
+    /**
+     * The current leave year's balance lines and the last 5 requests. `own` tells the page to link to My Leaves instead
+     * of Leave → Requests; `code` is what the requests link searches for. Never the reason or the attachment.
+     *
+     * @return array{year: int, own: bool, code: string, lines: list<array<string, mixed>>, recent: list<array<string, mixed>>}
+     */
+    private function leave(): array
+    {
+        $employee = $this->resource;
+        $year = (int) substr(app(AttendanceClock::class)->attendanceToday(), 0, 4);
+
+        $recent = LeaveRequest::query()
+            ->where('employee_id', $employee->id)
+            ->with('type:id,name,colour')
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->limit(5)
+            ->get(['id', 'employee_id', 'leave_type_id', 'from_date', 'to_date', 'half', 'days', 'status', 'cancelled_from', 'created_at']);
+
+        return [
+            'year' => $year,
+            'own' => $this->own,
+            'code' => $employee->employee_code,
+            // The resource holds the whole employee record, which the balance service needs (joining date, shift ...).
+            'lines' => array_map(fn (BalanceLine $line) => $line->toArray(), app(LeaveBalances::class)->lines($employee, $year)),
+            'recent' => array_values($recent->map(function (LeaveRequest $r): array {
+                $from = substr((string) $r->getRawOriginal('from_date'), 0, 10);
+                $to = substr((string) $r->getRawOriginal('to_date'), 0, 10);
+
+                return [
+                    'id' => $r->id,
+                    'type' => $r->type->name,
+                    'colour' => $r->type->colour,
+                    'from_date' => $from,
+                    'to_date' => $to,
+                    'half' => $r->half,
+                    'dates' => self::leaveDates($from, $to, $r->half),
+                    'days' => (float) $r->days,
+                    'status' => $r->status,
+                    'partly_cancelled' => $r->status === 'approved' && $r->cancelled_from !== null,
+                ];
+            })->all()),
+        ];
+    }
+
+    /** "Tue 1 Dec 2026", "Tue 1 Dec 2026 – Thu 3 Dec 2026" or "Tue 1 Dec 2026, first half" (read as text, no zone). */
+    public static function leaveDates(string $from, string $to, ?string $half): string
+    {
+        $label = function (string $date): string {
+            $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+
+            return $parsed === false ? $date : $parsed->format('D j M Y');
+        };
+
+        if ($half !== null) {
+            return $label($from).', '.($half === 'am' ? 'first half' : 'second half');
+        }
+
+        return $from === $to ? $label($from) : $label($from).' – '.$label($to);
     }
 
     private function allows(string $group): bool

@@ -3,6 +3,11 @@ import { ArrowRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Avatar } from '@/components/hrm/avatar';
 import { PageHeader } from '@/components/hrm/page-header';
+import {
+    LeaveStatusCard,
+    MyLeaveCard,
+    OnLeaveTodayCard,
+} from '@/components/dashboard/leave-cards';
 import { AttendanceStatusPill } from '@/components/attendance/status-symbol';
 import type { AttendanceStatusValue } from '@/components/attendance/status-symbol';
 import {
@@ -24,6 +29,8 @@ import {
     greetingFor,
     hasTrendData,
     hourIn,
+    leaveBalanceTile,
+    pendingLeavesTile,
     personalAttendanceTiles,
     probationNote,
     teamAttendanceTiles,
@@ -36,7 +43,12 @@ import type {
     AttendanceDay,
     AttendanceTileKey,
     AttendanceToday,
+    DashboardTileKey,
+    LeaveByStatus,
+    MyLeave,
     MyMonthAttendance,
+    OnLeavePerson,
+    PendingLeaves,
     TileFigure,
     TrendDay,
     TrendSeriesKey,
@@ -90,6 +102,12 @@ type Props = {
     lateToday?: LateToday;
     attendanceTrend?: AttendanceTrend;
     myAttendance?: MyMonthAttendance | null;
+    /** Leave approvers only (leave.approve-all: everyone; leave.approve-team: own team). */
+    pendingLeaves?: PendingLeaves;
+    onLeaveToday?: OnLeavePerson[];
+    leaveByStatus?: LeaveByStatus;
+    /** The viewer's own balance (everyone with an employee record who does not see payroll). */
+    myLeave?: MyLeave;
 };
 
 const SERIES_META: Record<TrendSeriesKey, { label: string; bar: string }> = {
@@ -108,6 +126,10 @@ export default function Dashboard({
     lateToday,
     attendanceTrend,
     myAttendance,
+    pendingLeaves,
+    onLeaveToday,
+    leaveByStatus,
+    myLeave,
 }: Props) {
     const { auth, app } = usePage().props;
     const can = useCan();
@@ -126,6 +148,18 @@ export default function Dashboard({
         figures = teamAttendanceTiles(attendanceToday, attendanceDay);
     } else if (myAttendance) {
         figures = personalAttendanceTiles(myAttendance);
+    }
+
+    // The leave tiles: requests waiting for the viewer (or their own pending days) and their own balance.
+    const leaveFigures: Partial<Record<DashboardTileKey, TileFigure>> = {};
+    const pendingFigure = pendingLeavesTile(pendingLeaves, myLeave);
+
+    if (pendingFigure) {
+        leaveFigures['pending-leaves'] = pendingFigure;
+    }
+
+    if (myLeave) {
+        leaveFigures['leave-balance'] = leaveBalanceTile(myLeave);
     }
 
     // After midnight and before the day cutoff the figures are still the previous attendance day's: say so.
@@ -177,15 +211,13 @@ export default function Dashboard({
                             key === 'absent' ||
                             key === 'late'
                                 ? figures[key]
-                                : undefined;
+                                : leaveFigures[key];
 
                         return (
-                            <div
+                            <TileFrame
                                 key={key}
-                                className={cn(
-                                    'rounded-xl border p-4 shadow-xs',
-                                    tileTones[color].tile,
-                                )}
+                                href={figure?.href}
+                                className={tileTones[color].tile}
                             >
                                 <div
                                     className={cn(
@@ -222,6 +254,11 @@ export default function Dashboard({
                                             ) : (
                                                 figure.value
                                             )}
+                                            {figure.unit && (
+                                                <span className="ml-1 text-sm font-medium text-muted-foreground">
+                                                    {figure.unit}
+                                                </span>
+                                            )}
                                         </p>
                                         <p className="mt-1 text-xs text-muted-foreground">
                                             {figure.note}
@@ -239,7 +276,7 @@ export default function Dashboard({
                                         </p>
                                     </>
                                 )}
-                            </div>
+                            </TileFrame>
                         );
                     })}
                 </section>
@@ -258,14 +295,55 @@ export default function Dashboard({
                     {lateToday && (
                         <LateCard late={lateToday} day={attendanceDay} />
                     )}
-                    <PlaceholderCard
-                        title="Leave overview"
-                        note="Leave requests by status appear here."
-                    />
+                    {leaveByStatus ? (
+                        <LeaveStatusCard byStatus={leaveByStatus} />
+                    ) : myLeave ? (
+                        <MyLeaveCard mine={myLeave} />
+                    ) : (
+                        <PlaceholderCard
+                            title="Leave"
+                            note="Your leave appears here once your account is linked to an employee record."
+                        />
+                    )}
+                    {onLeaveToday && (
+                        <OnLeaveTodayCard
+                            people={onLeaveToday}
+                            day={attendanceDay}
+                        />
+                    )}
                     {birthdays && <BirthdaysCard people={birthdays} />}
                 </section>
             </div>
         </>
+    );
+}
+
+/** A key-figure tile; a link (with a hover and focus ring) when the figure leads somewhere. */
+function TileFrame({
+    href,
+    className,
+    children,
+}: {
+    href?: string;
+    className: string;
+    children: ReactNode;
+}) {
+    const classes = cn('rounded-xl border p-4 shadow-xs', className);
+
+    if (!href) {
+        return <div className={classes}>{children}</div>;
+    }
+
+    return (
+        <Link
+            href={href}
+            className={cn(
+                classes,
+                'block transition-shadow hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
+            )}
+        >
+            {children}
+        </Link>
     );
 }
 

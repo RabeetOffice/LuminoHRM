@@ -239,8 +239,8 @@ it('walks every page prop of each role and finds only the allowed keys', functio
         expect(array_keys($props['employeeCount']))->toBe(['scope', 'total', 'probation']);
     }
 })->with([
-    ['admin', ['employeeCount', 'birthdays', 'attendanceDay', 'attendanceToday', 'lateToday', 'attendanceTrend']],
-    ['hr', ['employeeCount', 'birthdays', 'attendanceDay', 'attendanceToday', 'lateToday', 'attendanceTrend']],
-    ['manager', ['employeeCount', 'attendanceDay', 'attendanceToday', 'lateToday', 'attendanceTrend']],
+    ['admin', ['employeeCount', 'birthdays', 'attendanceDay', 'attendanceToday', 'lateToday', 'attendanceTrend', 'pendingLeaves', 'onLeaveToday', 'leaveByStatus']],
+    ['hr', ['employeeCount', 'birthdays', 'attendanceDay', 'attendanceToday', 'lateToday', 'attendanceTrend', 'pendingLeaves', 'onLeaveToday', 'leaveByStatus']],
+    ['manager', ['employeeCount', 'attendanceDay', 'attendanceToday', 'lateToday', 'attendanceTrend', 'pendingLeaves', 'onLeaveToday', 'leaveByStatus']],
     ['employee', []],
 ]);

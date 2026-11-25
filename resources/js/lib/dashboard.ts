@@ -439,7 +439,11 @@ export type TileFigure = {
     label?: string;
     /** The big number, or "–" when it cannot be known yet. */
     value: string;
+    /** A small word after the number ("days left"). */
+    unit?: string;
     note: string;
+    /** The tile links here when set. */
+    href?: string;
 };
 
 export type AttendanceTileKey = 'present' | 'absent' | 'late';
@@ -549,4 +553,234 @@ export function personalAttendanceTiles(
                     : 'Never late',
         },
     };
+}
+
+// ---------------------------------------------------------------- leave (Phase 4)
+
+/** Open requests the viewer may decide now (the "Waiting for me" tab); approvers only. */
+export type PendingLeaves = { count: number };
+
+export type LeaveDayHalf = 'full' | 'am' | 'pm';
+
+/** Someone on approved leave on the attendance day, in the viewer's scope. Never a reason. */
+export type OnLeavePerson = {
+    id: number;
+    name: string;
+    type: string;
+    colour: string;
+    half: LeaveDayHalf;
+    photo_url: string | null;
+};
+
+export const LEAVE_STATUS_SERIES = [
+    'pending',
+    'manager_approved',
+    'approved',
+    'rejected',
+    'cancelled',
+] as const;
+
+export type LeaveStatusKey = (typeof LEAVE_STATUS_SERIES)[number];
+
+/** This month's requests (by the month of their first date) per status, in the viewer's scope. */
+export type LeaveByStatus = {
+    month: string;
+    /** "November 2026". */
+    label: string;
+    counts: Record<LeaveStatusKey, number>;
+};
+
+/** One balance line as BalanceLine::toArray() sends it. An unpaid type is unlimited: remaining/available are null. */
+export type LeaveBalanceLine = {
+    type_id: number;
+    type_name: string;
+    colour: string;
+    year: number;
+    is_paid: boolean;
+    unlimited: boolean;
+    allocated: number;
+    carried: number;
+    adjustment: number;
+    opening_used: number;
+    used: number;
+    pending: number;
+    remaining: number | null;
+    available: number | null;
+    entitlement: number | null;
+    overdrawn: boolean;
+    projected: boolean;
+    /** "9.5 of 14", or "3 used" for an unpaid type. */
+    label: string;
+};
+
+/** The viewer's own balance for the current leave year (everyone with an employee record who lacks payroll.view). */
+export type MyLeave = {
+    year: number;
+    lines: LeaveBalanceLine[];
+    /** Available paid days (unpaid lines are never counted). */
+    total_available: number;
+};
+
+/** Words and bar colours for the "Leave requests this month" chart. */
+export const LEAVE_STATUS_META: Record<
+    LeaveStatusKey,
+    { label: string; bar: string }
+> = {
+    pending: { label: 'Waiting for manager', bar: 'bg-amber-400' },
+    manager_approved: { label: 'Waiting for HR', bar: 'bg-orange-400' },
+    approved: { label: 'Approved', bar: 'bg-emerald-500' },
+    rejected: { label: 'Rejected', bar: 'bg-rose-500' },
+    cancelled: { label: 'Cancelled', bar: 'bg-neutral-400' },
+};
+
+/**
+ * Where the Pending Leaves tile leads (Leave → Requests, "Waiting for me") and where a person's own leave lives. Plain
+ * paths: the typed routes for these screens come with the requests and My Leaves screens.
+ */
+export const PENDING_LEAVES_HREF = '/leave/requests?tab=waiting';
+
+export const MY_LEAVES_HREF = '/my/leaves';
+
+/** Leave → Requests narrowed to one person (searched by employee code). */
+export function personRequestsHref(code: string): string {
+    return `/leave/requests?tab=all&search=${encodeURIComponent(code)}`;
+}
+
+/** Whole half days, so float drift never reaches a label. */
+const halvesOf = (days: number) => Math.round(days * 2);
+
+/** "day" for half a day or one day, "days" otherwise. */
+const dayUnit = (halves: number) =>
+    halves === 1 || halves === 2 ? 'day' : 'days';
+
+/** "1 day", "0.5 day", "2.5 days", "0 days". */
+export function daysLabel(days: number): string {
+    const halves = halvesOf(days);
+
+    return `${formatDays(halves / 2)} ${dayUnit(halves)}`;
+}
+
+/** The chart rows: one per status, in order, with its share of the tallest bar. */
+export function leaveStatusBars(byStatus: LeaveByStatus): {
+    key: LeaveStatusKey;
+    label: string;
+    bar: string;
+    count: number;
+    percent: number;
+}[] {
+    const counts = LEAVE_STATUS_SERIES.map((key) => byStatus.counts[key] ?? 0);
+    const max = Math.max(1, ...counts);
+
+    return LEAVE_STATUS_SERIES.map((key, i) => ({
+        key,
+        label: LEAVE_STATUS_META[key].label,
+        bar: LEAVE_STATUS_META[key].bar,
+        count: counts[i] ?? 0,
+        percent: barPercent(counts[i] ?? 0, max),
+    }));
+}
+
+/** All requests counted on the chart. */
+export function leaveStatusTotal(byStatus: LeaveByStatus): number {
+    return LEAVE_STATUS_SERIES.reduce(
+        (sum, key) => sum + (byStatus.counts[key] ?? 0),
+        0,
+    );
+}
+
+/** "Full day", "½ day · first half", "½ day · second half". */
+export function halfDayNote(half: LeaveDayHalf): string {
+    if (half === 'am') {
+        return '½ day · first half';
+    }
+
+    return half === 'pm' ? '½ day · second half' : 'Full day';
+}
+
+/** What a balance line shows: "9.5 left", or "Unlimited" for an unpaid type. */
+export function balanceLineValue(line: LeaveBalanceLine): string {
+    if (line.unlimited || line.available === null) {
+        return 'Unlimited';
+    }
+
+    return `${formatDays(line.available)} left`;
+}
+
+/** The small print under a line: "of 14 · 1 pending", "3 used", "of 14 · overdrawn". */
+export function balanceLineNote(line: LeaveBalanceLine): string {
+    const parts = [
+        line.unlimited
+            ? `${formatDays(line.used)} used`
+            : `of ${formatDays(line.entitlement ?? 0)}`,
+    ];
+
+    if (line.pending > 0) {
+        parts.push(`${formatDays(line.pending)} pending`);
+    }
+
+    if (line.overdrawn) {
+        parts.push('overdrawn');
+    }
+
+    return parts.join(' · ');
+}
+
+/** The "Leave Balance" tile: available paid days ("12.5 days left"), the paid lines in the footnote. */
+export function leaveBalanceTile(mine: MyLeave): TileFigure {
+    const paid = mine.lines.filter((line) => !line.unlimited);
+
+    return {
+        value: formatDays(halvesOf(mine.total_available) / 2),
+        unit: `${dayUnit(halvesOf(mine.total_available))} left`,
+        note:
+            paid.length === 0
+                ? 'No paid leave types'
+                : paid
+                      .map(
+                          (line) =>
+                              `${line.type_name} ${formatDays(line.available ?? 0)}`,
+                      )
+                      .join(' · '),
+        href: MY_LEAVES_HREF,
+    };
+}
+
+/**
+ * The "Pending Leaves" tile. For approvers: the requests waiting for their decision (links to the waiting tab). For
+ * anyone else with a balance: their own days still waiting for approval. Null when there is nothing to show.
+ */
+export function pendingLeavesTile(
+    pending?: PendingLeaves | null,
+    mine?: MyLeave | null,
+): TileFigure | null {
+    if (pending) {
+        return {
+            value: String(pending.count),
+            note:
+                pending.count === 0
+                    ? 'Nothing waiting for you'
+                    : 'Waiting for your decision',
+            href: PENDING_LEAVES_HREF,
+        };
+    }
+
+    if (mine) {
+        const halves = mine.lines.reduce(
+            (sum, line) => sum + halvesOf(line.pending),
+            0,
+        );
+
+        return {
+            label: 'My Pending Leave',
+            value: formatDays(halves / 2),
+            unit: dayUnit(halves),
+            note:
+                halves === 0
+                    ? 'Nothing waiting for approval'
+                    : 'Waiting for approval',
+            href: MY_LEAVES_HREF,
+        };
+    }
+
+    return null;
 }
