@@ -18,6 +18,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
+use Spatie\Activitylog\Models\Activity;
 
 /**
  * Attendance > Correction Requests.
@@ -29,7 +30,8 @@ use Inertia\Response;
  *   PUT  /attendance/corrections/{correction}/hr-decide        attendance.edit, not the requester, not the manager who approved
  *   POST /attendance/corrections/{correction}/cancel           the requester, while nobody has decided
  *
- * A request outside the user's scope is 403 on every write, whatever the id in the URL. A stale decision (someone
+ * A request outside the user's scope, or one that does not exist, is 403 on every write (both look alike, so ids
+ * cannot be probed); someone in scope who is not one of its deciders is 403 too, before any "already decided" message. A stale decision (someone
  * else decided or the requester cancelled first) comes back as an error message, never as a second apply.
  */
 class CorrectionController extends Controller
@@ -69,13 +71,14 @@ class CorrectionController extends Controller
         /** @var Collection<int, AttendanceCorrection> $items */
         $items = $paginator->getCollection();
         $current = $this->currentTimes($items);
+        $managerNotes = $this->managerNotes($items);
 
         $counts = $scoped()->selectRaw('status, COUNT(*) as aggregate')->groupBy('status')->pluck('aggregate', 'status');
 
         return Inertia::render('attendance/corrections', [
             'tab' => $tab,
             'requests' => [
-                'data' => $items->map(fn (AttendanceCorrection $c) => $this->row($c, $user, $current))->values()->all(),
+                'data' => $items->map(fn (AttendanceCorrection $c) => $this->row($c, $user, $current, $managerNotes))->values()->all(),
                 'current_page' => $paginator->currentPage(),
                 'last_page' => $paginator->lastPage(),
                 'per_page' => $paginator->perPage(),
@@ -107,32 +110,37 @@ class CorrectionController extends Controller
         return back()->with('success', 'Correction request sent.');
     }
 
-    public function managerDecide(CorrectionDecisionRequest $request, CorrectionRequests $requests, AttendanceCorrection $correction): RedirectResponse
+    public function managerDecide(CorrectionDecisionRequest $request, CorrectionRequests $requests, int $correction): RedirectResponse
     {
         /** @var User $user */
         $user = $request->user();
-        abort_unless($this->routing->canSee($user, $correction), 403);
+        $found = $this->routing->findVisible($user, $correction);
+        abort_if($found === null, 403);
 
-        return $this->attempt(fn () => $requests->decideAsManager($user, $correction, $request->approves(), $request->note()));
+        return $this->attempt(fn () => $requests->decideAsManager($user, $found, $request->approves(), $request->note()));
     }
 
-    public function hrDecide(CorrectionDecisionRequest $request, CorrectionRequests $requests, AttendanceCorrection $correction): RedirectResponse
+    public function hrDecide(CorrectionDecisionRequest $request, CorrectionRequests $requests, int $correction): RedirectResponse
     {
         /** @var User $user */
         $user = $request->user();
-        abort_unless($this->routing->canSee($user, $correction), 403);
+        $found = $this->routing->findVisible($user, $correction);
+        abort_if($found === null, 403);
 
-        return $this->attempt(fn () => $requests->decideAsHr($user, $correction, $request->approves(), $request->note()));
+        return $this->attempt(fn () => $requests->decideAsHr($user, $found, $request->approves(), $request->note()));
     }
 
-    public function cancel(Request $request, CorrectionRequests $requests, AttendanceCorrection $correction): RedirectResponse
+    public function cancel(Request $request, CorrectionRequests $requests, int $correction): RedirectResponse
     {
         /** @var User $user */
         $user = $request->user();
-        abort_unless($this->routing->isRequester($user, $correction), 403);
+        // Only the requester's own requests: a missing id and someone else's look alike (403).
+        $found = $user->employee_id === null ? null : AttendanceCorrection::query()
+            ->whereKey($correction)->where('employee_id', $user->employee_id)->first();
+        abort_if($found === null, 403);
 
-        return $this->attempt(function () use ($requests, $user, $correction): string {
-            $requests->cancel($user, $correction);
+        return $this->attempt(function () use ($requests, $user, $found): string {
+            $requests->cancel($user, $found);
 
             return 'Correction request cancelled.';
         });
@@ -179,13 +187,48 @@ class CorrectionController extends Controller
     }
 
     /**
+     * The manager's approval note of each request HR has decided since, keyed by request id. decision_note holds the
+     * note of whoever decided last, so once HR decides the manager's note lives only in the manager's audit entry.
+     *
+     * @param  Collection<int, AttendanceCorrection>  $items
+     * @return array<int, string>
+     */
+    private function managerNotes(Collection $items): array
+    {
+        $ids = $items->filter(fn (AttendanceCorrection $c) => $c->manager_id !== null && $c->hr_id !== null)->pluck('id');
+
+        if ($ids->isEmpty()) {
+            return [];
+        }
+
+        $notes = [];
+        Activity::query()
+            ->where('log_name', 'attendance')
+            ->where('description', 'Correction request approved by manager')
+            ->whereIn('properties->request', $ids->all())
+            ->get(['properties'])
+            ->each(function (Activity $a) use (&$notes): void {
+                $note = $a->properties['note'] ?? null;
+                if (is_string($note)) {
+                    $notes[(int) $a->properties['request']] = $note;
+                }
+            });
+
+        return $notes;
+    }
+
+    /**
      * @param  array<string, array{clock_in: string|null, clock_out: string|null, is_manual: bool}>  $current
+     * @param  array<int, string>  $managerNotes
      * @return array<string, mixed>
      */
-    private function row(AttendanceCorrection $c, User $user, array $current): array
+    private function row(AttendanceCorrection $c, User $user, array $current, array $managerNotes): array
     {
         $date = $c->date->format('Y-m-d');
         $stage = $this->routing->stage($c);
+        $managerNote = $c->hr_id !== null
+            ? ($managerNotes[$c->id] ?? null)
+            : ($c->manager_id !== null ? $c->decision_note : null);
 
         return [
             'id' => $c->id,
@@ -200,12 +243,16 @@ class CorrectionController extends Controller
             'reason' => $c->reason,
             'status' => $c->status,
             'stage' => $stage,
-            'decision_note' => $c->decision_note,
+            // Who the request waits for at the manager step (a changed or disabled manager moves it on by itself).
+            'manager_name' => $stage === CorrectionRouting::STAGE_MANAGER ? $this->routing->managerApprover($c->employee)?->name : null,
+            'manager_note' => $managerNote,
+            'hr_note' => $c->hr_id !== null ? $c->decision_note : null,
             'manager_decider' => $c->managerDecider?->name,
             'hr_decider' => $c->hrDecider?->name,
             'is_own' => $this->routing->isRequester($user, $c),
             'can' => [
                 'decide' => $this->routing->decidableStage($user, $c),
+                'skips_manager' => $this->routing->skipsManager($user, $c),
                 'cancel' => $this->routing->canCancel($user, $c),
             ],
         ];

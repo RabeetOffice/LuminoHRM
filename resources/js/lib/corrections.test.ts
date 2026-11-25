@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { correctionState, timePair } from './corrections';
+import {
+    changedSides,
+    correctionState,
+    nextDayOut,
+    requestedSides,
+    timePair,
+} from './corrections';
 
 describe('correctionState', () => {
     it('names the open step', () => {
@@ -36,5 +42,53 @@ describe('timePair', () => {
 
     it('marks a clock-out after midnight', () => {
         expect(timePair('18:00', '02:00')).toBe('6:00 PM – 2:00 AM (+1)');
+    });
+});
+
+describe('requestedSides', () => {
+    it('marks the changed side and keeps the other as recorded', () => {
+        expect(
+            requestedSides(
+                { clock_in: '09:00', clock_out: null },
+                { clock_in: '09:40', clock_out: '18:10' },
+            ),
+        ).toEqual([
+            { label: 'In', text: '9:00 AM', changed: true },
+            { label: 'Out', text: 'keeps recorded', changed: false },
+        ]);
+    });
+
+    it('marks a requested clock-out after midnight against the kept clock-in', () => {
+        expect(
+            requestedSides(
+                { clock_in: null, clock_out: '02:00' },
+                { clock_in: '18:00', clock_out: null },
+            )[1].text,
+        ).toBe('2:00 AM (+1)');
+    });
+});
+
+describe('changedSides', () => {
+    it('sends only the sides the employee changed', () => {
+        expect(
+            changedSides(
+                { clock_in: '09:00', clock_out: '18:10' },
+                { clock_in: '09:40', clock_out: '18:10' },
+            ),
+        ).toEqual({ clock_in: '09:00', clock_out: '' });
+        expect(
+            changedSides(
+                { clock_in: '', clock_out: '18:00' },
+                { clock_in: null, clock_out: null },
+            ),
+        ).toEqual({ clock_in: '', clock_out: '18:00' });
+    });
+});
+
+describe('nextDayOut', () => {
+    it('is true only for a clock-out before the clock-in', () => {
+        expect(nextDayOut('18:00', '02:00')).toBe(true);
+        expect(nextDayOut('09:00', '18:00')).toBe(false);
+        expect(nextDayOut('', '02:00')).toBe(false);
     });
 });

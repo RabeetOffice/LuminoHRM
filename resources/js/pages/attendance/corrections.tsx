@@ -24,8 +24,12 @@ import {
 } from '@/components/ui/dialog';
 import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
-import { correctionState, timePair } from '@/lib/corrections';
-import type { CorrectionStage, CorrectionStatus } from '@/lib/corrections';
+import { correctionState, requestedSides, timePair } from '@/lib/corrections';
+import type {
+    CorrectionStage,
+    CorrectionStatus,
+    CorrectionTimes,
+} from '@/lib/corrections';
 import { formatDate } from '@/lib/format-date';
 import { nextTableUrl } from '@/lib/table-query';
 import { statusPanelId, statusTabId } from '@/lib/tabs';
@@ -33,7 +37,7 @@ import { index } from '@/routes/attendance/corrections';
 
 type Tab = 'pending' | 'approved' | 'rejected' | 'cancelled';
 
-type Times = { clock_in: string | null; clock_out: string | null };
+type Times = CorrectionTimes;
 
 type CorrectionRow = {
     id: number;
@@ -41,15 +45,24 @@ type CorrectionRow = {
     /** "Y-m-d", never passed through Date. */
     date: string;
     current: Times & { is_manual: boolean };
+    /** A null side keeps what is recorded when the request is approved. */
     requested: Times;
     reason: string;
     status: CorrectionStatus;
     stage: CorrectionStage;
-    decision_note: string | null;
+    /** The routed manager while the request waits for the manager. */
+    manager_name: string | null;
+    manager_note: string | null;
+    hr_note: string | null;
     manager_decider: string | null;
     hr_decider: string | null;
     is_own: boolean;
-    can: { decide: 'manager' | 'hr' | null; cancel: boolean };
+    can: {
+        decide: 'manager' | 'hr' | null;
+        /** Deciding now as HR skips the manager, who has not answered yet. */
+        skips_manager: boolean;
+        cancel: boolean;
+    };
 };
 
 type Props = {
@@ -58,7 +71,11 @@ type Props = {
     counts: Record<Tab, number>;
 };
 
-type Deciding = { row: CorrectionRow; decision: 'approve' | 'reject' };
+type Deciding = {
+    row: CorrectionRow;
+    /** Null: the form offers both (a decision as HR that skips the manager). */
+    decision: 'approve' | 'reject' | null;
+};
 
 const ID_PREFIX = 'corrections';
 
@@ -163,13 +180,7 @@ export default function Corrections({ tab, requests, counts }: Props) {
                         {timePair(row.current.clock_in, row.current.clock_out)}
                         {row.current.is_manual && ' · corrected'}
                     </span>
-                    <span className="font-medium">
-                        <span className="sr-only">Requested: </span>
-                        {timePair(
-                            row.requested.clock_in,
-                            row.requested.clock_out,
-                        )}
-                    </span>
+                    <RequestedTimes row={row} />
                 </div>
             ),
         },
@@ -188,29 +199,26 @@ export default function Corrections({ tab, requests, counts }: Props) {
             header: tab === 'pending' ? 'Stage' : 'Outcome',
             cell: (row) => {
                 const state = correctionState(row.status, row.stage);
-                const by = row.hr_decider ?? row.manager_decider;
 
                 return (
                     <div className="grid justify-items-start gap-1">
                         <StatusPill tone={state.tone}>{state.label}</StatusPill>
-                        {row.status === 'manager_approved' &&
-                            row.manager_decider && (
-                                <span className="text-xs text-muted-foreground">
-                                    Manager approved: {row.manager_decider}
-                                </span>
-                            )}
-                        {row.stage === null && by && (
+                        {row.stage === 'manager' && row.manager_name && (
                             <span className="text-xs text-muted-foreground">
-                                By {by}
+                                {row.manager_name}
                             </span>
                         )}
-                        {row.stage === null && row.decision_note && (
-                            <span
-                                className="line-clamp-2 max-w-60 text-xs text-muted-foreground"
-                                title={row.decision_note}
-                            >
-                                “{row.decision_note}”
-                            </span>
+                        {row.manager_decider && (
+                            <Decided
+                                who={`Manager: ${row.manager_decider}`}
+                                note={row.manager_note}
+                            />
+                        )}
+                        {row.hr_decider && (
+                            <Decided
+                                who={`HR: ${row.hr_decider}`}
+                                note={row.hr_note}
+                            />
                         )}
                     </div>
                 );
@@ -222,7 +230,17 @@ export default function Corrections({ tab, requests, counts }: Props) {
             className: 'w-px whitespace-nowrap',
             cell: (row) => (
                 <div className="flex justify-end gap-1">
-                    {row.can.decide && (
+                    {row.can.skips_manager && (
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            aria-label={`Decide as HR on the request of ${row.employee.name}, skipping the manager`}
+                            onClick={() => decide(row, null)}
+                        >
+                            Decide as HR (skips manager)
+                        </Button>
+                    )}
+                    {row.can.decide && !row.can.skips_manager && (
                         <>
                             <Button
                                 size="sm"
@@ -268,7 +286,7 @@ export default function Corrections({ tab, requests, counts }: Props) {
             <div className="flex flex-1 flex-col gap-6 p-4 md:p-6">
                 <PageHeader
                     title="Correction Requests"
-                    subtitle="Employees ask for a missed or wrong punch to be corrected. The reporting manager decides first, then HR; an approved request corrects the day."
+                    subtitle="Employees ask for a missed or wrong punch to be corrected. The reporting manager decides first, then HR; HR can also decide a request the manager has not answered. An approved request corrects the day."
                 />
 
                 <div className="overflow-hidden rounded-xl border bg-card shadow-xs">
@@ -309,7 +327,7 @@ export default function Corrections({ tab, requests, counts }: Props) {
                 <DialogContent className="sm:max-w-lg">
                     {deciding && (
                         <DecisionForm
-                            key={`${deciding.row.id}-${deciding.decision}`}
+                            key={`${deciding.row.id}-${deciding.decision ?? 'either'}`}
                             deciding={deciding}
                             dateFormat={dateFormat}
                             onBusy={setBusy}
@@ -350,16 +368,17 @@ function DecisionForm({
     onBusy,
     onClose,
 }: DecisionFormProps) {
-    const { row, decision } = deciding;
-    const approve = decision === 'approve';
+    const { row } = deciding;
+    // Null: a decision as HR that skips the manager; the form offers both.
+    const either = deciding.decision === null;
+    const approve = deciding.decision === 'approve';
     const [note, setNote] = useState('');
     const [error, setError] = useState<string | undefined>();
     const [processing, setProcessing] = useState(false);
     const final = row.can.decide === 'hr';
+    const noteEmpty = note.trim() === '';
 
-    const submit = (event: FormEvent) => {
-        event.preventDefault();
-
+    const send = (decision: 'approve' | 'reject') => {
         const target =
             row.can.decide === 'hr'
                 ? CorrectionController.hrDecide(row.id)
@@ -385,19 +404,35 @@ function DecisionForm({
         );
     };
 
+    const submit = (event: FormEvent) => {
+        event.preventDefault();
+
+        if (!either && (approve || !noteEmpty)) {
+            send(approve ? 'approve' : 'reject');
+        }
+    };
+
+    const description = either
+        ? `The manager${row.manager_name ? ` (${row.manager_name})` : ''} has not decided yet. Your decision is final and skips the manager. Approving corrects the day; a rejection needs a note, which the employee will see.`
+        : approve
+          ? final
+              ? 'The day will be corrected to the requested times.'
+              : 'The request then goes to HR for the final decision. The employee may see this note.'
+          : 'The employee will see your note. A rejection is final.';
+
     return (
         <form onSubmit={submit} className="grid gap-5" noValidate>
             <DialogHeader>
                 <DialogTitle>
-                    {approve ? 'Approve request' : 'Reject request'}
+                    {either
+                        ? 'Decide as HR'
+                        : approve
+                          ? 'Approve request'
+                          : 'Reject request'}
                 </DialogTitle>
                 <DialogDescription>
                     {row.employee.name} · {formatDate(row.date, dateFormat)}.{' '}
-                    {approve
-                        ? final
-                            ? 'The day will be corrected to the requested times.'
-                            : 'The request then goes to HR for the final decision.'
-                        : 'The employee will see your note. A rejection is final.'}
+                    {description}
                 </DialogDescription>
             </DialogHeader>
 
@@ -407,16 +442,38 @@ function DecisionForm({
                     {timePair(row.current.clock_in, row.current.clock_out)}
                 </dd>
                 <dt className="text-muted-foreground">Requested</dt>
-                <dd className="font-medium tabular-nums">
-                    {timePair(row.requested.clock_in, row.requested.clock_out)}
+                <dd>
+                    <RequestedTimes row={row} />
                 </dd>
                 <dt className="text-muted-foreground">Reason</dt>
                 <dd className="break-words">{row.reason}</dd>
+                {row.manager_note && (
+                    <>
+                        <dt className="text-muted-foreground">
+                            Manager&apos;s note
+                        </dt>
+                        <dd className="break-words">
+                            {row.manager_note}
+                            {row.manager_decider && (
+                                <span className="text-muted-foreground">
+                                    {' '}
+                                    ({row.manager_decider})
+                                </span>
+                            )}
+                        </dd>
+                    </>
+                )}
             </dl>
 
             <Field
                 id="decision-note"
-                label={approve ? 'Note (optional)' : 'Why is it rejected?'}
+                label={
+                    either
+                        ? 'Note (required to reject)'
+                        : approve
+                          ? 'Note (optional)'
+                          : 'Why is it rejected?'
+                }
                 error={error}
             >
                 <Textarea
@@ -437,16 +494,75 @@ function DecisionForm({
                 >
                     Back
                 </Button>
-                <Button
-                    type="submit"
-                    variant={approve ? 'default' : 'destructive'}
-                    disabled={processing}
-                >
-                    {processing && <Spinner />}
-                    {approve ? 'Approve' : 'Reject'}
-                </Button>
+                {either ? (
+                    <>
+                        <Button
+                            type="button"
+                            variant="destructive"
+                            disabled={processing || noteEmpty}
+                            onClick={() => send('reject')}
+                        >
+                            Reject
+                        </Button>
+                        <Button
+                            type="button"
+                            disabled={processing}
+                            onClick={() => send('approve')}
+                        >
+                            {processing && <Spinner />}
+                            Approve
+                        </Button>
+                    </>
+                ) : (
+                    <Button
+                        type="submit"
+                        variant={approve ? 'default' : 'destructive'}
+                        disabled={processing || (!approve && noteEmpty)}
+                    >
+                        {processing && <Spinner />}
+                        {approve ? 'Approve' : 'Reject'}
+                    </Button>
+                )}
             </DialogFooter>
         </form>
+    );
+}
+
+/** The requested sides: a changed side in full weight, a kept side as "keeps recorded". */
+function RequestedTimes({ row }: { row: CorrectionRow }) {
+    return (
+        <span className="flex flex-wrap gap-x-3 gap-y-0.5 text-sm tabular-nums">
+            <span className="sr-only">Requested: </span>
+            {requestedSides(row.requested, row.current).map((side) => (
+                <span
+                    key={side.label}
+                    className={
+                        side.changed
+                            ? 'font-medium'
+                            : 'text-muted-foreground italic'
+                    }
+                >
+                    {side.label} {side.text}
+                    {side.changed && (
+                        <span className="sr-only"> (changed)</span>
+                    )}
+                </span>
+            ))}
+        </span>
+    );
+}
+
+/** Who decided a step, with their note. */
+function Decided({ who, note }: { who: string; note: string | null }) {
+    return (
+        <span className="grid max-w-60 gap-0.5 text-xs text-muted-foreground">
+            <span>{who}</span>
+            {note && (
+                <span className="line-clamp-2" title={note}>
+                    “{note}”
+                </span>
+            )}
+        </span>
     );
 }
 

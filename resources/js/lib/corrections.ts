@@ -54,3 +54,74 @@ export function timePair(
 
     return `${clockIn ? formatClockTime(clockIn) : '–'} – ${out}`;
 }
+
+export type CorrectionTimes = {
+    clock_in: string | null;
+    clock_out: string | null;
+};
+
+/** True when a clock-out ("H:i") is earlier than the clock-in: after midnight, the next morning. */
+export function nextDayOut(
+    clockIn: string | null | undefined,
+    clockOut: string | null | undefined,
+): boolean {
+    return Boolean(clockIn && clockOut && clockOut < clockIn);
+}
+
+export type RequestedSide = {
+    label: 'In' | 'Out';
+    text: string;
+    changed: boolean;
+};
+
+/**
+ * The two sides of a request for display. A side the employee asked to
+ * change shows its time and `changed: true`; a side left empty (null) keeps
+ * whatever is recorded when the request is approved: "keeps recorded". A
+ * requested clock-out before the clock-in it will be paired with (requested,
+ * or the recorded one) gets "(+1)".
+ */
+export function requestedSides(
+    requested: CorrectionTimes,
+    current: CorrectionTimes,
+): [RequestedSide, RequestedSide] {
+    const pairedIn = requested.clock_in ?? current.clock_in;
+
+    return [
+        {
+            label: 'In',
+            text: requested.clock_in
+                ? formatClockTime(requested.clock_in)
+                : 'keeps recorded',
+            changed: requested.clock_in !== null,
+        },
+        {
+            label: 'Out',
+            text: requested.clock_out
+                ? `${formatClockTime(requested.clock_out)}${nextDayOut(pairedIn, requested.clock_out) ? ' (+1)' : ''}`
+                : 'keeps recorded',
+            changed: requested.clock_out !== null,
+        },
+    ];
+}
+
+/**
+ * What the request form sends: a side the employee did not change from the
+ * recorded time is sent empty, meaning "keep what is recorded" (resolved when
+ * the request is approved, so a punch that arrives meanwhile is kept).
+ */
+export function changedSides(
+    entered: { clock_in: string; clock_out: string },
+    current: CorrectionTimes,
+): { clock_in: string; clock_out: string } {
+    return {
+        clock_in:
+            entered.clock_in === (current.clock_in ?? '')
+                ? ''
+                : entered.clock_in,
+        clock_out:
+            entered.clock_out === (current.clock_out ?? '')
+                ? ''
+                : entered.clock_out,
+    };
+}

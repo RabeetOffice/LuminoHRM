@@ -36,15 +36,18 @@ class CorrectionRequests
     ) {}
 
     /**
-     * A request by $by for their own employee record. A requested time left empty keeps the time recorded now, so the
-     * request says exactly what approval will store.
+     * A request by $by for their own employee record. A requested time left empty (null) means "keep what is
+     * recorded": it is stored as null and resolved to the time recorded at the moment of approval, so a punch that
+     * arrives after the request is not erased. The times are checked now against the recorded side they will be
+     * combined with.
      *
      * @throws ValidationException
      */
     public function submit(User $by, Employee $employee, string $date, ?string $clockIn, ?string $clockOut, string $reason): AttendanceCorrection
     {
         $correction = DB::transaction(function () use ($by, $employee, $date, $clockIn, $clockOut, $reason): AttendanceCorrection {
-            // One open request per day: two submissions at once wait here, and the second sees the first.
+            // One open request per day: two submissions at once wait here, and the second sees the first. There is no
+            // unique index behind this rule, so this locking read must stay the first statement of the transaction.
             Employee::query()->whereKey($employee->id)->lockForUpdate()->first();
 
             $refused = $this->eligibility->reasonRefused($employee, $date);
@@ -52,11 +55,15 @@ class CorrectionRequests
                 throw ValidationException::withMessages(['date' => $refused]);
             }
 
-            $row = Attendance::query()->where('employee_id', $employee->id)->onDate($date)->first();
-            $clockIn ??= $this->hm($row?->getAttributes()['clock_in'] ?? null);
-            $clockOut ??= $this->hm($row?->getAttributes()['clock_out'] ?? null);
+            if ($clockIn === null && $clockOut === null) {
+                throw ValidationException::withMessages(['clock_in' => 'Enter the correct clock-in or clock-out time.']);
+            }
 
-            $errors = $this->eligibility->timeErrors($clockIn, $clockOut);
+            $row = Attendance::query()->where('employee_id', $employee->id)->onDate($date)->first();
+            $errors = $this->eligibility->timeErrors(
+                $clockIn ?? $this->hm($row?->getAttributes()['clock_in'] ?? null),
+                $clockOut ?? $this->hm($row?->getAttributes()['clock_out'] ?? null),
+            );
             if ($errors !== []) {
                 throw ValidationException::withMessages($errors);
             }
@@ -107,17 +114,18 @@ class CorrectionRequests
     {
         $result = DB::transaction(function () use ($by, $correction, $approve, $note): AttendanceCorrection {
             $locked = $this->lock($correction);
-            abort_if($this->routing->isRequester($by, $locked), 403); // nobody decides their own request
+            // Nobody decides their own request; anyone who is not one of its deciders gets 403 before any message.
+            abort_unless($this->routing->isApprover($by, $locked), 403);
 
             if ($locked->status !== 'pending') {
                 throw $this->stale($locked);
             }
 
-            if ($this->routing->stage($locked) !== CorrectionRouting::STAGE_MANAGER) {
+            if ($this->routing->decidableStage($by, $locked) !== CorrectionRouting::STAGE_MANAGER) {
+                abort_if($this->routing->stage($locked) === CorrectionRouting::STAGE_MANAGER, 403);
+
                 throw ValidationException::withMessages(['decision' => 'This request is waiting for HR, not for the manager.']);
             }
-
-            abort_unless($this->routing->decidableStage($by, $locked) === CorrectionRouting::STAGE_MANAGER, 403);
 
             $locked->fill([
                 'status' => $approve ? 'manager_approved' : 'rejected',
@@ -150,7 +158,13 @@ class CorrectionRequests
     }
 
     /**
-     * HR's decision (final). Approval applies the requested times as a manual correction.
+     * HR's decision (final). Approval applies the requested times as a manual correction; a requested side left
+     * empty takes the time recorded now (read under the row lock). Deciding a request that still waits for the
+     * manager skips the manager (audited as manager_skipped). Only a user who may correct this employee's record
+     * (ApplyManualCorrection::mayCorrect) decides here: an HR or Admin requester needs an Admin.
+     *
+     * HR's note replaces the manager's in decision_note (the manager's note stays in the manager's audit entry), so
+     * the column always holds the note of whoever decided last.
      *
      * @throws ValidationException a stale or refused decision (key: decision)
      */
@@ -158,19 +172,19 @@ class CorrectionRequests
     {
         $result = DB::transaction(function () use ($by, $correction, $approve, $note): AttendanceCorrection {
             $locked = $this->lock($correction);
-            abort_if($this->routing->isRequester($by, $locked), 403); // nobody decides their own request
+            // Nobody decides their own request; anyone who is not one of its deciders gets 403 before any message.
+            abort_unless($this->routing->isApprover($by, $locked), 403);
 
             if (! in_array($locked->status, CorrectionEligibility::OPEN_STATUSES, true)) {
                 throw $this->stale($locked);
             }
 
-            if ($this->routing->stage($locked) !== CorrectionRouting::STAGE_HR) {
-                throw ValidationException::withMessages(['decision' => 'This request is still waiting for the reporting manager.']);
-            }
-
+            // Re-checked under the lock: attendance.edit, may correct this record, not the manager who approved it.
             abort_unless($this->routing->decidableStage($by, $locked) === CorrectionRouting::STAGE_HR, 403);
+            $skipped = $this->routing->stage($locked) === CorrectionRouting::STAGE_MANAGER;
 
             $date = $locked->date->format('Y-m-d');
+            $applied = null;
 
             if ($approve) {
                 $row = Attendance::query()->where('employee_id', $locked->employee_id)->onDate($date)->lockForUpdate()->first();
@@ -183,12 +197,18 @@ class CorrectionRequests
                     ]);
                 }
 
+                // A side the employee left empty keeps what is recorded now, not what was recorded at submit.
+                $applied = [
+                    'clock_in' => $locked->requested_in ?? $this->hm($row?->getAttributes()['clock_in'] ?? null),
+                    'clock_out' => $locked->requested_out ?? $this->hm($row?->getAttributes()['clock_out'] ?? null),
+                ];
+
                 try {
                     $this->apply->handle(
                         $locked->employee,
                         $date,
-                        $locked->requested_in,
-                        $locked->requested_out,
+                        $applied['clock_in'],
+                        $applied['clock_out'],
                         null,
                         $locked->reason,
                         $by,
@@ -205,13 +225,15 @@ class CorrectionRequests
                 'status' => $approve ? 'approved' : 'rejected',
                 'hr_id' => $by->id,
                 'hr_decided_at' => now(),
-                'decision_note' => $note ?? $locked->decision_note,
+                'decision_note' => $note,
             ])->save();
 
             Audit::record('attendance', $approve ? 'Correction request approved' : 'Correction request rejected', $locked->employee, array_filter([
                 'request' => $locked->id,
                 'date' => $date,
                 'step' => 'hr',
+                'manager_skipped' => $skipped ? true : null,
+                'applied' => $applied,
                 'note' => $note !== null ? Audit::clean($note, 500) : null,
             ], fn ($v) => $v !== null), $by);
 

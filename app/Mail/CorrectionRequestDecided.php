@@ -42,8 +42,8 @@ class CorrectionRequestDecided extends Mailable implements ShouldQueue
             'recipientName' => $this->recipientName,
             'approved' => $c->status === 'approved',
             'date' => $c->date->format('j M Y'),
-            'clockIn' => CorrectionRequestSubmitted::time($c->requested_in),
-            'clockOut' => CorrectionRequestSubmitted::time($c->requested_out),
+            'clockIn' => CorrectionRequestSubmitted::side($c->requested_in),
+            'clockOut' => CorrectionRequestSubmitted::side($c->requested_out),
             'note' => $c->decision_note,
         ]);
     }

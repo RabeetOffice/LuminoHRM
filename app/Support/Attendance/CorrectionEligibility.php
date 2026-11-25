@@ -2,6 +2,7 @@
 
 namespace App\Support\Attendance;
 
+use App\Actions\Attendance\ApplyManualCorrection;
 use App\Models\Attendance;
 use App\Models\AttendanceCorrection;
 use App\Models\Employee;
@@ -19,6 +20,8 @@ use DateTimeZone;
  *   - a past attendance day (before AttendanceClock::attendanceToday()), no more than WINDOW_DAYS days back;
  *   - on or after the joining date (and on or before the last working day, when set);
  *   - on or after settings('attendance.start_date'), when set;
+ *   - accepted by ApplyManualCorrection::employmentRefusal() (e.g. a leaver needs a last working day), so a request
+ *     is never accepted that approval would always refuse (the wording here is the requester's own);
  *   - not already corrected by hand (is_manual);
  *   - without another open (pending or manager-approved) request of this employee.
  * "Own record only" is the caller's job: the request is always made for the signed-in user's own employee record.
@@ -31,7 +34,13 @@ class CorrectionEligibility
     /** Statuses of a request that is still open (one per employee per day). */
     public const OPEN_STATUSES = ['pending', 'manager_approved'];
 
-    public function __construct(private readonly AttendanceClock $clock) {}
+    /** The longest range refusals() accepts. */
+    public const MAX_RANGE_DAYS = 62;
+
+    public function __construct(
+        private readonly AttendanceClock $clock,
+        private readonly ApplyManualCorrection $manual,
+    ) {}
 
     /** Why this day cannot be requested, or null when it can. */
     public function reasonRefused(Employee $employee, string $date): ?string
@@ -46,17 +55,25 @@ class CorrectionEligibility
     }
 
     /**
-     * reasonRefused() for every day from $from to $to (inclusive, "Y-m-d", at most 62 days), in two queries.
+     * reasonRefused() for every day from $from to $to (inclusive, "Y-m-d"), in two queries. The range may cover at
+     * most MAX_RANGE_DAYS days (a month view needs 31); a longer one throws rather than being cut short silently.
+     *
      *
      * @return array<string, string|null> date => reason (null = may request)
+     *
+     * @throws \InvalidArgumentException a date that is not "Y-m-d", or a range longer than MAX_RANGE_DAYS days
      */
     public function refusals(Employee $employee, string $from, string $to): array
     {
         $from = self::validDate($from) ?? throw new \InvalidArgumentException("Not a date [{$from}].");
         $to = self::validDate($to) ?? throw new \InvalidArgumentException("Not a date [{$to}].");
 
+        if ($to >= $from && $to >= self::addDays($from, self::MAX_RANGE_DAYS)) {
+            throw new \InvalidArgumentException('A range of at most '.self::MAX_RANGE_DAYS." days, not [{$from}..{$to}].");
+        }
+
         $days = [];
-        for ($d = $from, $n = 0; $d <= $to && $n < 62; $d = self::addDays($d, 1), $n++) {
+        for ($d = $from; $d <= $to; $d = self::addDays($d, 1)) {
             $days[] = $d;
         }
 
@@ -142,6 +159,11 @@ class CorrectionEligibility
         $start = settings('attendance.start_date');
         if (is_string($start) && self::validDate($start) !== null && $date < $start) {
             return 'Attendance was not yet recorded on this day.';
+        }
+
+        // The rest of the manual correction's employment check (approval runs it again), in the requester's words.
+        if ($this->manual->employmentRefusal($employee, $date) !== null) {
+            return 'Your employment record does not allow a correction of this day. Ask HR.';
         }
 
         return null;

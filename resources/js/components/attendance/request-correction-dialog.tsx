@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
 import { formatClockTime } from '@/lib/clock-time';
+import { changedSides, nextDayOut } from '@/lib/corrections';
 import { formatDate } from '@/lib/format-date';
 
 /** The day as recorded now: "H:i" wall-clock times on that date, as the server sends them. */
@@ -36,8 +37,10 @@ export type RequestCorrectionDialogProps = {
  * An employee asks for a correction of one of their own past days. It submits
  * itself (attendance.corrections.store, preserveScroll) and calls `onClose`
  * on success; the page reloads its props. Mount it once and toggle `open`; the
- * form starts fresh each time it opens. A time left empty keeps the recorded
- * one. Errors, including why the day cannot be requested, show inside it.
+ * form starts fresh each time it opens. The fields start at the recorded
+ * times; a side left unchanged (or empty) is sent empty, meaning "keep what is
+ * recorded when the request is approved". Errors, including why the day
+ * cannot be requested, show inside it.
  */
 export function RequestCorrectionDialog({
     open,
@@ -85,6 +88,11 @@ function RequestForm({ date, current, onClose, onBusy }: FormProps) {
     const submit = (event: FormEvent) => {
         event.preventDefault();
 
+        // Only the sides the employee changed; the rest keep what is recorded at approval.
+        form.transform((values) => ({
+            ...values,
+            ...changedSides(values, current),
+        }));
         form.submit(CorrectionController.store(), {
             preserveScroll: true,
             onStart: () => onBusy(true),
@@ -100,8 +108,11 @@ function RequestForm({ date, current, onClose, onBusy }: FormProps) {
                 <DialogDescription>
                     {formatDate(date, dateFormat)}. Recorded:{' '}
                     {recorded(current.clock_in)} in,{' '}
-                    {recorded(current.clock_out)} out. Your manager and then HR
-                    review the request.
+                    {recorded(current.clock_out)}
+                    {nextDayOut(current.clock_in, current.clock_out) &&
+                        ' (next day)'}{' '}
+                    out. Change only what is wrong; the other time keeps what is
+                    recorded. It will be reviewed before your record changes.
                 </DialogDescription>
             </DialogHeader>
 
@@ -122,7 +133,14 @@ function RequestForm({ date, current, onClose, onBusy }: FormProps) {
                 </Field>
                 <Field
                     id="request-out"
-                    label="Correct clock-out"
+                    label={
+                        nextDayOut(
+                            data.clock_in || current.clock_in,
+                            data.clock_out,
+                        )
+                            ? 'Correct clock-out (next day)'
+                            : 'Correct clock-out'
+                    }
                     error={errors.clock_out}
                     hint="After midnight? Enter the time; it counts as the next morning when before the day cutoff."
                 >
@@ -137,9 +155,14 @@ function RequestForm({ date, current, onClose, onBusy }: FormProps) {
                 </Field>
             </div>
 
-            <Field id="request-reason" label="Reason" error={errors.reason}>
+            <Field
+                id="request-reason"
+                label="Reason"
+                error={errors.reason}
+                hint="To remove a wrong punch, describe it in the reason."
+            >
                 <Textarea
-                    {...fieldAria('request-reason', errors.reason)}
+                    {...fieldAria('request-reason', errors.reason, true)}
                     value={data.reason}
                     onChange={(e) => form.setData('reason', e.target.value)}
                     maxLength={255}

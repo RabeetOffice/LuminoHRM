@@ -45,12 +45,21 @@ class CorrectionRequestSubmitted extends Mailable implements ShouldQueue
             'recipientName' => $this->recipientName,
             'employeeName' => $c->employee->full_name,
             'date' => $c->date->format('j M Y'),
-            'clockIn' => self::time($c->requested_in),
-            'clockOut' => self::time($c->requested_out),
+            'clockIn' => self::side($c->requested_in),
+            'clockOut' => self::side($c->requested_out),
             'reason' => $c->reason,
             'afterManager' => $this->afterManager,
             'url' => url(route('attendance.corrections.index', [], false)),
         ]);
+    }
+
+    /**
+     * One requested side for a mail: "9:00 AM (changed)" for a time the employee asked for, "keeps recorded" for a
+     * side left empty (it keeps whatever is recorded when the request is approved).
+     */
+    public static function side(?string $hm): string
+    {
+        return $hm === null ? 'keeps recorded' : self::time($hm).' (changed)';
     }
 
     /** "09:05" as "9:05 AM"; "–" when not given. */

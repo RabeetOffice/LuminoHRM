@@ -2,7 +2,7 @@
 Hello {{ $recipientName }},
 
 @if ($approved)
-Your attendance correction request for {{ $date }} was approved. Your attendance for that day now shows the times below.
+Your attendance correction request for {{ $date }} was approved. Your attendance for that day was corrected as below.
 @else
 Your attendance correction request for {{ $date }} was rejected. Your attendance for that day was not changed.
 @endif

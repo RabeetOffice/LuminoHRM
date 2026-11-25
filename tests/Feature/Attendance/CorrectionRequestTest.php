@@ -94,14 +94,12 @@ it('runs employee -> manager -> HR and applies the times as a manual correction'
     Mail::assertQueued(CorrectionRequestSubmitted::class, fn ($m) => $m->hasTo($managerUser->email));
     Mail::assertQueuedCount(1);
 
-    // HR cannot jump the manager step.
-    crDecide($hrUser, $c, 'hr')->assertSessionHas('error', 'This request is still waiting for the reporting manager.');
-    expect($c->fresh()->status)->toBe('pending');
-
     $this->actingAs($managerUser)->get('/attendance/corrections')->assertOk()
         ->assertInertia(fn ($p) => $p->component('attendance/corrections')->where('tab', 'pending')
             ->where('requests.data.0.id', $c->id)->where('requests.data.0.stage', 'manager')
-            ->where('requests.data.0.can.decide', 'manager')->where('requests.data.0.can.cancel', false)
+            ->where('requests.data.0.manager_name', $managerUser->name)
+            ->where('requests.data.0.can.decide', 'manager')->where('requests.data.0.can.skips_manager', false)
+            ->where('requests.data.0.can.cancel', false)
             ->where('requests.data.0.current', ['clock_in' => '09:40', 'clock_out' => null, 'is_manual' => false])
             ->where('requests.data.0.requested', ['clock_in' => '09:00', 'clock_out' => '18:00'])
             ->where('counts', ['pending' => 1, 'approved' => 0, 'rejected' => 0, 'cancelled' => 0]));
@@ -190,23 +188,47 @@ it('skips the manager step when the manager login is disabled or the manager hol
 
 // ---------------------------------------------------------------- nobody decides their own
 
-it('never lets anyone decide their own request; another HR user must', function () {
+it('never lets anyone decide their own request; an HR requester needs an Admin, not another HR user', function () {
     [$hrUser, $hrEmployee] = crPerson('hr');
     [$otherHr] = crPerson('hr');
+    $admin = userWithRole('admin');
 
     crSubmit($hrUser)->assertSessionHas('success');
     $c = crLatest();
-    Mail::assertNotQueued(CorrectionRequestSubmitted::class, fn ($m) => $m->hasTo($hrUser->email));
+    // Only those who may correct an HR account's record are told: the Admin.
+    Mail::assertNotQueued(CorrectionRequestSubmitted::class, fn ($m) => $m->hasTo($hrUser->email) || $m->hasTo($otherHr->email));
+    Mail::assertQueued(CorrectionRequestSubmitted::class, fn ($m) => $m->hasTo($admin->email));
 
     $this->actingAs($hrUser)->get('/attendance/corrections')
         ->assertInertia(fn ($p) => $p->where('requests.data.0.can.decide', null)->where('requests.data.0.can.cancel', true)
             ->where('requests.data.0.is_own', true));
+    $this->actingAs($otherHr)->get('/attendance/corrections')
+        ->assertInertia(fn ($p) => $p->where('requests.data.0.id', $c->id)->where('requests.data.0.can.decide', null));
     crDecide($hrUser, $c, 'hr')->assertForbidden();
     crDecide($hrUser, $c, 'manager')->assertForbidden();
+    crDecide($otherHr, $c, 'hr')->assertForbidden();
     expect($c->fresh()->status)->toBe('pending');
 
-    crDecide($otherHr, $c, 'hr')->assertSessionHas('success');
-    expect($c->fresh()->status)->toBe('approved')->and(crDay($hrEmployee)->is_manual)->toBeTrue();
+    crDecide($admin, $c, 'hr')->assertSessionHas('success');
+    expect($c->fresh()->status)->toBe('approved')->and($c->fresh()->hr_id)->toBe($admin->id)
+        ->and(crDay($hrEmployee)->is_manual)->toBeTrue();
+
+    // In scope but not an approver: 403, not "already approved".
+    crDecide($otherHr, $c, 'hr')->assertForbidden();
+});
+
+it('lets only another Admin decide an Admin\'s request', function () {
+    [$adminUser] = crPerson('admin');
+    [$hrUser] = crPerson('hr');
+    $otherAdmin = userWithRole('admin');
+
+    crSubmit($adminUser)->assertSessionHas('success');
+    $c = crLatest();
+    Mail::assertNotQueued(CorrectionRequestSubmitted::class, fn ($m) => $m->hasTo($hrUser->email));
+
+    crDecide($hrUser, $c, 'hr')->assertForbidden();
+    crDecide($otherAdmin, $c, 'hr', 'reject', 'Not needed.')->assertSessionHas('success');
+    expect($c->fresh()->status)->toBe('rejected');
 });
 
 it('never lets the user who approved as manager also decide the HR step', function () {
@@ -260,7 +282,7 @@ it('counts every tab within scope and lists each tab\'s requests', function () {
     [$user, $employee] = crPerson('employee');
     $hr = userWithRole('hr');
     AttendanceCorrection::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-18', 'status' => 'approved']);
-    AttendanceCorrection::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-17', 'status' => 'rejected', 'decision_note' => 'No.']);
+    AttendanceCorrection::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-17', 'status' => 'rejected', 'decision_note' => 'No.', 'hr_id' => $hr->id]);
     AttendanceCorrection::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-16', 'status' => 'cancelled']);
     AttendanceCorrection::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-19', 'status' => 'manager_approved']);
     AttendanceCorrection::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-20', 'status' => 'pending']);
@@ -269,7 +291,7 @@ it('counts every tab within scope and lists each tab\'s requests', function () {
         ->assertInertia(fn ($p) => $p->where('counts', ['pending' => 2, 'approved' => 1, 'rejected' => 1, 'cancelled' => 1])
             ->where('requests.total', 2)->where('requests.data.0.date', '2026-11-19'));
     $this->actingAs($hr)->get('/attendance/corrections?tab=rejected')
-        ->assertInertia(fn ($p) => $p->where('tab', 'rejected')->where('requests.data.0.decision_note', 'No.')
+        ->assertInertia(fn ($p) => $p->where('tab', 'rejected')->where('requests.data.0.hr_note', 'No.')
             ->where('requests.data.0.can.decide', null));
     $this->actingAs($hr)->get('/attendance/corrections?tab=nonsense')->assertInertia(fn ($p) => $p->where('tab', 'pending'));
 });
@@ -342,7 +364,40 @@ it('keeps the recorded time for a requested time left empty', function () {
         'clock_out' => null, 'closed' => true]);
 
     crSubmit($user, ['clock_in' => null, 'clock_out' => '18:30'])->assertSessionHas('success');
-    expect(crLatest()->requested_in)->toBe('09:05')->and(crLatest()->requested_out)->toBe('18:30');
+    // Stored as "keep what is recorded", resolved only at approval.
+    expect(crLatest()->requested_in)->toBeNull()->and(crLatest()->requested_out)->toBe('18:30');
+
+    // The kept side still has to fit the requested one: a clock-out before the recorded clock-in is refused at submit.
+    crSubmit($user, ['date' => '2026-11-19', 'clock_in' => null, 'clock_out' => '18:30'])->assertSessionHas('success');
+    Attendance::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-18', 'clock_in' => '2026-11-18 10:00:00',
+        'clock_out' => null, 'closed' => true]);
+    crSubmit($user, ['date' => '2026-11-18', 'clock_in' => null, 'clock_out' => '09:00'])->assertSessionHasErrors('clock_out');
+});
+
+it('resolves a kept side at approval, so a punch that arrived after the request is not erased', function () {
+    [$user, $employee] = crPerson('employee');
+    [$hrUser] = crPerson('hr');
+    $day = Attendance::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-20', 'clock_in' => '2026-11-20 09:40:00',
+        'clock_out' => null, 'status' => 'late', 'late_minutes' => 40, 'worked_minutes' => 0, 'closed' => true]);
+
+    crSubmit($user, ['clock_in' => '09:00', 'clock_out' => null])->assertSessionHas('success');
+    $c = crLatest();
+    expect($c->requested_out)->toBeNull();
+
+    $this->actingAs($hrUser)->get('/attendance/corrections')
+        ->assertInertia(fn ($p) => $p->where('requests.data.0.requested', ['clock_in' => '09:00', 'clock_out' => null]));
+
+    // The clock-out arrives afterwards (a machine that was offline syncs).
+    $day->forceFill(['clock_out' => '2026-11-20 18:10:00'])->save();
+
+    crDecide($hrUser, $c, 'hr')->assertSessionHas('success');
+    $row = crDay($employee);
+    expect($row->is_manual)->toBeTrue()
+        ->and($row->getAttributes()['clock_in'])->toStartWith('2026-11-20 09:00')
+        ->and($row->getAttributes()['clock_out'])->toStartWith('2026-11-20 18:10');
+    expect($c->fresh()->requested_out)->toBeNull();
+    expect(Activity::where('description', 'Correction request approved')->sole()->properties['applied'])
+        ->toBe(['clock_in' => '09:00', 'clock_out' => '18:10']);
 });
 
 it('refuses a login with no employee record', function () {
@@ -460,11 +515,175 @@ it('renders both mails with the requester\'s request only', function () {
     $c = AttendanceCorrection::factory()->create(['employee_id' => $employee->id, 'date' => '2026-11-20', 'requested_in' => '09:00', 'requested_out' => '18:00']);
 
     $submitted = (new CorrectionRequestSubmitted($c, 'Sara', false))->render();
-    expect($submitted)->toContain('Ayesha Khan')->toContain('20 Nov 2026')->toContain('9:00 AM')->toContain('6:00 PM')
+    expect($submitted)->toContain('Ayesha Khan')->toContain('20 Nov 2026')->toContain('9:00 AM (changed)')->toContain('6:00 PM (changed)')
         ->toContain('/attendance/corrections');
+
+    // A side left empty keeps what is recorded.
+    $c->forceFill(['requested_out' => null])->save();
+    expect((new CorrectionRequestSubmitted($c, 'Sara', false))->render())->toContain('keeps recorded')->not->toContain('6:00 PM');
 
     $c->forceFill(['status' => 'rejected', 'decision_note' => 'Not a working day.'])->save();
     $decided = new CorrectionRequestDecided($c, 'Ayesha');
     expect($decided->render())->toContain('rejected')->toContain('Not a working day.');
     expect($decided->envelope()->subject)->toBe('Your attendance correction request was rejected');
+});
+
+// ---------------------------------------------------------------- fix round: stuck requests, notes, routing changes
+
+it('lets HR decide a request still waiting for the manager, skipping the manager, and audits it', function () {
+    [$user, $employee, $managerUser] = crTeam();
+    [$hrUser] = crPerson('hr');
+    crSubmit($user);
+    $c = crLatest();
+
+    $this->actingAs($hrUser)->get('/attendance/corrections')
+        ->assertInertia(fn ($p) => $p->where('requests.data.0.stage', 'manager')
+            ->where('requests.data.0.manager_name', $managerUser->name)
+            ->where('requests.data.0.can.decide', 'hr')->where('requests.data.0.can.skips_manager', true));
+
+    crDecide($hrUser, $c, 'hr')->assertSessionHas('success');
+    $c->refresh();
+    expect($c->status)->toBe('approved')->and($c->manager_id)->toBeNull()->and($c->hr_id)->toBe($hrUser->id)
+        ->and(crDay($employee)->is_manual)->toBeTrue();
+    expect(Activity::where('description', 'Correction request approved')->sole()->properties['manager_skipped'])->toBeTrue();
+    Mail::assertQueued(CorrectionRequestDecided::class, fn ($m) => $m->hasTo($user->email));
+    Mail::assertQueued(CorrectionRequestDecided::class, 1);
+
+    // The manager comes back to a decided request.
+    crDecide($managerUser, $c, 'manager')->assertSessionHas('error', 'This request was already approved.');
+
+    // HR may also reject at the manager step.
+    crSubmit($user, ['date' => '2026-11-19']);
+    $second = crLatest();
+    crDecide($hrUser, $second, 'hr', 'reject', 'You were on leave.')->assertSessionHas('success');
+    expect($second->fresh()->status)->toBe('rejected')
+        ->and(Activity::where('description', 'Correction request rejected')->sole()->properties['manager_skipped'])->toBeTrue();
+});
+
+it('keeps the manager\'s note and HR\'s note apart and shows HR the manager\'s note before deciding', function () {
+    [$user, , $managerUser] = crTeam();
+    [$hrUser] = crPerson('hr');
+    crSubmit($user);
+    $c = crLatest();
+
+    crDecide($managerUser, $c, 'manager', 'approve', 'He was with me at the client.');
+    $this->actingAs($hrUser)->get('/attendance/corrections')
+        ->assertInertia(fn ($p) => $p->where('requests.data.0.manager_note', 'He was with me at the client.')
+            ->where('requests.data.0.hr_note', null));
+
+    crDecide($hrUser, $c, 'hr');
+    expect($c->fresh()->decision_note)->toBeNull(); // HR wrote no note: the manager's is not passed off as HR's
+    $this->actingAs($hrUser)->get('/attendance/corrections?tab=approved')
+        ->assertInertia(fn ($p) => $p->where('requests.data.0.manager_note', 'He was with me at the client.')
+            ->where('requests.data.0.hr_note', null)
+            ->where('requests.data.0.manager_decider', $managerUser->name)->where('requests.data.0.hr_decider', $hrUser->name));
+
+    crSubmit($user, ['date' => '2026-11-19']);
+    $second = crLatest();
+    crDecide($managerUser, $second, 'manager', 'approve', 'Fine by me.');
+    crDecide($hrUser, $second, 'hr', 'reject', 'The machine log shows no punch.');
+    expect($second->fresh()->decision_note)->toBe('The machine log shows no punch.');
+    $this->actingAs($hrUser)->get('/attendance/corrections?tab=rejected')
+        ->assertInertia(fn ($p) => $p->where('requests.data.0.manager_note', 'Fine by me.')
+            ->where('requests.data.0.hr_note', 'The machine log shows no punch.'));
+
+    // A manager's rejection is the manager's note.
+    $this->travel(1)->minutes();
+    crSubmit($user, ['date' => '2026-11-18']);
+    crDecide($managerUser, crLatest(), 'manager', 'reject', 'Not a working day.');
+    $this->actingAs($hrUser)->get('/attendance/corrections?tab=rejected')
+        ->assertInertia(fn ($p) => $p->where('requests.data.0.manager_note', 'Not a working day.')
+            ->where('requests.data.0.hr_note', null));
+});
+
+it('answers 403 for a request id that does not exist, whatever the action', function () {
+    [$user] = crPerson('employee');
+    $hr = userWithRole('hr');
+
+    $this->actingAs($hr)->put('/attendance/corrections/99999/hr-decide', ['decision' => 'approve'])->assertForbidden();
+    $this->actingAs($hr)->put('/attendance/corrections/99999/manager-decide', ['decision' => 'approve'])->assertForbidden();
+    $this->actingAs($user)->post('/attendance/corrections/99999/cancel')->assertForbidden();
+});
+
+it('refuses a request that approval would always refuse: a leaver without a last working day', function () {
+    [$user, $employee] = crPerson('employee', ['status' => 'resigned', 'last_working_day' => null]);
+    crPerson('hr');
+
+    expect(app(CorrectionEligibility::class)->reasonRefused($employee, '2026-11-20'))->not->toBeNull()
+        ->not->toContain($employee->full_name);
+    crSubmit($user)->assertSessionHasErrors('date');
+    expect(AttendanceCorrection::count())->toBe(0);
+});
+
+it('throws for a range longer than 62 days instead of cutting it short', function () {
+    [, $employee] = crPerson('employee');
+
+    app(CorrectionEligibility::class)->refusals($employee, '2026-09-01', '2026-11-20');
+})->throws(InvalidArgumentException::class);
+
+it('follows a manager change while pending: the new manager decides, the old one is refused', function () {
+    [$user, $employee, $oldManagerUser] = crTeam();
+    [$newManagerUser, $newManager] = crPerson('manager');
+    crPerson('hr');
+    crSubmit($user);
+    $c = crLatest();
+
+    $employee->forceFill(['manager_id' => $newManager->id])->save();
+
+    crDecide($oldManagerUser, $c, 'manager')->assertForbidden();
+    crDecide($newManagerUser, $c, 'manager')->assertSessionHas('success');
+    expect($c->fresh()->status)->toBe('manager_approved')->and($c->fresh()->manager_id)->toBe($newManagerUser->id);
+});
+
+it('keeps manager A\'s approval when the manager changes afterwards, and HR decides', function () {
+    [$user, $employee, $managerA] = crTeam();
+    [$managerBUser, $managerB] = crPerson('manager');
+    [$hrUser] = crPerson('hr');
+    crSubmit($user);
+    $c = crLatest();
+    crDecide($managerA, $c, 'manager');
+
+    $employee->forceFill(['manager_id' => $managerB->id])->save();
+
+    expect(app(CorrectionRouting::class)->stage($c->fresh()))->toBe('hr');
+    crDecide($managerBUser, $c, 'manager')->assertSessionHas('error', 'This request was already approved by the manager.');
+    crDecide($hrUser, $c, 'hr')->assertSessionHas('success');
+    expect($c->fresh()->status)->toBe('approved')->and($c->fresh()->manager_id)->toBe($managerA->id);
+});
+
+it('sends the request of an employee who is their own manager to HR', function () {
+    [$user, $employee] = crPerson('manager');
+    $employee->forceFill(['manager_id' => $employee->id])->save();
+    [$hrUser] = crPerson('hr');
+
+    crSubmit($user)->assertSessionHas('success');
+    expect(app(CorrectionRouting::class)->stage(crLatest()))->toBe('hr');
+    Mail::assertQueued(CorrectionRequestSubmitted::class, fn ($m) => $m->hasTo($hrUser->email));
+    Mail::assertNotQueued(CorrectionRequestSubmitted::class, fn ($m) => $m->hasTo($user->email));
+});
+
+it('mails no decision to a requester whose login was disabled meanwhile', function () {
+    [$user] = crPerson('employee');
+    [$hrUser] = crPerson('hr');
+    crSubmit($user);
+    $user->forceFill(['is_active' => false])->save();
+
+    crDecide($hrUser, crLatest(), 'hr', 'reject', 'Left the company.')->assertSessionHas('success');
+    Mail::assertNotQueued(CorrectionRequestDecided::class);
+});
+
+it('keeps a request pending for the Admin when there is no active HR user', function () {
+    [$user, $employee] = crPerson('employee');
+    $admin = userWithRole('admin');
+    $hr = userWithRole('hr');
+    $hr->forceFill(['is_active' => false])->save();
+
+    crSubmit($user)->assertSessionHas('success');
+    $c = crLatest();
+    expect($c->status)->toBe('pending')->and(app(CorrectionRouting::class)->stage($c))->toBe('hr');
+    Mail::assertQueued(CorrectionRequestSubmitted::class, fn ($m) => $m->hasTo($admin->email));
+    Mail::assertQueuedCount(1);
+
+    crDecide($admin, $c, 'hr')->assertSessionHas('success');
+    expect(crDay($employee)->is_manual)->toBeTrue();
 });
