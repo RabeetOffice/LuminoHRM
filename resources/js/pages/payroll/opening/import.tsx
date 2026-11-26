@@ -33,6 +33,8 @@ type PreviewRow = {
     code: string;
     name: string;
     errors: string[];
+    /** Loans only: worth a look, but the row still imports. */
+    warnings?: string[];
     /** The stored figures already equal this row: nothing changes. */
     unchanged: boolean;
     /** Loans only: "New", "Updates the stored loan" or "No change". */
@@ -287,6 +289,13 @@ function Result({ row }: { row: PreviewRow }) {
             )}
             {row.action && !row.unchanged && (
                 <p className="text-xs text-muted-foreground">{row.action}</p>
+            )}
+            {(row.warnings ?? []).length > 0 && (
+                <ul className="list-disc space-y-0.5 pl-4 text-amber-700 dark:text-amber-300">
+                    {(row.warnings ?? []).map((warning) => (
+                        <li key={warning}>{warning}</li>
+                    ))}
+                </ul>
             )}
         </div>
     );

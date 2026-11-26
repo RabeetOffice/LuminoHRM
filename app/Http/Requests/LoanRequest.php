@@ -66,23 +66,31 @@ class LoanRequest extends FormRequest
     }
 
     /**
-     * The figures in paisa, for SaveLoan.
+     * The figures in paisa, for SaveLoan. On an edit only the keys the request sent are included: an omitted
+     * opening_repaid or note is left as stored (SaveLoan keeps what is not in the array).
      *
-     * @return array{type?: string, amount: int, installment: int|null, start_month: string, opening_repaid: int, note: string|null}
+     * @return array{type?: string, amount: int, installment: int|null, start_month: string, opening_repaid?: int, note?: string|null}
      */
     public function figures(): array
     {
         $installment = $this->input('installment');
+        $creating = $this->isMethod('POST');
 
         $figures = [
             'amount' => Money::rupees((int) $this->input('amount')),
             'installment' => $installment === null ? null : Money::rupees((int) $installment),
             'start_month' => (string) $this->input('start_month'),
-            'opening_repaid' => Money::rupees((int) ($this->input('opening_repaid') ?? 0)),
-            'note' => $this->filled('note') ? (string) $this->input('note') : null,
         ];
 
-        if ($this->isMethod('POST')) {
+        if ($creating || $this->has('opening_repaid')) {
+            $figures['opening_repaid'] = Money::rupees((int) ($this->input('opening_repaid') ?? 0));
+        }
+
+        if ($creating || $this->has('note')) {
+            $figures['note'] = $this->filled('note') ? (string) $this->input('note') : null;
+        }
+
+        if ($creating) {
             $figures['type'] = (string) $this->input('type');
         }
 

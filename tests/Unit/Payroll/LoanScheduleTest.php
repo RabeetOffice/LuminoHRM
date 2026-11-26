@@ -86,3 +86,14 @@ it('refuses a non-positive installment and a malformed month', function (int $in
     'month 13' => [100, '2026-13'],
     'date, not month' => [100, '2026-11-01'],
 ]);
+
+it('tells when more months follow the projection', function () {
+    // Rs 100 a month for Rs 20,000: 200 months, the projection stops at 120.
+    expect(count(LoanSchedule::project(2000000, 10000, '2026-11', [])))->toBe(120)
+        ->and(LoanSchedule::hasMore(2000000, 10000, '2026-11', []))->toBeTrue()
+        ->and(LoanSchedule::hasMore(2000000, 10000, '2026-11', [], 200))->toBeFalse()
+        ->and(LoanSchedule::hasMore(1200000, 500000, '2026-11', []))->toBeFalse()
+        ->and(LoanSchedule::hasMore(0, 500000, '2026-11', []))->toBeFalse()
+        // Exactly 120 months of Rs 100: nothing follows.
+        ->and(LoanSchedule::hasMore(1200000, 10000, '2026-11', []))->toBeFalse();
+});

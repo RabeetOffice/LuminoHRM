@@ -44,11 +44,10 @@ class LoanActions
     public function skip(User $by, Loan $loan, string $month, string $reason): LoanSkip
     {
         $employee = $this->authorizeFor($by, $loan);
-        $latest = PayrollLock::latestLocked();
 
-        return DB::transaction(function () use ($by, $loan, $employee, $month, $reason, $latest): LoanSkip {
+        return DB::transaction(function () use ($by, $loan, $employee, $month, $reason): LoanSkip {
             $this->lockEmployee($employee);
-            self::checkMonth($month, 'month', $latest);
+            self::checkMonth($month, 'month');
             $locked = $this->lockLoan($loan);
 
             if (! $locked->isActive()) {
@@ -93,11 +92,10 @@ class LoanActions
     public function unskip(User $by, Loan $loan, string $month): void
     {
         $employee = $this->authorizeFor($by, $loan);
-        $latest = PayrollLock::latestLocked();
 
-        DB::transaction(function () use ($by, $loan, $employee, $month, $latest): void {
+        DB::transaction(function () use ($by, $loan, $employee, $month): void {
             $this->lockEmployee($employee);
-            self::checkMonth($month, 'month', $latest);
+            self::checkMonth($month, 'month');
             $locked = $this->lockLoan($loan);
 
             if (! $locked->isActive()) {
@@ -124,11 +122,10 @@ class LoanActions
     public function repay(User $by, Loan $loan, int $amount, string $month, string $note): LoanRepayment
     {
         $employee = $this->authorizeFor($by, $loan);
-        $latest = PayrollLock::latestLocked();
 
-        return DB::transaction(function () use ($by, $loan, $employee, $amount, $month, $note, $latest): LoanRepayment {
+        return DB::transaction(function () use ($by, $loan, $employee, $amount, $month, $note): LoanRepayment {
             $this->lockEmployee($employee);
-            self::checkMonth($month, 'month', $latest);
+            self::checkMonth($month, 'month');
             $locked = $this->lockLoan($loan);
 
             if (! $locked->isActive()) {
@@ -210,24 +207,22 @@ class LoanActions
     }
 
     /**
-     * A month a skip, unskip or repayment may use: a real "Y-m" after the latest approved payroll month ($latest, read
-     * by the caller before its transaction: latestLocked() would share-lock every locked run row) and not locked itself
-     * (PayrollLock::isLocked, one shared lock on that run row; call it after locking the employee row).
+     * A month a skip, unskip or repayment may use: a real "Y-m" after every approved payroll month. ONE read of the
+     * payroll lock (PayrollLock::rangeTouchesLocked, a shared lock) inside the write transaction, after the employee row
+     * is locked; the message names the first approved month at or after $month.
      *
      * @throws ValidationException
      */
-    public static function checkMonth(string $month, string $field, ?string $latest): void
+    public static function checkMonth(string $month, string $field): void
     {
         if (preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month) !== 1) {
             throw ValidationException::withMessages([$field => 'Choose a month.']);
         }
 
-        if (PayrollLock::isLocked($month)) {
-            throw ValidationException::withMessages([$field => PayrollLock::message($month)]);
-        }
+        $locked = PayrollLock::rangeTouchesLocked($month.'-01', '9999-12-31');
 
-        if ($latest !== null && $month <= $latest) {
-            throw ValidationException::withMessages([$field => PayrollLock::message($latest)]);
+        if ($locked !== null) {
+            throw ValidationException::withMessages([$field => PayrollLock::message($locked)]);
         }
     }
 

@@ -1,5 +1,6 @@
 <?php
 
+use App\Actions\Payroll\SaveLoan;
 use App\Http\Controllers\EmployeeImportController;
 use App\Http\Controllers\Payroll\OpeningImportController;
 use App\Models\Employee;
@@ -10,9 +11,11 @@ use App\Models\User;
 use App\Support\EmployeeImportStore;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Testing\TestResponse;
+use Illuminate\Validation\ValidationException;
 use Inertia\Testing\AssertableInertia as Assert;
 use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\IOFactory;
@@ -346,4 +349,165 @@ it('reads a first deduction month that Excel turned into a date', function () {
     $preview = opiPreview($hr, 'loans', opiXlsx(OPI_LOANS, [['LD-0101', 'Loan', 1000, 0, 100, 46357, null]]));
 
     expect($preview['rows'][0]['errors'])->toBe([])->and($preview['rows'][0]['month'])->toBe('2026-12');
+});
+
+// --- review fixes ------------------------------------------------------------------------------------------------
+
+it('leaves one loan when the same row is saved twice, however the two runs interleave', function () {
+    $hr = opiUser();
+    $person = opiPerson('ZZ-0101');
+    $data = ['type' => 'loan', 'amount' => 5000000, 'installment' => 500000, 'start_month' => '2026-12', 'opening_repaid' => 3800000];
+
+    // Both runs decided "new" before either saved: the second must find the first one's loan and update it.
+    (new SaveLoan)->import($hr, $person, $data);
+    $second = new SaveLoan;
+    $second->import($hr, $person, [...$data, 'installment' => 400000]);
+
+    expect(Loan::query()->count())->toBe(1)
+        ->and(Loan::query()->sole()->installment)->toBe(400000)
+        ->and($second->changed())->toBeTrue();
+});
+
+it('refuses to save a row whose figures match a cancelled loan', function () {
+    $hr = opiUser();
+    $person = opiPerson('ZZ-0101');
+    loanFor($person, 50000, 5000, '2026-12')->forceFill(['status' => 'cancelled'])->save();
+
+    expect(fn () => (new SaveLoan)->import($hr, $person, ['type' => 'loan', 'amount' => 5000000, 'installment' => 500000, 'start_month' => '2026-12']))
+        ->toThrow(ValidationException::class);
+    expect(Loan::query()->count())->toBe(1);
+});
+
+it('runs one loans import at a time, whatever the upload token', function () {
+    $hr = opiUser();
+    opiPerson('ZZ-0101');
+    $file = fn () => opiXlsx(OPI_LOANS, [['ZZ-0101', 'Loan', 1000, 0, 100, '2026-12', null]]);
+    $first = opiPreview($hr, 'loans', $file());
+
+    $lock = Cache::lock('payroll-opening-import:loans', 60);
+    expect($lock->get())->toBeTrue();
+    opiRun($hr, 'loans', $first['token'])->assertSessionHas('error', EmployeeImportController::BUSY);
+    expect(Loan::query()->count())->toBe(0);
+    $lock->release();
+
+    // With the lock free the same file runs; uploaded again (a second token) it leaves the one loan.
+    opiRun($hr, 'loans', $first['token'])->assertSessionHas('success');
+    $second = opiPreview($hr, 'loans', $file());
+    opiRun($hr, 'loans', $second['token'])->assertSessionHas('success');
+    expect(Loan::query()->count())->toBe(1);
+});
+
+it('warns when a row looks like a correction of the same person\'s active loan, and still adds it', function () {
+    $hr = opiUser();
+    $person = opiPerson('ZZ-0101');
+    loanFor($person, 50000, 5000, '2026-12');
+
+    $preview = opiPreview($hr, 'loans', opiXlsx(OPI_LOANS, [
+        ['ZZ-0101', 'Loan', 60000, 0, 5000, '2026-12', null],
+        ['ZZ-0101', 'Advance', 9000, 0, null, '2026-12', null],
+    ]));
+
+    expect($preview['rows'][0]['errors'])->toBe([])
+        ->and($preview['rows'][0]['warnings'])->toBe(['This person already has an active loan of Rs 50,000 from December 2026. Change it on the loan page if this row corrects it.'])
+        ->and($preview['rows'][1]['warnings'])->toBe([])
+        ->and($preview['totals']['errors'])->toBe(0);
+
+    opiRun($hr, 'loans', $preview['token'])->assertSessionHas('success');
+    expect(Loan::query()->count())->toBe(3);
+});
+
+it('refuses a row that matches a cancelled loan', function () {
+    $hr = opiUser();
+    $person = opiPerson('ZZ-0101');
+    loanFor($person, 50000, 5000, '2026-12')->forceFill(['status' => 'cancelled'])->save();
+
+    $preview = opiPreview($hr, 'loans', opiXlsx(OPI_LOANS, [['ZZ-0101', 'Loan', 50000, 0, 5000, '2026-12', null]]));
+
+    expect($preview['rows'][0]['errors'])->toBe(['A cancelled loan with these figures exists.'])
+        ->and($preview['rows'][0]['warnings'])->toBe([]);
+    opiRun($hr, 'loans', $preview['token'])->assertSessionHas('error', EmployeeImportController::CHANGED);
+    expect(Loan::query()->count())->toBe(1);
+});
+
+it('keeps the stored loan note when the cell is blank or the column is missing', function () {
+    $hr = opiUser();
+    $person = opiPerson('ZZ-0101');
+    $loan = loanFor($person, 50000, 5000, '2026-12');
+    $loan->forceFill(['note' => 'Car repair'])->save();
+
+    $blank = opiPreview($hr, 'loans', opiXlsx(OPI_LOANS, [['ZZ-0101', 'Loan', 50000, 0, 4000, '2026-12', null]]));
+    opiRun($hr, 'loans', $blank['token'])->assertSessionHas('success');
+    expect($loan->fresh()->installment)->toBe(400000)->and($loan->fresh()->note)->toBe('Car repair');
+
+    $without = opiPreview($hr, 'loans', opiXlsx(array_slice(OPI_LOANS, 0, 6), [['ZZ-0101', 'Loan', 50000, 0, 3000, '2026-12']]));
+    expect($without['rows'][0]['action'])->toBe('Updates the stored loan');
+    opiRun($hr, 'loans', $without['token'])->assertSessionHas('success');
+    expect($loan->fresh()->installment)->toBe(300000)->and($loan->fresh()->note)->toBe('Car repair');
+
+    // A blank note and nothing else different is "no change".
+    $same = opiPreview($hr, 'loans', opiXlsx(OPI_LOANS, [['ZZ-0101', 'Loan', 50000, 0, 3000, '2026-12', null]]));
+    expect($same['totals']['unchanged'])->toBe(1);
+});
+
+it('refuses a first deduction month that is in the past or that Excel mangled', function () {
+    $hr = opiUser();
+    opiPerson('ZZ-0101');
+
+    $preview = opiPreview($hr, 'loans', opiXlsx(OPI_LOANS, [
+        ['ZZ-0101', 'Loan', 1000, 0, 100, 7, null],            // "7" is the 7th of January 1900 to Excel
+        ['ZZ-0101', 'Loan', 1000, 0, 100, 202611, null],       // someone typed 202611
+        ['ZZ-0101', 'Loan', 1000, 0, 100, '2026-10', null],    // last month
+        ['ZZ-0101', 'Loan', 1000, 0, 100, '2026-11', null],    // this month: fine
+        ['ZZ-0101', 'Loan', 1000, 0, 100, '2090-01', null],    // far ahead
+    ]));
+
+    $errors = array_column($preview['rows'], 'errors');
+    $written = 'First Deduction Month must be a month written as YYYY-MM, for example 2026-12.';
+    expect($errors[0])->toBe([$written])
+        ->and($errors[1])->toBe([$written])
+        ->and($errors[2])->toBe(['First Deduction Month must be this month (November 2026) or later.'])
+        ->and($errors[3])->toBe([])
+        ->and($errors[4])->toBe(['First Deduction Month is too far ahead.']);
+});
+
+it('saves the rows in employee order', function () {
+    $hr = opiUser();
+    $first = opiPerson('ZZ-0101');
+    $second = opiPerson('ZZ-0102');
+
+    $preview = opiPreview($hr, 'loans', opiXlsx(OPI_LOANS, [
+        ['ZZ-0102', 'Loan', 1000, 0, 100, '2026-12', null],
+        ['ZZ-0101', 'Loan', 1000, 0, 100, '2026-12', null],
+    ]));
+    opiRun($hr, 'loans', $preview['token'])->assertSessionHas('success');
+
+    expect(Loan::query()->where('employee_id', $first->id)->value('id'))
+        ->toBeLessThan(Loan::query()->where('employee_id', $second->id)->value('id'));
+});
+
+it('lets an import change the installment of a loan with repayments but never its repaid figure', function () {
+    $hr = opiUser();
+    $loan = loanFor(opiPerson('ZZ-0101'), 50000, 5000, '2026-12', 38000);
+    LoanRepayment::query()->create(['loan_id' => $loan->id, 'amount' => 100000, 'month' => '2026-12', 'note' => 'Cash']);
+
+    $ok = opiPreview($hr, 'loans', opiXlsx(OPI_LOANS, [['ZZ-0101', 'Loan', 50000, 38000, 4000, '2026-12', 'Lower']]));
+    expect($ok['rows'][0]['errors'])->toBe([]);
+    opiRun($hr, 'loans', $ok['token'])->assertSessionHas('success');
+    expect($loan->fresh()->installment)->toBe(400000)->and($loan->fresh()->note)->toBe('Lower');
+
+    $refused = opiPreview($hr, 'loans', opiXlsx(OPI_LOANS, [['ZZ-0101', 'Loan', 50000, 30000, 4000, '2026-12', null]]));
+    expect($refused['rows'][0]['errors'])->toBe(['This loan already has repayments; only the installment and note can change.']);
+    expect($loan->fresh()->opening_repaid)->toBe(3800000);
+});
+
+it('imports opening tax for the previous tax year', function () {
+    $hr = opiUser();
+    $person = opiPerson('ZZ-0101');
+
+    $preview = opiPreview($hr, 'tax', opiXlsx(OPI_TAX, [['ZZ-0101', '2025-26', 900000, 45000]]));
+    expect($preview['rows'][0]['errors'])->toBe([])->and($preview['rows'][0]['tax_year'])->toBe('2025-26');
+    opiRun($hr, 'tax', $preview['token'])->assertSessionHas('success');
+
+    $row = OpeningBalance::query()->where('employee_id', $person->id)->sole();
+    expect($row->tax_year)->toBe(2025)->and($row->taxable_income)->toBe(90000000)->and($row->tax_deducted)->toBe(4500000);
 });

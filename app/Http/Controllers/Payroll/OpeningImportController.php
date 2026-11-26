@@ -19,7 +19,6 @@ use App\Models\User;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeImportStore;
 use App\Support\Payroll\Money;
-use App\Support\PayrollLock;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -127,7 +126,9 @@ class OpeningImportController extends Controller
             return $page()->with('error', EmployeeImportController::REFUSED);
         }
 
-        $lock = Cache::lock('payroll-opening-import:'.sha1($token), EmployeeImportController::LOCK_SECONDS);
+        // One run at a time per import kind, whatever the upload token: two uploads of the same file must not both
+        // decide "new" for the same loan.
+        $lock = Cache::lock('payroll-opening-import:'.$kind, EmployeeImportController::LOCK_SECONDS);
 
         if (! $lock->get()) {
             return $page(['token' => $token])->with('error', EmployeeImportController::BUSY);
@@ -195,6 +196,22 @@ class OpeningImportController extends Controller
         return array_filter($rows, fn (array $row) => $row['errors'] !== []) !== [];
     }
 
+    /**
+     * The rows by employee, then by file line: every run takes the employee row locks in the same order, so two writers
+     * (this import and a payroll approval) cannot wait on each other in a circle.
+     *
+     * @template T of array{line: int, data: array<string, mixed>|null}
+     *
+     * @param  list<T>  $rows
+     * @return list<T>
+     */
+    private static function inEmployeeOrder(array $rows): array
+    {
+        usort($rows, fn (array $a, array $b) => [$a['data']['employee_id'], $a['line']] <=> [$b['data']['employee_id'], $b['line']]);
+
+        return $rows;
+    }
+
     private static function slot(string $kind): string
     {
         return $kind === 'tax' ? self::KIND_TAX : self::KIND_LOANS;
@@ -211,6 +228,7 @@ class OpeningImportController extends Controller
      */
     private function saveTax(array $rows, User $user): array
     {
+        $rows = self::inEmployeeOrder($rows);
         $employees = Employee::query()->with('user.roles')->whereKey(array_map(fn (array $r) => $r['data']['employee_id'], $rows))->get()->keyBy('id');
         $save = new SaveOpeningBalance;
 
@@ -236,35 +254,31 @@ class OpeningImportController extends Controller
     }
 
     /**
-     * @param  list<array{line: int, data: array{employee_id: int, loan_id: int|null, type: string, amount: int, opening_repaid: int, installment: int, start_month: string, note: string|null}|null}>  $rows
+     * @param  list<array{line: int, data: array{employee_id: int, loan_id: int|null, type: string, amount: int, opening_repaid: int, installment: int, start_month: string, note?: string}|null}>  $rows
      * @return array{rows: int, changed: int, unchanged: int}
      */
     private function saveLoans(array $rows, User $user): array
     {
+        $rows = self::inEmployeeOrder($rows);
         $employees = Employee::query()->with('user.roles')->whereKey(array_map(fn (array $r) => $r['data']['employee_id'], $rows))->get()->keyBy('id');
-        $loans = Loan::query()->whereKey(array_filter(array_map(fn (array $r) => $r['data']['loan_id'], $rows)))->get()->keyBy('id');
-        // Read once, before the transaction (never latestLocked() inside a write transaction).
-        $latest = PayrollLock::latestLocked();
 
-        return DB::transaction(function () use ($rows, $user, $employees, $loans, $latest): array {
+        return DB::transaction(function () use ($rows, $user, $employees): array {
             $created = 0;
             $updated = 0;
             $total = 0;
 
             foreach ($rows as $row) {
                 $data = $row['data'];
-                $save = (new SaveLoan)->usingLatestLocked($latest);
+                $save = new SaveLoan;
+                // New or update is decided again inside the save, under the employee row lock.
+                $loan = $save->import($user, $employees[$data['employee_id']], $data);
 
-                if ($data['loan_id'] === null) {
-                    $save->create($user, $employees[$data['employee_id']], $data);
+                if ($loan->wasRecentlyCreated) {
                     $created++;
                     $total += $data['amount'] - $data['opening_repaid'];
-
-                    continue;
+                } else {
+                    $updated += $save->changed() ? 1 : 0;
                 }
-
-                $save->update($user, $loans[$data['loan_id']], $data);
-                $updated += $save->changed() ? 1 : 0;
             }
 
             $counts = ['rows' => count($rows), 'changed' => $created + $updated, 'unchanged' => count($rows) - $created - $updated];
@@ -290,6 +304,8 @@ class OpeningImportController extends Controller
      */
     private function preview(string $kind, string $token, string $path, User $user): array
     {
+        $this->extendTimeLimit();
+
         $import = self::import($kind);
         $file = $import->read($path);
         $rows = $import->check($file['rows'], $user);
@@ -308,6 +324,7 @@ class OpeningImportController extends Controller
                 'line' => $row['line'],
                 ...$row['display'],
                 'errors' => $row['errors'],
+                'warnings' => $row['warnings'] ?? [],
                 'unchanged' => $row['unchanged'],
             ], $rows),
         ];

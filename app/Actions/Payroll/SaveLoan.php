@@ -6,6 +6,7 @@ use App\Models\Employee;
 use App\Models\Loan;
 use App\Models\PayrollRun;
 use App\Models\User;
+use App\Support\Attendance\AttendanceClock;
 use App\Support\Audit\Audit;
 use App\Support\Payroll\Money;
 use App\Support\Payroll\PayrollAccess;
@@ -42,28 +43,51 @@ class SaveLoan
 
     public const CANCELLED = 'This loan is cancelled and can no longer change.';
 
+    public const CANCELLED_MATCH = 'A cancelled loan with these figures exists.';
+
+    /** How many years ahead a first deduction month may lie. */
+    public const MAX_YEARS_AHEAD = 5;
+
     private bool $changed = false;
 
-    /** Set by usingLatestLocked(): the latest approved month read once by a caller that wraps many saves. */
-    private bool $latestGiven = false;
-
-    private ?string $latest = null;
-
     /**
-     * For a caller that runs many saves inside its own transaction (the import): the latest approved month it read
-     * BEFORE that transaction, so no save calls PayrollLock::latestLocked() inside a write transaction.
+     * The import's save of one row: the loan of this person with the same type, original amount and first month that is
+     * still active is UPDATED (installment, repaid before go-live, note: only the keys in $data), else a new one is
+     * created. The match is read after the employee row lock, so two runs saving the same row cannot both create it.
+     * A cancelled loan with those figures is refused (CANCELLED_MATCH).
+     *
+     * @param  array{type: string, amount: int, installment: int, start_month: string, opening_repaid?: int|null, note?: string|null}  $data
+     *
+     * @throws AuthorizationException
+     * @throws ValidationException
      */
-    public function usingLatestLocked(?string $latest): static
+    public function import(User $by, Employee $employee, array $data): Loan
     {
-        $this->latestGiven = true;
-        $this->latest = $latest;
+        self::authorize($by, $employee);
 
-        return $this;
-    }
+        return DB::transaction(function () use ($by, $employee, $data): Loan {
+            Employee::query()->whereKey($employee->getKey())->lockForUpdate()->first();
 
-    private function latestLocked(): ?string
-    {
-        return $this->latestGiven ? $this->latest : PayrollLock::latestLocked();
+            $key = [
+                'employee_id' => $employee->getKey(),
+                'type' => $data['type'],
+                'amount' => (int) $data['amount'],
+                'start_month' => $data['start_month'],
+            ];
+
+            // A plain read is enough: every write to this person's loans holds the employee row lock taken above.
+            $match = Loan::query()->where($key)->where('status', 'active')->orderBy('id')->first();
+
+            if ($match !== null) {
+                return $this->update($by, $match, $data);
+            }
+
+            if (Loan::query()->where($key)->where('status', 'cancelled')->exists()) {
+                throw ValidationException::withMessages(['loan' => self::CANCELLED_MATCH]);
+            }
+
+            return $this->create($by, $employee, $data);
+        }, 3);
     }
 
     /**
@@ -75,10 +99,8 @@ class SaveLoan
     public function create(User $by, Employee $employee, array $data): Loan
     {
         self::authorize($by, $employee);
-        // Read before the transaction: latestLocked() share-locks every locked run row (PayrollLock lock rules).
-        $latest = $this->latestLocked();
 
-        return DB::transaction(function () use ($by, $employee, $data, $latest): Loan {
+        return DB::transaction(function () use ($by, $employee, $data): Loan {
             Employee::query()->whereKey($employee->getKey())->lockForUpdate()->first();
 
             $amount = (int) $data['amount'];
@@ -87,7 +109,8 @@ class SaveLoan
             $openingRepaid = (int) ($data['opening_repaid'] ?? 0);
 
             self::checkFigures($amount, $installment, $openingRepaid);
-            self::checkStartMonth($data['start_month'], $latest);
+            self::checkStartMonth($data['start_month']);
+            self::checkStartWindow($data['start_month']);
 
             $loan = Loan::query()->create([
                 'employee_id' => $employee->getKey(),
@@ -122,15 +145,18 @@ class SaveLoan
     {
         $employee = $loan->employee()->firstOrFail();
         self::authorize($by, $employee);
-        $latest = $this->latestLocked();
 
-        return DB::transaction(function () use ($by, $loan, $employee, $data, $latest): Loan {
+        return DB::transaction(function () use ($by, $loan, $employee, $data): Loan {
             Employee::query()->whereKey($employee->getKey())->lockForUpdate()->first();
             $startArg = array_key_exists('start_month', $data) && $data['start_month'] !== null ? (string) $data['start_month'] : null;
 
-            // Payroll lock (shared, on one run row) after the employee lock, before the loan row.
-            if ($startArg !== null && $startArg !== $loan->start_month) {
-                self::checkStartMonth($startArg, $latest);
+            // Payroll lock (shared, on one run row) after the employee lock, before the loan row. The stored first month
+            // can only change under the employee lock, so it is read fresh here.
+            $storedStart = (string) Loan::query()->whereKey($loan->getKey())->value('start_month');
+            $dueInLocked = $storedStart !== '' && PayrollLock::rangeTouchesLocked($storedStart.'-01', '9999-12-31') !== null;
+
+            if ($startArg !== null && $startArg !== $storedStart) {
+                self::checkStartMonth($startArg);
             }
 
             /** @var Loan $locked */
@@ -149,11 +175,12 @@ class SaveLoan
             $coreChanged = $amount !== $locked->amount || $start !== $locked->start_month || $openingRepaid !== $locked->opening_repaid;
 
             if ($coreChanged) {
-                if ($locked->repayments()->exists()) {
+                // A locking read: a payroll run approving at the same time cannot slip a repayment in unseen.
+                if ($locked->repayments()->sharedLock()->exists()) {
                     throw ValidationException::withMessages(['amount' => self::HAS_REPAYMENTS]);
                 }
 
-                if ($latest !== null && $locked->start_month <= $latest) {
+                if ($dueInLocked) {
                     throw ValidationException::withMessages(['start_month' => self::DUE_IN_LOCKED]);
                 }
             }
@@ -230,21 +257,49 @@ class SaveLoan
     }
 
     /**
-     * The first deduction month must come after the latest approved payroll month ($latest, read by the caller before
-     * its transaction) and must not be locked itself (PayrollLock::isLocked: one shared lock on that run row, so call it
-     * after locking the employee row).
+     * The first deduction month must come after every approved payroll month: no locked month at or after it. ONE read
+     * of the payroll lock (PayrollLock::rangeTouchesLocked, a shared lock), so call it inside the write transaction
+     * after locking the employee row; the message names the first locked month it finds.
      *
      * @throws ValidationException
      */
-    public static function checkStartMonth(string $month, ?string $latest): void
+    public static function checkStartMonth(string $month): void
     {
-        if ($latest !== null && $month <= $latest) {
-            throw ValidationException::withMessages(['start_month' => self::startMessage($latest)]);
+        $locked = PayrollLock::rangeTouchesLocked($month.'-01', '9999-12-31');
+
+        if ($locked !== null) {
+            throw ValidationException::withMessages(['start_month' => self::startMessage($locked)]);
+        }
+    }
+
+    /**
+     * A NEW loan starts this month or later and not absurdly far ahead (an Excel cell "7" or "202611" must not pass).
+     *
+     * @throws ValidationException
+     */
+    public static function checkStartWindow(string $month): void
+    {
+        $error = self::startWindowError($month, 'The first deduction month');
+
+        if ($error !== null) {
+            throw ValidationException::withMessages(['start_month' => $error]);
+        }
+    }
+
+    /** The message for a first month outside the window (this month .. MAX_YEARS_AHEAD years ahead), or null. */
+    public static function startWindowError(string $month, string $subject): ?string
+    {
+        $today = substr(app(AttendanceClock::class)->attendanceToday(), 0, 7);
+
+        if ($month < $today) {
+            return "{$subject} must be this month (".PayrollRun::monthLabel($today).') or later.';
         }
 
-        if (PayrollLock::isLocked($month)) {
-            throw ValidationException::withMessages(['start_month' => self::startMessage($month)]);
+        if ($month > ((int) substr($today, 0, 4) + self::MAX_YEARS_AHEAD).substr($today, 4)) {
+            return "{$subject} is too far ahead.";
         }
+
+        return null;
     }
 
     /** "Payroll for November 2026 is approved; start deductions after it." */

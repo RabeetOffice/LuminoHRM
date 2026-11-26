@@ -7,6 +7,8 @@ use App\Models\LoanRepayment;
 use App\Models\LoanSkip;
 use App\Models\PayrollItem;
 use App\Models\User;
+use App\Support\Payroll\LoanSchedule;
+use App\Support\Payroll\PayInputLoader;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Inertia\Testing\AssertableInertia as Assert;
@@ -378,4 +380,103 @@ it('shows a loan with repayments, their source, skips and the projected schedule
             ['month' => '2027-02', 'amount' => 200000],
         ])
         ->where('can', ['edit' => true, 'cancel' => false]));
+});
+
+// --- review fixes ------------------------------------------------------------------------------------------------
+
+it('keeps repaid-before-go-live and the note when an update does not send them', function () {
+    $hr = lnUser('hr');
+    $loan = loanFor(lnPerson('employee'), 50000, 5000, '2026-12', 38000);
+    $loan->forceFill(['note' => 'Car repair'])->save();
+
+    $this->actingAs($hr)->put("/payroll/loans/{$loan->id}", ['amount' => 50000, 'installment' => 4000, 'start_month' => '2026-12'])
+        ->assertSessionHasNoErrors();
+
+    $loan->refresh();
+    expect($loan->installment)->toBe(400000)
+        ->and($loan->opening_repaid)->toBe(3800000)
+        ->and($loan->note)->toBe('Car repair');
+
+    // Sent and blank: the note is cleared on purpose.
+    $this->actingAs($hr)->put("/payroll/loans/{$loan->id}", ['amount' => 50000, 'installment' => 4000, 'start_month' => '2026-12', 'note' => ''])
+        ->assertSessionHasNoErrors();
+    expect($loan->fresh()->note)->toBeNull()->and($loan->fresh()->opening_repaid)->toBe(3800000);
+});
+
+it('needs a first deduction month of this month or later, and not absurdly far ahead', function () {
+    $hr = lnUser('hr');
+    $person = lnPerson('employee');
+    $base = ['employee_id' => $person->id, 'type' => 'loan', 'amount' => 10000, 'installment' => 1000];
+
+    $this->actingAs($hr)->post('/payroll/loans', [...$base, 'start_month' => '2026-10'])
+        ->assertSessionHasErrors(['start_month' => 'The first deduction month must be this month (November 2026) or later.']);
+    $this->actingAs($hr)->post('/payroll/loans', [...$base, 'start_month' => '2090-01'])
+        ->assertSessionHasErrors(['start_month' => 'The first deduction month is too far ahead.']);
+    expect(Loan::query()->count())->toBe(0);
+
+    $this->actingAs($hr)->post('/payroll/loans', [...$base, 'start_month' => '2026-11'])->assertSessionHasNoErrors();
+    expect(Loan::query()->count())->toBe(1);
+});
+
+it('says nothing is left on a cleared loan for a skip and a repayment', function () {
+    $hr = lnUser('hr');
+    $loan = loanFor(lnPerson('employee'), 12000, 5000, '2026-12', 12000 - 1);
+    LoanRepayment::query()->create(['loan_id' => $loan->id, 'amount' => 100, 'month' => '2026-12', 'note' => 'Cash']);
+    expect($loan->fresh()->isCleared())->toBeTrue();
+
+    $this->actingAs($hr)->post("/payroll/loans/{$loan->id}/skip", ['month' => '2027-01', 'reason' => 'Anything'])
+        ->assertSessionHasErrors(['month' => 'Nothing is left to recover on this loan.']);
+    $this->actingAs($hr)->post("/payroll/loans/{$loan->id}/repayments", ['amount' => 1, 'month' => '2026-12', 'note' => 'Cash'])
+        ->assertSessionHasErrors(['amount' => 'Nothing is left to recover on this loan.']);
+});
+
+it('refuses a skip, an unskip and a repayment on a cancelled loan', function () {
+    $hr = lnUser('hr');
+    $loan = loanFor(lnPerson('employee'), 12000, 5000, '2026-12');
+    LoanSkip::query()->create(['loan_id' => $loan->id, 'month' => '2027-02', 'reason' => 'Eid']);
+    $loan->forceFill(['status' => 'cancelled'])->save();
+
+    $this->actingAs($hr)->post("/payroll/loans/{$loan->id}/skip", ['month' => '2027-01', 'reason' => 'Anything'])
+        ->assertSessionHasErrors(['month' => 'This loan is cancelled and can no longer change.']);
+    $this->actingAs($hr)->delete("/payroll/loans/{$loan->id}/skip/2027-02")
+        ->assertSessionHasErrors(['month' => 'This loan is cancelled and can no longer change.']);
+    $this->actingAs($hr)->post("/payroll/loans/{$loan->id}/repayments", ['amount' => 100, 'month' => '2026-12', 'note' => 'Cash'])
+        ->assertSessionHasErrors(['amount' => 'This loan is cancelled and can no longer change.']);
+
+    expect(LoanSkip::query()->count())->toBe(1)->and(LoanRepayment::query()->count())->toBe(0);
+});
+
+it('shows that more months follow a schedule cut at 120 months', function () {
+    $hr = lnUser('hr');
+    $long = loanFor(lnPerson('employee'), 20000, 100, '2026-12');
+    $short = loanFor(lnPerson('employee'), 1000, 500, '2026-12');
+
+    $this->actingAs($hr)->get("/payroll/loans/{$long->id}")->assertInertia(fn (Assert $page) => $page
+        ->where('schedule_more', true)->has('schedule', 120));
+    $this->actingAs($hr)->get("/payroll/loans/{$short->id}")->assertInertia(fn (Assert $page) => $page
+        ->where('schedule_more', false)->has('schedule', 2));
+});
+
+it('loads the same due amount the schedule projects for the month', function () {
+    $e = lnPerson(null);
+    salaryProfile($e);
+    $remainingFirst = loanFor($e, 12000, 5000, '2026-11', 9000);          // remaining Rs 3,000 < installment
+    $plain = loanFor($e, 20000, 4000, '2026-10');
+    $skipped = loanFor($e, 9000, 3000, '2026-09', type: 'advance');
+    LoanSkip::query()->create(['loan_id' => $skipped->id, 'month' => '2026-11', 'reason' => 'Wedding']);
+    LoanRepayment::query()->create(['loan_id' => $plain->id, 'amount' => 100000, 'month' => '2026-10']);
+
+    $due = collect(PayInputLoader::load('2026-11', collect([$e->fresh()]), [])[$e->id]->loans)->keyBy('loanId');
+
+    foreach ([$remainingFirst, $plain, $skipped] as $loan) {
+        $loan->refresh();
+        $line = $due[$loan->id];
+        $loaderDue = $line->skipped ? 0 : max(0, min($line->installment, $line->remaining));
+        $projected = LoanSchedule::project($loan->remaining(), $loan->installment, '2026-11', $loan->skips->pluck('month')->all())[0] ?? null;
+        $projectedDue = $projected !== null && $projected['month'] === '2026-11' ? $projected['amount'] : 0;
+
+        expect($loaderDue)->toBe($projectedDue);
+    }
+
+    expect($due[$remainingFirst->id]->remaining)->toBe(300000);
 });

@@ -152,7 +152,8 @@ abstract class PayrollOpeningWorkbook implements ToArray, WithMultipleSheets, Wi
     public static function month(mixed $value): ?string
     {
         if (is_int($value) || is_float($value)) {
-            if ($value < 1 || $value > 2958465) {
+            // A real date: 2000-01-01 (36526) to 2099-12-31 (73415). A bare 7 or 202611 is a typing slip, not a month.
+            if ($value < 36526 || $value > 73415) {
                 return null;
             }
 

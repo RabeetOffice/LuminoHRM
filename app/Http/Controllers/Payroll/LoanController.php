@@ -93,9 +93,10 @@ class LoanController extends Controller
         $hasRepayments = $loan->repayments->isNotEmpty();
 
         $scheduleFrom = max($loan->start_month, $from ?? $loan->start_month);
-        $schedule = $loan->isActive() && $remaining > 0
-            ? LoanSchedule::project($remaining, $loan->installment, $scheduleFrom, $loan->skips->pluck('month')->all())
-            : [];
+        $skipped = $loan->skips->pluck('month')->all();
+        $shows = $loan->isActive() && $remaining > 0;
+        $schedule = $shows ? LoanSchedule::project($remaining, $loan->installment, $scheduleFrom, $skipped) : [];
+        $scheduleMore = $shows && LoanSchedule::hasMore($remaining, $loan->installment, $scheduleFrom, $skipped);
 
         return Inertia::render('payroll/loans/show', [
             'loan' => [
@@ -130,6 +131,7 @@ class LoanController extends Controller
                 'locked' => $latest !== null && $s->month <= $latest,
             ])->values()->all(),
             'schedule' => $schedule,
+            'schedule_more' => $scheduleMore,
             'months' => self::months($latest),
             'can' => [
                 'edit' => $mayEdit,

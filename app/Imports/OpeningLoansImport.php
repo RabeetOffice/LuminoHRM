@@ -5,6 +5,7 @@ namespace App\Imports;
 use App\Actions\Payroll\SaveLoan;
 use App\Models\Employee;
 use App\Models\Loan;
+use App\Models\PayrollRun;
 use App\Models\User;
 use App\Support\Payroll\Money;
 use App\Support\PayrollLock;
@@ -21,13 +22,16 @@ use App\Support\PayrollLock;
  *   - Type: Loan or Advance (letter case ignored);
  *   - Original Amount: whole rupees above 0; Repaid Before Go-Live: whole rupees, 0 up to less than the amount (blank =
  *     0); Monthly Installment: whole rupees, 1 up to the amount (blank on an Advance = the whole amount);
- *   - First Deduction Month: "YYYY-MM" (or a date Excel made of it), after the latest approved payroll month;
- *   - Note: at most 255 characters;
+ *   - First Deduction Month: "YYYY-MM" (or a date Excel made of it; a bare number such as 7 or 202611 is refused); a NEW
+ *     loan starts after the latest approved payroll month, this month or later, at most 5 years ahead;
+ *   - Note: at most 255 characters; a blank cell or a missing Note column keeps the stored note;
  *   - the same person, type, amount and first month twice in the file: an error on each of those rows.
  *
  * Idempotent (sets, never adds): a row whose person, type, original amount and first month match an active loan
  * already stored updates that loan (installment, repaid before go-live, note; the repaid figure only while the loan has
  * no repayment and was never due in an approved month) instead of creating another; a row equal to it is unchanged.
+ * A row that differs from the same person's active loan of that type in amount or first month is still a new loan, with
+ * a warning (not an error) that it may be a correction; a row with the figures of a CANCELLED loan is an error.
  */
 final class OpeningLoansImport extends PayrollOpeningWorkbook
 {
@@ -51,7 +55,7 @@ final class OpeningLoansImport extends PayrollOpeningWorkbook
 
     /**
      * @param  list<array{line: int, cells: array<string, mixed>}>  $rows
-     * @return list<array{line: int, display: array<string, string>, errors: list<string>, unchanged: bool, data: array{employee_id: int, loan_id: int|null, type: string, amount: int, opening_repaid: int, installment: int, start_month: string, note: string|null}|null}>
+     * @return list<array{line: int, display: array<string, string>, errors: list<string>, warnings: list<string>, unchanged: bool, data: array{employee_id: int, loan_id: int|null, type: string, amount: int, opening_repaid: int, installment: int, start_month: string, note?: string}|null}>
      */
     public function check(array $rows, User $user): array
     {
@@ -59,16 +63,27 @@ final class OpeningLoansImport extends PayrollOpeningWorkbook
         $latest = PayrollLock::latestLocked();
 
         $existing = [];
+        $cancelled = [];
+        $activeOf = [];
         if ($byCode->isNotEmpty()) {
             $loans = Loan::query()
-                ->where('status', 'active')
+                ->whereIn('status', ['active', 'cancelled'])
                 ->whereIn('employee_id', $byCode->pluck('id')->all())
                 ->withExists('repayments')
                 ->orderBy('id')
                 ->get();
 
             foreach ($loans as $loan) {
-                $existing["{$loan->employee_id}:{$loan->type}:{$loan->amount}:{$loan->start_month}"] ??= $loan;
+                $key = "{$loan->employee_id}:{$loan->type}:{$loan->amount}:{$loan->start_month}";
+
+                if ($loan->status === 'cancelled') {
+                    $cancelled[$key] = true;
+
+                    continue;
+                }
+
+                $existing[$key] ??= $loan;
+                $activeOf["{$loan->employee_id}:{$loan->type}"][] = $loan;
             }
         }
 
@@ -166,6 +181,7 @@ final class OpeningLoansImport extends PayrollOpeningWorkbook
                 'installment' => $installment,
                 'month' => $month,
                 'note' => $note === '' ? null : $note,
+                'cancelled' => $key !== null && isset($cancelled[$key]),
             ];
         }
 
@@ -178,9 +194,28 @@ final class OpeningLoansImport extends PayrollOpeningWorkbook
 
             $match = $row['key'] !== null ? ($existing[$row['key']] ?? null) : null;
             $unchanged = false;
+            $warnings = [];
 
             if ($row['errors'] === [] && $match === null && $latest !== null && $row['month'] <= $latest) {
                 $row['errors'][] = SaveLoan::startMessage($latest);
+            }
+
+            if ($row['errors'] === [] && $match === null) {
+                $window = SaveLoan::startWindowError((string) $row['month'], 'First Deduction Month');
+
+                if ($window !== null) {
+                    $row['errors'][] = $window;
+                } elseif ($row['cancelled']) {
+                    $row['errors'][] = SaveLoan::CANCELLED_MATCH;
+                } else {
+                    /** @var Employee $person */
+                    $person = $row['employee'];
+
+                    foreach ($activeOf["{$person->id}:{$row['type']}"] ?? [] as $other) {
+                        $warnings[] = "This person already has an active {$other->type} of ".Money::format($other->amount).' from '
+                            .PayrollRun::monthLabel($other->start_month).'. Change it on the loan page if this row corrects it.';
+                    }
+                }
             }
 
             if ($row['errors'] === [] && $match !== null && $match->opening_repaid !== $row['repaid']) {
@@ -199,7 +234,7 @@ final class OpeningLoansImport extends PayrollOpeningWorkbook
                 $unchanged = $match !== null
                     && $match->opening_repaid === $row['repaid']
                     && $match->installment === $row['installment']
-                    && $match->note === $row['note'];
+                    && ($row['note'] === null || $match->note === $row['note']);
                 $row['display']['action'] = $match === null ? 'New' : ($unchanged ? 'No change' : 'Updates the stored loan');
                 $data = [
                     'employee_id' => (int) $employee->id,
@@ -209,14 +244,19 @@ final class OpeningLoansImport extends PayrollOpeningWorkbook
                     'opening_repaid' => (int) $row['repaid'],
                     'installment' => (int) $row['installment'],
                     'start_month' => (string) $row['month'],
-                    'note' => $row['note'],
                 ];
+
+                // A blank cell (or no Note column) leaves the stored note alone.
+                if ($row['note'] !== null) {
+                    $data['note'] = $row['note'];
+                }
             }
 
             $result[] = [
                 'line' => $row['line'],
                 'display' => $row['display'],
                 'errors' => $row['errors'],
+                'warnings' => $row['errors'] === [] ? $warnings : [],
                 'unchanged' => $unchanged,
                 'data' => $data,
             ];

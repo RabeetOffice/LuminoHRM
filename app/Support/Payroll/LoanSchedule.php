@@ -75,6 +75,23 @@ final class LoanSchedule
         return self::project($remaining, $installment, $fromMonth, $skippedMonths, $maxMonths)[0]['month'] ?? null;
     }
 
+    /**
+     * Whether project() with the same arguments stops at $maxMonths with something still left to recover (more months
+     * follow what it returned).
+     *
+     * @param  array<int, string>  $skippedMonths
+     */
+    public static function hasMore(int $remaining, int $installment, string $fromMonth, array $skippedMonths, int $maxMonths = 120): bool
+    {
+        if ($remaining <= 0) {
+            return false;
+        }
+
+        $recovered = array_sum(array_column(self::project($remaining, $installment, $fromMonth, $skippedMonths, $maxMonths), 'amount'));
+
+        return $recovered < $remaining;
+    }
+
     /** "Y-m" of the month after $month. */
     public static function addMonth(string $month): string
     {

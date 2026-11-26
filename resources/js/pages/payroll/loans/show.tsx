@@ -72,6 +72,8 @@ type Props = {
     repayments: Repayment[];
     skips: Skip[];
     schedule: { month: string; amount: number }[];
+    /** The projection stops at 120 months and more months follow. */
+    schedule_more: boolean;
     months: LoanMonths;
     can: { edit: boolean; cancel: boolean };
 };
@@ -169,6 +171,7 @@ export default function LoanShow({
     repayments,
     skips,
     schedule,
+    schedule_more: scheduleMore,
     months,
     can,
 }: Props) {
@@ -329,6 +332,11 @@ export default function LoanShow({
                                         </span>
                                     </li>
                                 ))}
+                                {scheduleMore && (
+                                    <li className="px-4 py-2 text-muted-foreground">
+                                        …and more months
+                                    </li>
+                                )}
                             </ul>
                         )}
                     </Section>
