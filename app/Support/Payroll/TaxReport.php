@@ -15,7 +15,10 @@ use App\Support\Settings;
  *
  * Draft runs never count (their figures may still change). Excluded lines are left out (their pay is zeroed anyway).
  * Everyone with an opening row or a counted line is listed, leavers included for the months they were paid. Figures are
- * paisa, read from the stored item columns (frozen at approval), never recomputed.
+ * paisa, read from the stored lines (frozen at approval), never recomputed. The taxable column is the line's GROSS
+ * taxable pay (breakdown tax.gross_taxable_pay), whatever the tax mode, so it matches the opening "taxable income to
+ * date"; for a percentage-of-basic profile payroll_items.taxable_pay is only the tax base, which the report ignores
+ * (a line stored without that key falls back to taxable_pay).
  *
  * Reads: three queries whatever the headcount (opening rows, counted lines, the listed employees).
  */
@@ -86,14 +89,14 @@ final class TaxReport
             ->whereIn('payroll_runs.month', $months)
             ->where('payroll_items.excluded', false)
             ->toBase()
-            ->get(['payroll_items.employee_id', 'payroll_runs.month', 'payroll_items.taxable_pay', 'payroll_items.tax']);
+            ->get(['payroll_items.employee_id', 'payroll_runs.month', 'payroll_items.taxable_pay', 'payroll_items.tax', 'payroll_items.breakdown']);
 
         foreach ($items as $item) {
             $id = (int) $item->employee_id;
             $month = (string) $item->month;
             $current = $lines[$id][$month] ?? ['taxable' => 0, 'tax' => 0];
             $lines[$id][$month] = [
-                'taxable' => $current['taxable'] + (int) $item->taxable_pay,
+                'taxable' => $current['taxable'] + self::grossTaxable($item),
                 'tax' => $current['tax'] + (int) $item->tax,
             ];
         }
@@ -154,5 +157,16 @@ final class TaxReport
             'rows' => $rows,
             'totals' => $totals,
         ];
+    }
+
+    /**
+     * The line's gross taxable pay: breakdown tax.gross_taxable_pay, else the taxable_pay column (older lines).
+     */
+    private static function grossTaxable(\stdClass $item): int
+    {
+        $breakdown = is_string($item->breakdown) ? json_decode($item->breakdown, true) : null;
+        $gross = is_array($breakdown) ? ($breakdown['tax']['gross_taxable_pay'] ?? null) : null;
+
+        return (int) ($gross ?? $item->taxable_pay);
     }
 }

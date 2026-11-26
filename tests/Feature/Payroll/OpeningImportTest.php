@@ -10,8 +10,11 @@ use App\Models\OpeningBalance;
 use App\Models\User;
 use App\Support\EmployeeImportStore;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Testing\TestResponse;
@@ -483,6 +486,44 @@ it('saves the rows in employee order', function () {
 
     expect(Loan::query()->where('employee_id', $first->id)->value('id'))
         ->toBeLessThan(Loan::query()->where('employee_id', $second->id)->value('id'));
+});
+
+it('locks every employee of the loans file, ascending, before the first payroll run is read', function () {
+    $hr = opiUser();
+    $first = opiPerson('ZZ-0101');
+    $second = opiPerson('ZZ-0102');
+    $third = opiPerson('ZZ-0103');
+    payrollRun('2026-12');
+
+    $preview = opiPreview($hr, 'loans', opiXlsx(OPI_LOANS, [
+        ['ZZ-0103', 'Loan', 1000, 0, 100, '2026-12', null],
+        ['ZZ-0101', 'Loan', 1000, 0, 100, '2026-12', null],
+        ['ZZ-0102', 'Loan', 1000, 0, 100, '2026-12', null],
+    ]));
+
+    $log = [];
+    Event::listen(TransactionBeginning::class, function () use (&$log): void {
+        $log[] = ['begin'];
+    });
+    DB::listen(function ($query) use (&$log): void {
+        $log[] = [$query->sql, $query->bindings];
+    });
+
+    opiRun($hr, 'loans', $preview['token'])->assertSessionHas('success');
+
+    // The import's own transaction: from the first BEGIN on (the checks before it read the runs without a lock).
+    $statements = array_slice($log, array_search(['begin'], $log, true));
+    $sql = array_map(fn (array $entry): string => $entry[0], $statements);
+
+    // SQLite ignores FOR UPDATE / LOCK IN SHARE MODE, so the order of the statements is what is pinned here.
+    $lock = collect($sql)->search(fn (string $q): bool => str_starts_with($q, 'select "id" from "employees" where "employees"."id" in')
+        && str_ends_with($q, 'order by "id" asc'));
+    $firstRunRead = collect($sql)->search(fn (string $q): bool => str_contains($q, 'from "payroll_runs"'));
+
+    expect($lock)->not->toBeFalse()
+        ->and($firstRunRead)->not->toBeFalse()
+        ->and($lock)->toBeLessThan($firstRunRead)
+        ->and($sql[$lock])->toContain("in ({$first->id}, {$second->id}, {$third->id})");
 });
 
 it('lets an import change the installment of a loan with repayments but never its repaid figure', function () {

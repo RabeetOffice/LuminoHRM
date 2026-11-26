@@ -14,16 +14,13 @@ use App\Models\User;
 /** A run of $month with the company snapshot (name, address, logo_path, footer) taken at approval. */
 function psRun(string $month = '2026-11', string $status = 'approved', array $company = []): PayrollRun
 {
-    $run = payrollRun($month, $status);
-    $run->forceFill(['summary' => ['company' => [
+    return payrollRun($month, $status, ['summary' => ['company' => [
         'name' => 'Lumino Digital',
         'address' => "12 Main Boulevard\nLahore",
         'logo_path' => null,
         'footer' => 'This payslip is computer generated and needs no signature.',
         ...$company,
-    ]]])->save();
-
-    return $run;
+    ]]]);
 }
 
 /** The plan's example breakdown for $employee (code, name and department frozen into it). */

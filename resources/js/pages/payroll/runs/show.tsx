@@ -73,9 +73,9 @@ type Props = {
 
 function Tile({ label, children }: { label: string; children: ReactNode }) {
     return (
-        <div className="rounded-xl border bg-card px-4 py-3 shadow-xs">
+        <div className="min-w-0 rounded-xl border bg-card px-4 py-3 shadow-xs">
             <dt className="text-sm text-muted-foreground">{label}</dt>
-            <dd className="mt-0.5 text-lg font-semibold tabular-nums">
+            <dd className="mt-0.5 text-base font-semibold whitespace-nowrap tabular-nums sm:text-lg">
                 {children}
             </dd>
         </div>
@@ -250,7 +250,7 @@ export default function RunShow({
                     )}
                 </div>
 
-                <dl className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                <dl className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
                     <Tile label="People">{run.headcount}</Tile>
                     <Tile label="Gross pay">{formatMoney(run.gross)}</Tile>
                     <Tile label="Deductions">

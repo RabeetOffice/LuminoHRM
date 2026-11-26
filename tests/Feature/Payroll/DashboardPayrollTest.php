@@ -86,7 +86,7 @@ it('shows the pay month run as draft, approved and paid with its people and net 
 
 it('uses the month before the attendance month: a December viewer sees November', function () {
     $this->travelTo(CarbonImmutable::parse('2026-12-03 10:00:00', 'Asia/Karachi'));
-    payrollRun('2026-11', 'approved')->forceFill(['headcount' => 2, 'net' => 13_000_000])->save();
+    payrollRun('2026-11', 'approved', ['headcount' => 2, 'net' => 13_000_000]);
 
     $tile = dpProps($this->actingAs(userWithRole('hr'))->get('/dashboard'))['payrollThisMonth'];
 
@@ -106,8 +106,7 @@ it('works out the pay month across a year end', function () {
 });
 
 it('never sends the tile or any salary figure to a Manager or an Employee', function (string $role) {
-    $run = payrollRun('2026-10', 'approved');
-    $run->forceFill(['headcount' => 4, 'net' => 987_654_300])->save();
+    $run = payrollRun('2026-10', 'approved', ['headcount' => 4, 'net' => 987_654_300]);
     $user = userWithRole($role);
     $mine = employeeFor($user, ['joining_date' => '2026-01-01', 'status' => 'active']);
     $other = Employee::factory()->create(['manager_id' => $mine->id]);

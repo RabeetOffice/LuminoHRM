@@ -197,8 +197,10 @@ class OpeningImportController extends Controller
     }
 
     /**
-     * The rows by employee, then by file line: every run takes the employee row locks in the same order, so two writers
-     * (this import and a payroll approval) cannot wait on each other in a circle.
+     * The rows by employee, then by file line: the order the rows are saved in. The loans import also locks every
+     * employee in the file up front (lockEmployees), in ascending id, before the first payroll lock is read: the
+     * app-wide order is employee rows before payroll run rows, so this import cannot wait on a one-person
+     * recalculation or a generate in a circle. (A payroll approval takes no employee lock at all.)
      *
      * @template T of array{line: int, data: array<string, mixed>|null}
      *
@@ -263,6 +265,10 @@ class OpeningImportController extends Controller
         $employees = Employee::query()->with('user.roles')->whereKey(array_map(fn (array $r) => $r['data']['employee_id'], $rows))->get()->keyBy('id');
 
         return DB::transaction(function () use ($rows, $user, $employees): array {
+            // All or nothing in one transaction, so every employee row is locked first, ascending id, before any row
+            // takes its payroll lock (SaveLoan reads the payroll runs shared); each row then finds its lock held.
+            Employee::query()->whereKey($employees->keys()->all())->orderBy('id')->lockForUpdate()->get(['id']);
+
             $created = 0;
             $updated = 0;
             $total = 0;

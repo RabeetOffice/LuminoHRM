@@ -17,8 +17,8 @@ use LogicException;
 /**
  * The payroll of one calendar month (unique month): draft -> approved (= locked, App\Support\PayrollLock) -> paid.
  * Totals in paisa. An approved or paid run is never edited, re-opened or deleted; only a draft is deleted (its lines
- * go with it). Enforced here as a safety net (LogicException): the status only moves draft -> approved -> paid, and
- * an approved or paid run cannot be deleted. PayrollItem freezes the lines of such a run.
+ * go with it). Enforced here as a safety net (LogicException): the status only moves draft -> approved -> paid, an
+ * approved or paid run cannot be deleted, and its figures and summary cannot be saved (only the paid stamps). PayrollItem freezes the lines of such a run.
  *
  * @property int $id
  * @property string $month "Y-m"
@@ -55,6 +55,9 @@ class PayrollRun extends Model
     /** The one status each status may move to. */
     private const FORWARD = ['draft' => 'approved', 'approved' => 'paid'];
 
+    /** The only columns that may change on an approved run: the move to paid and its stamps (mark paid). */
+    public const LOCKED_WRITABLE = ['status', 'paid_by', 'paid_at', 'paid_on', 'updated_at'];
+
     /** @return array<string, string> */
     protected function casts(): array
     {
@@ -90,6 +93,15 @@ class PayrollRun extends Model
 
                 if ((self::FORWARD[$from] ?? null) !== $run->status) {
                     throw new LogicException("A payroll run cannot go from [{$from}] to [{$run->status}].");
+                }
+            }
+
+            // An approved or paid run keeps its figures and summary for good; only the paid stamps may be written.
+            if ($run->exists && in_array($run->getOriginal('status'), (array) config('hrm.payroll.locked_statuses'), true)) {
+                $frozen = array_diff(array_keys($run->getDirty()), self::LOCKED_WRITABLE);
+
+                if ($frozen !== []) {
+                    throw new LogicException("A payroll run that is {$run->getOriginal('status')} cannot change ".implode(', ', $frozen).'.');
                 }
             }
         });

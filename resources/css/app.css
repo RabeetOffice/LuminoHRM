@@ -172,7 +172,9 @@
 
     /* Glass. Opacities are tuned so muted text keeps 4.5:1 over the ambient background. */
     --glass-bg: rgb(255 255 255 / 0.62); /* sidebar, sticky header */
-    --glass-bg-strong: rgb(255 255 255 / 0.94); /* popovers, dialogs, sheets */
+    --glass-bg-strong: rgb(255 255 255 / 0.94); /* dialogs, sheets */
+    /* Select and dropdown menus: near opaque, so a label behind never shows through. */
+    --glass-bg-menu: rgb(255 255 255 / 0.985);
     --glass-solid: oklch(0.99 0.002 170); /* fallback without backdrop-filter */
     --glass-border: rgb(10 20 16 / 0.08);
     --glass-highlight: inset 0 1px 0 0 rgb(255 255 255 / 0.75);
@@ -238,6 +240,7 @@
 
     --glass-bg: oklch(0.2 0.004 170 / 0.62);
     --glass-bg-strong: oklch(0.205 0.004 170 / 0.92);
+    --glass-bg-menu: oklch(0.205 0.004 170 / 0.985);
     --glass-solid: oklch(0.2 0.002 170);
     --glass-border: rgb(255 255 255 / 0.09);
     --glass-highlight: inset 0 1px 0 0 rgb(255 255 255 / 0.06);
@@ -265,6 +268,7 @@
     .dark {
         --glass-bg: var(--glass-solid);
         --glass-bg-strong: var(--glass-solid);
+        --glass-bg-menu: var(--glass-solid);
     }
 }
 
@@ -282,6 +286,18 @@
     -webkit-backdrop-filter: blur(var(--glass-blur-strong))
         saturate(var(--glass-saturate));
     backdrop-filter: blur(var(--glass-blur-strong))
+        saturate(var(--glass-saturate));
+}
+
+/*
+ * Menus (select, dropdown): near-opaque with a heavy blur. A menu opened inside a dialog sits over the dialog's own
+ * glass, where a 6% see-through layer lets the labels behind show between the options.
+ */
+@utility glass-menu {
+    background-color: var(--glass-bg-menu);
+    -webkit-backdrop-filter: blur(calc(var(--glass-blur-strong) * 1.5))
+        saturate(var(--glass-saturate));
+    backdrop-filter: blur(calc(var(--glass-blur-strong) * 1.5))
         saturate(var(--glass-saturate));
 }
 

@@ -233,9 +233,10 @@ it('gives a run its label and lock state', function (string $status, bool $locke
 
 it('relates lines to their run, employee, adjustments and repayments, and the employee to payroll rows', function () {
     $employee = Employee::factory()->create();
-    $run = payrollRun('2026-11', 'approved');
+    $run = payrollRun('2026-11');
     $item = PayrollItem::factory()->create(['payroll_run_id' => $run->id, 'employee_id' => $employee->id]);
     PayrollAdjustment::factory()->create(['payroll_item_id' => $item->id]);
+    PayrollRun::query()->whereKey($run->id)->update(['status' => 'approved']);
     $loan = loanFor($employee, 10000, 5000, '2026-11');
     LoanRepayment::factory()->create(['loan_id' => $loan->id, 'payroll_item_id' => $item->id]);
     OpeningBalance::factory()->create(['employee_id' => $employee->id]);

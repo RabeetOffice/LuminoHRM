@@ -230,7 +230,7 @@ it('example 1: full month with absences, a half day, lates, unpaid leave and a l
     expect($b['deductions'][0])->toBe(['key' => 'attendance', 'label' => 'Attendance (4.5 days)', 'amount' => pcRs(13500), 'taxable' => false]);
     expect($b['deductions'])->toContain(['key' => 'loan', 'label' => 'Loan installment', 'amount' => pcRs(5000), 'taxable' => false, 'loan_id' => 4, 'due' => pcRs(5000)]);
     expect($b['tax'])->toBe([
-        'mode' => 'percentage', 'base' => 'gross_taxable', 'rate_bp' => 500, 'taxable_pay' => pcRs(71400),
+        'mode' => 'percentage', 'base' => 'gross_taxable', 'rate_bp' => 500, 'taxable_pay' => pcRs(71400), 'gross_taxable_pay' => pcRs(71400),
         'amount' => pcRs(3570), 'overridden' => false, 'override_reason' => null,
     ]);
     expect(pcLines($r, 'earnings'))->toBe(['Basic salary' => pcRs(60000), 'House rent' => pcRs(24000), 'Medical' => pcRs(6000)]);
@@ -703,7 +703,7 @@ it('writes the version 1 breakdown with every key', function () {
             'month' => '2026-11', 'from' => '2026-11-01', 'to' => '2026-11-30', 'days_in_month' => 30,
             'days_paid' => 30, 'basis' => 'calendar_days', 'basis_days' => 30,
         ])
-        ->and(array_keys($r->breakdown['tax']))->toBe(['mode', 'base', 'rate_bp', 'taxable_pay', 'amount', 'overridden', 'override_reason'])
+        ->and(array_keys($r->breakdown['tax']))->toBe(['mode', 'base', 'rate_bp', 'taxable_pay', 'gross_taxable_pay', 'amount', 'overridden', 'override_reason'])
         ->and(array_keys($r->breakdown['attendance']))->toBe(['counted_from', 'present', 'late', 'half_day', 'absent', 'on_leave', 'unpaid_leave', 'paid_leave', 'off', 'late_days_deducted', 'deducted_halves', 'overtime_minutes'])
         ->and(json_decode(json_encode($r->breakdown, JSON_THROW_ON_ERROR), true))->toBe($r->breakdown);
 });

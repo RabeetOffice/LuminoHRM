@@ -284,11 +284,12 @@ function salaryProfile(
 
 /**
  * A payroll run of $month ("Y-m") in $status (draft | approved | paid) with no lines, written directly. An approved or
- * paid run locks the month (App\Support\PayrollLock).
+ * paid run locks the month (App\Support\PayrollLock) and keeps its figures, so give them in $attrs.
  */
-function payrollRun(string $month, string $status = 'draft'): PayrollRun
+function payrollRun(string $month, string $status = 'draft', array $attrs = []): PayrollRun
 {
     return PayrollRun::query()->create([
+        ...$attrs,
         'month' => $month,
         'status' => $status,
         'generated_at' => now(),

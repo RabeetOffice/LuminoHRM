@@ -97,8 +97,7 @@ test('HR cannot approve, Admin can', function () {
 
 test('the list shows runs newest first for HR, with the months Generate offers', function () {
     [, $run] = rsSetUp();
-    $older = payrollRun('2026-10', 'approved');
-    $older->forceFill(['headcount' => 4, 'gross' => 40000000, 'net' => 36000000])->save();
+    $older = payrollRun('2026-10', 'approved', ['headcount' => 4, 'gross' => 40000000, 'net' => 36000000]);
 
     $this->actingAs($this->hr)->get('/payroll/runs')->assertInertia(fn (Assert $page) => $page
         ->component('payroll/runs/index')
@@ -394,6 +393,9 @@ test('a line, adjustment or loan of another run or person is 404', function () {
     $this->actingAs($this->admin)->put(rsItemUrl($run, $otherItem, '/tax'), ['amount' => 0, 'reason' => 'Exemption.'])->assertNotFound();
     $this->actingAs($this->admin)->put(rsItemUrl($run, $otherItem, '/exclude'), ['excluded' => true, 'reason' => 'Paid elsewhere.'])->assertNotFound();
     $this->actingAs($this->admin)->put(rsItemUrl($run, $item, "/loans/{$otherLoan->id}"), ['skipped' => true, 'reason' => 'Short this month.'])->assertNotFound();
+    // The loan is right for the line's person, but the line belongs to another run (the route has no scoped bindings).
+    $ownLoan = loanFor($other, 7000, 1000, '2026-11');
+    $this->actingAs($this->admin)->put(rsItemUrl($run, $otherItem, "/loans/{$ownLoan->id}"), ['skipped' => true, 'reason' => 'Short this month.'])->assertNotFound();
 
     expect(PayrollAdjustment::count())->toBe(1)->and(LoanSkip::count())->toBe(0);
 });

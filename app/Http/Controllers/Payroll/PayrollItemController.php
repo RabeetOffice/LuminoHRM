@@ -120,6 +120,8 @@ class PayrollItemController extends Controller
 
     public function loanSkip(Request $request, PayrollRun $run, PayrollItem $item, Loan $loan, LoanActions $loans, GeneratePayrollRun $generate): RedirectResponse
     {
+        // The route turns scoped bindings off (the loan is the person's, not the run's), so the line is checked here.
+        abort_unless($item->payroll_run_id === $run->id, 404);
         abort_unless($loan->employee_id === $item->employee_id, 404);
         $data = $request->validate([
             'skipped' => ['required', 'boolean'],
