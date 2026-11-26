@@ -268,7 +268,10 @@ export default function Dashboard({
                             <TileFrame
                                 key={key}
                                 href={figure?.href}
-                                className={tileTones[color].tile}
+                                className={cn(
+                                    tileTones[color].tile,
+                                    '@container',
+                                )}
                             >
                                 <div
                                     className={cn(
@@ -297,7 +300,14 @@ export default function Dashboard({
                                     </>
                                 ) : figure ? (
                                     <>
-                                        <p className="mt-1 text-xl font-semibold break-words tabular-nums sm:text-2xl">
+                                        <p
+                                            className={cn(
+                                                'mt-1 font-semibold whitespace-nowrap tabular-nums',
+                                                String(figure.value).length > 6
+                                                    ? 'text-[clamp(0.95rem,13cqi,1.5rem)]'
+                                                    : 'text-2xl',
+                                            )}
+                                        >
                                             {figure.value === '–' ? (
                                                 <span
                                                     role="img"
