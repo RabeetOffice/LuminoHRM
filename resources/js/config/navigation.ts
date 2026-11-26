@@ -22,6 +22,7 @@ import {
     Wallet,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import TaxReportController from '@/actions/App/Http/Controllers/Payroll/TaxReportController';
 import { toUrl } from '@/lib/utils';
 import { calendar, dashboard } from '@/routes';
 import { daily, monthly, punches } from '@/routes/attendance';
@@ -199,6 +200,12 @@ export const navigation: NavGroup[] = [
                     {
                         title: 'Opening Figures',
                         href: '/payroll/opening',
+                        permission: 'payroll.view',
+                    },
+                    {
+                        title: 'Tax Report',
+                        href: TaxReportController.index(),
+                        // Salary figures: Admin / HR only.
                         permission: 'payroll.view',
                     },
                 ],

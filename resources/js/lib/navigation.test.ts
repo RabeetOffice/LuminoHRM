@@ -113,6 +113,7 @@ describe('ready flag', () => {
         expect(r[2].items[0].children?.map((c) => c.title)).toEqual([
             'Salary Profiles',
             'Payslips',
+            'Tax Report',
         ]);
         expect(r[3].items.map((i) => i.title)).toEqual([
             'Settings',
@@ -473,6 +474,15 @@ describe('soon entries (default)', () => {
         expect(payslips?.href).toBe('/payroll/payslips');
         expect(mine?.soon).toBe(false);
         expect(mine?.href).toBe('/my/payslips');
+    });
+
+    test('payroll.view opens the Tax Report', () => {
+        const payroll = filterNavigation(navigation, ['payroll.view'])
+            .flatMap((g) => g.items)
+            .find((i) => i.title === 'Payroll');
+        const report = payroll?.children?.find((c) => c.title === 'Tax Report');
+        expect(toUrl(report?.href ?? '')).toBe('/payroll/tax-report');
+        expect(report?.soon).toBe(false);
     });
 });
 

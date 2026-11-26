@@ -283,6 +283,18 @@ Route::middleware(['auth', 'verified'])->group(function () {
                 ->whereNumber('employee')->where('taxYear', '\d{4}')->name('update');
         });
 
+    // Payroll downloads and the yearly tax report (Admin / HR only). The bank sheet is for approved / paid runs (a draft
+    // is 404 in the controller); the summary is for any run.
+    Route::get('payroll/runs/{run}/bank-sheet', [\App\Http\Controllers\Payroll\PayrollExportController::class, 'bankSheet'])
+        ->whereNumber('run')->middleware('can:payroll.run')->name('payroll.runs.bank-sheet');
+    Route::get('payroll/runs/{run}/summary', [\App\Http\Controllers\Payroll\PayrollExportController::class, 'summary'])
+        ->whereNumber('run')->middleware('can:payroll.view')->name('payroll.runs.summary-export');
+    Route::middleware('can:payroll.view')->prefix('payroll/tax-report')->name('payroll.tax-report')
+        ->controller(\App\Http\Controllers\Payroll\TaxReportController::class)->group(function () {
+            Route::get('/', 'index');
+            Route::get('export', 'export')->name('.export');
+        });
+
     // Users and roles. No delete route: accounts are disabled, never removed.
     Route::middleware('can:users.manage')->prefix('users')->name('users.')->group(function () {
         Route::get('/', [UserController::class, 'index'])->name('index');
