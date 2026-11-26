@@ -6,11 +6,15 @@ use App\Models\AssetCategory;
 use App\Models\Device;
 use App\Models\DevicePunch;
 use App\Models\Employee;
+use App\Models\Kpi;
 use App\Models\LeaveDay;
 use App\Models\LeaveRequest;
 use App\Models\LeaveType;
 use App\Models\Loan;
 use App\Models\PayrollRun;
+use App\Models\Review;
+use App\Models\ReviewCycle;
+use App\Models\ReviewScore;
 use App\Models\SalaryProfile;
 use App\Models\Shift;
 use App\Models\User;
@@ -365,4 +369,69 @@ function assignedAsset(Employee $employee, array $attrs = []): Asset
     ], $assignmentAttrs));
 
     return $asset->refresh();
+}
+
+/**
+ * A KPI written directly. For a designation by default (a new one; pass `designation` as a Designation to pick it), or for one
+ * person with `employee` (an Employee). Any column can be overridden: `name`, `weight`, `is_active`, ...
+ *
+ * @param  array<string, mixed>  $attrs
+ */
+function kpiRow(array $attrs = []): Kpi
+{
+    $designation = $attrs['designation'] ?? null;
+    $employee = $attrs['employee'] ?? null;
+    unset($attrs['designation'], $attrs['employee']);
+
+    if ($employee !== null) {
+        $attrs = array_merge(['designation_id' => null, 'employee_id' => $employee->id], $attrs);
+    } elseif ($designation !== null) {
+        $attrs = array_merge(['designation_id' => $designation->id, 'employee_id' => null], $attrs);
+    }
+
+    return Kpi::factory()->create($attrs);
+}
+
+/**
+ * An open monthly cycle written directly (each call takes the next month from January 2020; pass any column to override).
+ *
+ * @param  array<string, mixed>  $attrs
+ */
+function reviewCycleRow(array $attrs = []): ReviewCycle
+{
+    return ReviewCycle::factory()->create($attrs);
+}
+
+/**
+ * A review of $employee in $cycle, written directly (no action, no audit), waiting on the manager unless `status` says
+ * otherwise. Its KPI copies are made from the employee's active KPIs (their designation's first, then their own, each by name
+ * then id) unless `scores` is given: a list of score-row columns to write instead (`[]` for none).
+ *
+ * @param  array<string, mixed>  $attrs
+ */
+function reviewRow(ReviewCycle $cycle, Employee $employee, array $attrs = []): Review
+{
+    $scores = $attrs['scores'] ?? null;
+    unset($attrs['scores']);
+
+    $review = Review::factory()->create(array_merge([
+        'review_cycle_id' => $cycle->id,
+        'employee_id' => $employee->id,
+        'reviewer_id' => $employee->manager_id,
+        'status' => 'manager_review',
+    ], $attrs));
+
+    if ($scores === null) {
+        $byTarget = fn ($query) => $query->where('is_active', true)->orderBy('name')->orderBy('id')->get();
+        $scores = $byTarget(Kpi::query()->where('designation_id', $employee->designation_id))
+            ->concat($byTarget(Kpi::query()->where('employee_id', $employee->id)))
+            ->map(fn (Kpi $kpi) => ['kpi_id' => $kpi->id, 'name' => $kpi->name, 'description' => $kpi->description, 'weight' => $kpi->weight])
+            ->all();
+    }
+
+    foreach (array_values($scores) as $i => $row) {
+        ReviewScore::factory()->create(array_merge(['review_id' => $review->id, 'sort_order' => $i + 1], $row));
+    }
+
+    return $review->refresh();
 }

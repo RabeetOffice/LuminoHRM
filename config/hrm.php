@@ -88,6 +88,8 @@ return [
         'attendance' => ['settings.manage', 'settings.attendance-leave'],
         'leave' => ['settings.manage', 'settings.attendance-leave'],
         'payroll' => ['settings.manage'],
+        // Owner ruling (26 Nov): HR may change the review rules too.
+        'performance' => ['performance.manage'],
         'email' => ['settings.manage'],
         'letters' => ['settings.manage'],
     ],
@@ -160,6 +162,24 @@ return [
         'code_prefix' => 'AST-',
     ],
 
+    // Allowed values for the Performance module (stored as plain strings). Rules: see the Phase 6b design and plan.
+    'performance' => [
+        // self_review -> manager_review -> ready_to_close -> closed; skipped is a side state (the table: App\Support\Performance\ReviewStates).
+        'review_states' => ['self_review', 'manager_review', 'ready_to_close', 'closed', 'skipped'],
+        'cycle_states' => ['open', 'closed'],
+        'period_types' => ['quarterly', 'monthly'],
+        // A cycle's due date defaults to this many days after its period ends.
+        'default_due_days' => 14,
+        // Score labels: the lowest final score (hundredths) of each label, highest first.
+        'labels' => [
+            ['min' => 450, 'label' => 'Outstanding'],
+            ['min' => 350, 'label' => 'Exceeds'],
+            ['min' => 250, 'label' => 'Meets'],
+            ['min' => 150, 'label' => 'Below'],
+            ['min' => 0, 'label' => 'Unsatisfactory'],
+        ],
+    ],
+
     // Date formats offered in Settings > Company (PHP date() syntax). The stored value must be one of these.
     'date_formats' => ['d M Y', 'd/m/Y', 'm/d/Y', 'Y-m-d', 'd-m-Y', 'M d, Y'],
 
@@ -216,6 +236,12 @@ return [
             'payslip_footer' => '',
             // First month of the tax year (7 = July to June); a tax year is named by its start year ("2026-27").
             'tax_year_start_month' => 7,
+        ],
+        'performance' => [
+            // quarterly | monthly: the kind of period a new cycle covers. Cycles already opened keep theirs.
+            'review_period' => 'quarterly',
+            // Whether a new cycle starts with the person rating themselves. Copied onto each cycle when it opens.
+            'self_review_enabled' => true,
         ],
         'email' => [
             // An empty host means "use the mailer from .env".

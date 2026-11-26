@@ -194,6 +194,22 @@ class Employee extends Model
         return $this->hasMany(AssetAssignment::class);
     }
 
+    /** @return HasMany<Review, $this> */
+    public function reviews(): HasMany
+    {
+        return $this->hasMany(Review::class);
+    }
+
+    /**
+     * KPIs set for this person alone (a designation's KPIs are on the designation).
+     *
+     * @return HasMany<Kpi, $this>
+     */
+    public function kpis(): HasMany
+    {
+        return $this->hasMany(Kpi::class);
+    }
+
     /** @return HasMany<OpeningBalance, $this> */
     public function openingBalances(): HasMany
     {

@@ -30,13 +30,13 @@ it('lets hr save attendance rules but not company, payroll or email', function (
 
 it('shows hr only the groups they may edit', function () {
     $this->actingAs(userWithRole('hr'))->get('/hrm-settings')
-        ->assertInertia(fn ($p) => $p->where('groups', ['attendance', 'leave'])->missing('values.payroll')->missing('values.email'));
+        ->assertInertia(fn ($p) => $p->where('groups', ['attendance', 'leave', 'performance'])->missing('values.payroll')->missing('values.email'));
 });
 
 it('shows admin every group in order', function () {
     $this->actingAs(userWithRole('admin'))->get('/hrm-settings')
         ->assertInertia(fn ($p) => $p->component('hrm-settings/index')
-            ->where('groups', ['company', 'branding', 'attendance', 'leave', 'payroll', 'email', 'letters'])
+            ->where('groups', ['company', 'branding', 'attendance', 'leave', 'payroll', 'performance', 'email', 'letters'])
             ->where('active', 'company')
             ->has('values.company')->has('values.letters'));
 });

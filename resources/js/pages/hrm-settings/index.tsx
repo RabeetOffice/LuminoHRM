@@ -6,6 +6,7 @@ import { EmailPanel } from '@/components/settings/email-panel';
 import { LeavePanel } from '@/components/settings/leave-panel';
 import { LettersPanel } from '@/components/settings/letters-panel';
 import { PayrollPanel } from '@/components/settings/payroll-panel';
+import { PerformancePanel } from '@/components/settings/performance-panel';
 import {
     SETTINGS_GROUPS,
     SettingsNav,
@@ -83,6 +84,12 @@ export default function HrmSettings({
                             <PayrollPanel
                                 key="payroll"
                                 values={values.payroll}
+                            />
+                        )}
+                        {active === 'performance' && values.performance && (
+                            <PerformancePanel
+                                key="performance"
+                                values={values.performance}
                             />
                         )}
                         {active === 'email' && values.email && (

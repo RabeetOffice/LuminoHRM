@@ -80,6 +80,12 @@ class Designation extends Model
             return "Move this designation's employees first.";
         }
 
+        $kpis = Kpi::query()->where('designation_id', $this->getKey())->count();
+
+        if ($kpis > 0) {
+            return "{$kpis} KPI(s) use this designation. Remove or move them first.";
+        }
+
         return null;
     }
 }

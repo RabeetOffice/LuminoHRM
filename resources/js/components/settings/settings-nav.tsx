@@ -8,6 +8,7 @@ import {
     Mail,
     Package,
     Palette,
+    Target,
     Wallet,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -47,6 +48,11 @@ export const SETTINGS_GROUPS: Record<
         label: 'Payroll',
         description: 'Day-pay basis, tax mode, notice period, payslip footer.',
         icon: Wallet,
+    },
+    performance: {
+        label: 'Performance',
+        description: 'Review period and whether people rate themselves first.',
+        icon: Target,
     },
     email: {
         label: 'Email',

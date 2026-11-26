@@ -6,6 +6,7 @@ export type SettingsGroup =
     | 'attendance'
     | 'leave'
     | 'payroll'
+    | 'performance'
     | 'email'
     | 'letters';
 
@@ -62,6 +63,12 @@ export type PayrollValues = {
     tax_year_start_month: number;
 };
 
+export type PerformanceValues = {
+    /** quarterly | monthly: the period a new cycle covers. */
+    review_period: string;
+    self_review_enabled: boolean;
+};
+
 export type EmailValues = {
     host: string;
     port: number;
@@ -82,6 +89,7 @@ export type SettingsValues = {
     attendance?: AttendanceValues;
     leave?: LeaveValues;
     payroll?: PayrollValues;
+    performance?: PerformanceValues;
     email?: EmailValues;
     letters?: LettersValues;
 };

@@ -162,6 +162,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::post('{shift}/make-default', [ShiftController::class, 'makeDefault'])->whereNumber('shift')->name('make-default');
     });
 
+    // Performance > KPIs (Admin, HR). Phase 6b adds cycles and reviews beside it.
+    Route::middleware('can:performance.manage')->prefix('performance/kpis')->name('performance.kpis.')->controller(\App\Http\Controllers\Performance\KpiController::class)->group(function () {
+        Route::get('/', 'index')->name('index');
+        Route::post('/', 'store')->name('store');
+        Route::put('{kpi}', 'update')->whereNumber('kpi')->name('update');
+        Route::delete('{kpi}', 'destroy')->whereNumber('kpi')->name('destroy');
+    });
+
     // Assets: the register's writes (Task 4 adds the pages). Add, edit and status: Admin and HR; delete: Admin only.
     Route::middleware('can:assets.assign')->prefix('assets')->name('assets.')->controller(\App\Http\Controllers\Assets\AssetController::class)->group(function () {
         Route::post('/', 'store')->name('store');

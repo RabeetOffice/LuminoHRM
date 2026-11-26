@@ -10,6 +10,7 @@ use App\Http\Requests\Settings\EmailRequest;
 use App\Http\Requests\Settings\LeaveRequest;
 use App\Http\Requests\Settings\LettersRequest;
 use App\Http\Requests\Settings\PayrollRequest;
+use App\Http\Requests\Settings\PerformanceRequest;
 use App\Http\Requests\Settings\SettingsGroupRequest;
 use App\Mail\TestMail;
 use App\Models\User;
@@ -38,6 +39,7 @@ class HrmSettingsController extends Controller
         'attendance' => AttendanceRequest::class,
         'leave' => LeaveRequest::class,
         'payroll' => PayrollRequest::class,
+        'performance' => PerformanceRequest::class,
         'email' => EmailRequest::class,
         'letters' => LettersRequest::class,
     ];
@@ -48,6 +50,7 @@ class HrmSettingsController extends Controller
         'attendance' => 'Attendance',
         'leave' => 'Leave',
         'payroll' => 'Payroll',
+        'performance' => 'Performance',
         'email' => 'Email',
         'letters' => 'Letter templates',
     ];
