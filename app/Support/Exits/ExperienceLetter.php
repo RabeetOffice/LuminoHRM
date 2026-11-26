@@ -60,6 +60,8 @@ final class ExperienceLetter
             $logoUri = $mime === null ? null : "data:{$mime};base64,".base64_encode((string) Branding::disk()->get((string) $path));
         }
 
+        $logoUri ??= \App\Support\Payroll\PayslipPdf::defaultLogoDataUri();
+
         return Pdf::loadView('pdf.experience-letter', ['l' => [
             'company' => trim((string) settings('company.name', '')),
             'address' => trim((string) preg_replace('/\s*\R\s*/u', ', ', (string) settings('company.address', ''))),

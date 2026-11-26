@@ -1,6 +1,6 @@
 import { Link } from '@inertiajs/react';
 import type { PropsWithChildren } from 'react';
-import { BrandMark } from '@/components/hrm/brand-mark';
+import { BrandLogo } from '@/components/hrm/brand-logo';
 import {
     Card,
     CardContent,
@@ -26,7 +26,7 @@ export default function AuthCardLayout({
                     href={home()}
                     className="flex items-center gap-2 self-center font-medium"
                 >
-                    <BrandMark size="lg" wordmark />
+                    <BrandLogo className="h-11 max-w-56" />
                 </Link>
 
                 <div className="flex flex-col gap-6">

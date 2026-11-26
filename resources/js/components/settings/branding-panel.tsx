@@ -190,6 +190,18 @@ export function BrandingPanel({ values }: { values: BrandingValues }) {
                     'remove_logo_dark',
                 ])}
             >
+                <div className="flex items-center gap-3 rounded-md border bg-muted/40 p-3">
+                    <img
+                        src="/brand/logo-on-white.png"
+                        alt="Lumino Digital HRM"
+                        width={1271}
+                        height={324}
+                        className="h-10 w-auto rounded-sm object-contain"
+                    />
+                    <p className="text-sm text-muted-foreground">
+                        Default logo (used until you upload one)
+                    </p>
+                </div>
                 <div className="grid gap-5 md:grid-cols-2">
                     <LogoField
                         id="branding-logo"

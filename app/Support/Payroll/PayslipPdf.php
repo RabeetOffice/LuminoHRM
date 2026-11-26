@@ -258,12 +258,20 @@ final class PayslipPdf
         $filename = Branding::filename($path);
 
         if ($filename === null || ! Branding::disk()->exists((string) $path)) {
-            return null;
+            return self::defaultLogoDataUri();
         }
 
         $mime = self::LOGO_TYPES[strtolower(pathinfo($filename, PATHINFO_EXTENSION))] ?? null;
 
-        return $mime === null ? null : "data:{$mime};base64,".base64_encode((string) Branding::disk()->get((string) $path));
+        return $mime === null ? self::defaultLogoDataUri() : "data:{$mime};base64,".base64_encode((string) Branding::disk()->get((string) $path));
+    }
+
+    /** The bundled Lumino Digital logo (white background) as a data URI: used on documents until a company logo is uploaded. */
+    public static function defaultLogoDataUri(): ?string
+    {
+        $file = public_path('brand/logo-on-white.png');
+
+        return is_file($file) ? 'data:image/png;base64,'.base64_encode((string) file_get_contents($file)) : null;
     }
 
     private static function bank(PayrollItem $item): string

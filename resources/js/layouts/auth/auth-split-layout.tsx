@@ -1,5 +1,5 @@
 import { Link } from '@inertiajs/react';
-import { BrandMark } from '@/components/hrm/brand-mark';
+import { BrandLogo } from '@/components/hrm/brand-logo';
 import { home } from '@/routes';
 import type { AuthLayoutProps } from '@/types';
 
@@ -16,7 +16,7 @@ export default function AuthSplitLayout({
                     href={home()}
                     className="relative z-20 flex items-center text-lg font-medium"
                 >
-                    <BrandMark size="md" wordmark />
+                    <BrandLogo className="h-9 max-w-44" />
                 </Link>
             </div>
             <div className="w-full lg:p-8">
@@ -25,7 +25,7 @@ export default function AuthSplitLayout({
                         href={home()}
                         className="relative z-20 flex items-center justify-center lg:hidden"
                     >
-                        <BrandMark size="lg" wordmark />
+                        <BrandLogo className="h-11 max-w-56" />
                     </Link>
                     <div className="flex flex-col items-start gap-2 text-left sm:items-center sm:text-center">
                         <h1 className="text-xl font-medium">{title}</h1>

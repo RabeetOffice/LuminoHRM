@@ -29,7 +29,9 @@
                 background-color: oklch(0.145 0 0);
             }
         </style>
-        <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+        <link rel="icon" href="/brand/favicon-64.png" type="image/png" sizes="64x64">
+        <link rel="apple-touch-icon" href="/brand/app-icon.png">
+        <meta name="theme-color" content="#111a39">
 
         @viteReactRefresh
         @vite(['resources/css/app.css', 'resources/js/app.tsx', "resources/js/pages/{$page['component']}.tsx"])

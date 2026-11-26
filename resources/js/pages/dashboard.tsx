@@ -218,26 +218,33 @@ export default function Dashboard({
                     subtitle="A summary of your workforce today."
                 />
 
-                <section className="rounded-xl bg-banner px-6 py-7 text-banner-foreground shadow-xs">
-                    <h2 className="text-2xl font-semibold tracking-tight">
-                        {greetingFor(hourIn(now, app.timezone))}, {firstName}
-                    </h2>
-                    <p className="mt-1 text-sm text-banner-foreground/70">
-                        {today}
-                    </p>
-                    {attendanceToday && (
-                        <p className="mt-3 text-sm font-medium text-banner-foreground/90">
-                            {attendanceBannerLine(
-                                attendanceToday,
-                                attendanceDay,
-                            )}
+                <section className="relative overflow-hidden rounded-xl bg-banner bg-[url('/brand/banner-wide.webp')] bg-cover bg-center px-6 py-7 text-banner-foreground shadow-xs">
+                    <div
+                        aria-hidden="true"
+                        className="pointer-events-none absolute inset-0 bg-gradient-to-r from-black/60 via-black/35 to-black/10"
+                    />
+                    <div className="relative">
+                        <h2 className="text-2xl font-semibold tracking-tight">
+                            {greetingFor(hourIn(now, app.timezone))},{' '}
+                            {firstName}
+                        </h2>
+                        <p className="mt-1 text-sm text-banner-foreground/70">
+                            {today}
                         </p>
-                    )}
-                    {qualifier && (
-                        <p className="mt-1 text-xs text-banner-foreground/70">
-                            {qualifier}
-                        </p>
-                    )}
+                        {attendanceToday && (
+                            <p className="mt-3 text-sm font-medium text-banner-foreground/90">
+                                {attendanceBannerLine(
+                                    attendanceToday,
+                                    attendanceDay,
+                                )}
+                            </p>
+                        )}
+                        {qualifier && (
+                            <p className="mt-1 text-xs text-banner-foreground/70">
+                                {qualifier}
+                            </p>
+                        )}
+                    </div>
                 </section>
 
                 <section
