@@ -194,7 +194,6 @@ export const navigation: NavGroup[] = [
                     {
                         title: 'Payslips',
                         href: '/payroll/payslips',
-                        ...unready,
                     },
                     {
                         title: 'Loans & Advances',
@@ -275,7 +274,6 @@ export const navigation: NavGroup[] = [
                 title: 'My Payslips',
                 href: '/my/payslips',
                 icon: FileText,
-                ...unready,
             },
             {
                 title: 'My Assets',

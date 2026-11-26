@@ -44,6 +44,19 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // My Leaves: the signed-in person's own balances and requests (no person in the URL; an empty state when not linked).
     Route::get('my/leaves', [\App\Http\Controllers\Leave\MyLeaveController::class, 'show'])->name('my.leaves');
 
+    // My Payslips: the signed-in person's own payslips of approved / paid runs (any other item id = 403).
+    Route::get('my/payslips', [\App\Http\Controllers\MyPayslipController::class, 'index'])->name('my.payslips');
+    Route::get('my/payslips/{item}', [\App\Http\Controllers\MyPayslipController::class, 'download'])->whereNumber('item')->name('my.payslips.download');
+
+    // Payroll > Payslips: every payslip of approved / paid runs (Admin / HR; a draft's or excluded line = 404).
+    Route::prefix('payroll/payslips')->name('payroll.payslips.')->controller(\App\Http\Controllers\Payroll\PayslipController::class)->group(function () {
+        Route::middleware('can:payroll.view')->group(function () {
+            Route::get('/', 'index')->name('index');
+            Route::get('{item}', 'download')->whereNumber('item')->name('download');
+        });
+        Route::post('{item}/resend', 'resend')->whereNumber('item')->middleware('can:payroll.run')->name('resend');
+    });
+
     // Applying for leave (own record, or on behalf by HR / Admin), its live preview, the attachment and cancelling while
     // open: any signed-in user; LeaveApplicationController / ApplyForLeave check the rights (out of reach = 403).
     Route::prefix('leave/requests')->name('leave.requests.')->controller(\App\Http\Controllers\Leave\LeaveApplicationController::class)->group(function () {

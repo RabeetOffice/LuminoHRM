@@ -112,6 +112,7 @@ describe('ready flag', () => {
         expect(r[2].items.map((i) => i.title)).toEqual(['Payroll']);
         expect(r[2].items[0].children?.map((c) => c.title)).toEqual([
             'Salary Profiles',
+            'Payslips',
         ]);
         expect(r[3].items.map((i) => i.title)).toEqual([
             'Settings',
@@ -122,6 +123,7 @@ describe('ready flag', () => {
             'My Profile',
             'My Attendance',
             'My Leaves',
+            'My Payslips',
         ]);
     });
 
@@ -171,7 +173,7 @@ describe('ready flag', () => {
 
     test('with includeUnready false, unready items are hidden even when a search matches them', () => {
         expect(
-            filterNavigation(navigation, allPermissions, 'payslip', hide),
+            filterNavigation(navigation, allPermissions, 'my reviews', hide),
         ).toEqual([]);
     });
 
@@ -258,10 +260,10 @@ describe('soon entries (default)', () => {
 
     test('an unready entry the user may see comes back flagged soon', () => {
         const r = filterNavigation(navigation, ['employees.view-all']);
-        const payslips = r
+        const assets = r
             .flatMap((g) => g.items)
-            .find((i) => i.title === 'My Payslips');
-        expect(payslips?.soon).toBe(true);
+            .find((i) => i.title === 'My Assets');
+        expect(assets?.soon).toBe(true);
     });
 
     test('the Calendar is ready for every signed-in user', () => {
@@ -320,7 +322,7 @@ describe('soon entries (default)', () => {
             false,
             false,
             false,
-            true,
+            false,
             true,
             true,
         ]);
@@ -408,8 +410,8 @@ describe('soon entries (default)', () => {
     });
 
     test('search matches a soon entry by title', () => {
-        const r = filterNavigation(navigation, [], 'payslips');
-        expect(titlesOf(r)).toEqual([['My Space', ['My Payslips']]]);
+        const r = filterNavigation(navigation, [], 'my assets');
+        expect(titlesOf(r)).toEqual([['My Space', ['My Assets']]]);
         expect(r[0].items[0].soon).toBe(true);
     });
 
@@ -455,7 +457,22 @@ describe('soon entries (default)', () => {
             'My Profile',
             'My Attendance',
             'My Leaves',
+            'My Payslips',
         ]);
+    });
+
+    test('Payslips and My Payslips are ready', () => {
+        const items = filterNavigation(navigation, ['payroll.view']).flatMap(
+            (g) => g.items,
+        );
+        const payslips = items
+            .find((i) => i.title === 'Payroll')
+            ?.children?.find((c) => c.title === 'Payslips');
+        const mine = items.find((i) => i.title === 'My Payslips');
+        expect(payslips?.soon).toBe(false);
+        expect(payslips?.href).toBe('/payroll/payslips');
+        expect(mine?.soon).toBe(false);
+        expect(mine?.href).toBe('/my/payslips');
     });
 });
 
