@@ -6,7 +6,6 @@ use App\Models\Clearance;
 use App\Models\FinalSettlement;
 use App\Models\Loan;
 use App\Models\LoanRepayment;
-use App\Models\PayrollRun;
 use App\Models\User;
 use App\Support\Audit\Audit;
 use App\Support\Branding;
@@ -32,7 +31,9 @@ use LogicException;
  *      settlement and the loans, so it cannot cycle with ApprovePayrollRun (run FOR UPDATE, then loans FOR UPDATE);
  *   4. the settlement row FOR UPDATE (writers that lock no employee row share-lock it and wait);
  *   5. the person's active loans FOR UPDATE in ascending id.
- * PayrollLock is never read on its own settlement row.
+ * PayrollLock is never read on its own settlement row. The paid_in_run check (SettlementChecks::paidInRun) share-locks
+ * the person's line of the settlement month's run only when that run is approved or paid: such a run is frozen, so no
+ * writer holds its lines for update.
  *
  * Then: SettlementAccess::mayApprove (exit.manage; one's own only as the sole active Admin, else [settlement]
  * OWN_APPROVE; no rights 403); a frozen settlement [settlement] FROZEN; stale [settlement] STALE; the first blocking
@@ -56,7 +57,7 @@ class ApproveSettlement
 
             $employee = ExitGuards::lockEmployee((int) $settlement->employee_id);
             $resignation = ExitGuards::lockResignation((int) $settlement->resignation_id, $employee);
-            PayrollRun::query()->orderBy('month')->sharedLock()->pluck('status', 'month');
+            ExitGuards::lockRuns();
             $locked = FinalSettlement::query()->whereKey($settlement->id)->lockForUpdate()->firstOrFail();
             $locked->setRelation('resignation', $resignation);
             Loan::query()->where('employee_id', $employee->id)->where('status', 'active')->orderBy('id')->lockForUpdate()->get(['id']);

@@ -18,7 +18,8 @@ use Illuminate\Validation\ValidationException;
  * manager step (the exit then waits for HR) or the final step.
  *
  * Final approval, in one transaction (employee row, then the resignation row): the exit becomes approved, the employee's
- * last working day is set through EmploymentEnd (payroll lock check, attendance marks, leave trim; a refusal rolls
+ * last working day is set through EmploymentEnd (refused first when an approved or paid run already paid this person for
+ * that day's month: ExitGuards::assertNotPaidInRun; then the payroll lock check, attendance marks, leave trim; a refusal rolls
  * everything back), then the clearance rows are created (SeedClearance). A final approver may also decide an exit still
  * waiting for the manager; its manager_skipped flag is then set. The sole active Admin may decide their own exit
  * (own_decision, audited).
@@ -71,6 +72,10 @@ class DecideExit
             $own = $routing->isOwn($by, $locked);
             $oldDay = EmployeeWriter::auditValue($employee->last_working_day);
             $day = $locked->last_working_day->format('Y-m-d');
+
+            // payroll_runs shared after the resignation row (EmploymentEnd reads them too), then the paid-month check.
+            ExitGuards::lockRuns();
+            ExitGuards::assertNotPaidInRun($employee, $day);
 
             $locked->status = ExitStates::APPROVED;
             $locked->manager_skipped = $locked->manager_skipped || $skipped;

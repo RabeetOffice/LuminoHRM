@@ -6,6 +6,7 @@ use App\Models\Attendance;
 use App\Models\Employee;
 use App\Models\FinalSettlement;
 use App\Models\LeaveRequest;
+use App\Models\PayrollItem;
 use App\Models\PayrollRun;
 use App\Models\Resignation;
 use App\Models\SalaryProfile;
@@ -15,6 +16,7 @@ use App\Support\Payroll\PayrollRoster;
 use DateTimeImmutable;
 use DateTimeZone;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Facades\DB;
 
 /**
  * What blocks the approval of a settlement and what the approver should know (design 5.5 "Approve"), for one person
@@ -28,8 +30,10 @@ use Illuminate\Database\Eloquent\Collection;
  * profile in force on the last working day), missing_days (PayInputLoader::missingDays; skipped while attendance has
  * not started), missing_clock_out, pending_days (status null or needs_rebuild before today), all inside the counted
  * window max(joining date, the 1st, attendance start) to the last working day, open_leave (pending / manager-approved
- * requests touching the month), previous_month_unpaid (payroll is live, i.e. some run is approved or paid, the person
- * was in the previous month's run (joined by its last day), and that month has no approved or paid run). Plus
+ * requests touching the month), paid_in_run (the month's approved / paid run holds a non-excluded line of the person,
+ * so the settlement would pay the month twice: paidInRun()), previous_month_unpaid (payroll was live in the previous
+ * month, i.e. the earliest approved or paid run is that month or earlier, the person was in that run (joined by its
+ * last day), and that month has no approved or paid run). Plus
  * `stale` when the last working day moved since the last calculation.
  *
  * Warnings: those the last calculation stored (loan shortfall, owed by employee, encashment type missing, ...).
@@ -127,11 +131,19 @@ final class SettlementChecks
             $block[] = self::check('open_leave', 'block', "Leave requests touching {$label} are still open.");
         }
 
+        $paid = self::paidInRun($employee, $month);
+        if ($paid !== null) {
+            $block[] = self::check('paid_in_run', 'block', $paid);
+        }
+
         $previous = (new DateTimeImmutable($first, new DateTimeZone('UTC')))->modify('-1 month')->format('Y-m');
         [, $previousLast] = PayrollRoster::bounds($previous);
         $locked = (array) config('hrm.payroll.locked_statuses');
         $runs = PayrollRun::query()->orderBy('month')->pluck('status', 'month');
-        $live = $runs->contains(fn ($status): bool => in_array($status, $locked, true));
+        // Payroll was live in the previous month: the earliest approved / paid run is that month or before it. A go-live
+        // run in the settlement month itself (no earlier run can ever be made) does not gate.
+        $earliest = $runs->filter(fn ($status): bool => in_array($status, $locked, true))->keys()->first();
+        $live = $earliest !== null && (string) $earliest <= $previous;
         $previousDone = in_array($runs->get($previous), $locked, true);
 
         if ($live && ! $previousDone && $employee->joining_date->format('Y-m-d') <= $previousLast) {
@@ -155,6 +167,43 @@ final class SettlementChecks
             fn (array $c): string => $c['key'],
             array_filter(self::for($settlement), fn (array $c): bool => $c['severity'] === 'block'),
         ));
+    }
+
+    /**
+     * The refusal when $employee was already paid for $month by payroll: the month has an approved or paid run holding a
+     * line of theirs that is not excluded (an excluded line paid nothing). Null otherwise. Two reads at most: the
+     * month's run row, then that person's line, each LOCK IN SHARE MODE inside a transaction (selected by month, and by
+     * run + employee, only; the status and the excluded flag are filtered in PHP). Callers hold the employee row first.
+     */
+    public static function paidInRun(Employee $employee, string $month): ?string
+    {
+        $runs = DB::table((new PayrollRun)->getTable())->where('month', $month);
+        if (DB::transactionLevel() > 0) {
+            $runs->sharedLock();
+        }
+
+        $run = $runs->first(['id', 'status']);
+        if ($run === null || ! in_array($run->status, (array) config('hrm.payroll.locked_statuses'), true)) {
+            return null;
+        }
+
+        $items = DB::table((new PayrollItem)->getTable())->where('payroll_run_id', $run->id)->where('employee_id', $employee->id);
+        if (DB::transactionLevel() > 0) {
+            $items->sharedLock();
+        }
+
+        $excluded = $items->value('excluded');
+        if ($excluded === null || (bool) $excluded) {
+            return null;
+        }
+
+        return self::paidMessage((string) $employee->full_name, $month);
+    }
+
+    /** "Sara Khan was already paid in the November 2026 payroll. Move the last working day to a later month first." */
+    public static function paidMessage(string $name, string $month): string
+    {
+        return "{$name} was already paid in the ".PayrollRun::monthLabel($month).' payroll. Move the last working day to a later month first.';
     }
 
     private static function openDays(int $n): string

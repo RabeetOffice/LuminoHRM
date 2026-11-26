@@ -21,7 +21,8 @@ use Illuminate\Validation\ValidationException;
  *
  * Also the shared lock-and-check for every draft edit (lockDraft) and the store step (store): employee row FOR UPDATE,
  * then the resignation row, then the settlement row FOR UPDATE; never PayrollLock on its own settlement row.
- * Refusals [settlement]: SettlementAccess::OWN / PRIVILEGED, FROZEN; no rights = 403.
+ * Refusals: one's own settlement = 403 (AuthorizationException with SettlementAccess::OWN: not allowed at all); [settlement]
+ * SettlementAccess::PRIVILEGED (an Admin may), FROZEN; no rights = 403.
  */
 class RecalculateSettlement
 {
@@ -84,6 +85,10 @@ class RecalculateSettlement
     public static function authorize(User $by, Resignation $resignation): void
     {
         $refusal = SettlementAccess::editRefusal($by, $resignation);
+
+        if ($refusal === SettlementAccess::OWN) {
+            throw new AuthorizationException($refusal); // never one's own: not allowed, so 403
+        }
 
         if ($refusal !== null) {
             ExitGuards::refuse($refusal, 'settlement');

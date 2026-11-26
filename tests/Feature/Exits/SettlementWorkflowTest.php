@@ -79,7 +79,7 @@ it('refuses to prepare for an exit that is not approved, twice, or for oneself',
     salaryProfile($own);
     $ownExit = approvedExit($own, '2026-11-18');
     expect(fn () => app(PrepareSettlement::class)->handle($this->hr, $ownExit))
-        ->toThrow(ValidationException::class, 'You cannot prepare or edit your own settlement.');
+        ->toThrow(AuthorizationException::class, 'You cannot prepare or edit your own settlement.');
 });
 
 it('lets only an Admin prepare the settlement of an Admin or HR person', function () {

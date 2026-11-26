@@ -283,7 +283,8 @@ it('closes 55 employees x 31 days with a query count that does not grow with the
     }
     $large = $queriesFor(fn () => $rebuilder->closeDay('2026-10-02'));
 
-    expect($large)->toBe($small)->and($small)->toBeLessThanOrEqual(15);
+    // Phase 6c: +1 for the settled person-months (one read, whatever the headcount).
+    expect($large)->toBe($small)->and($small)->toBeLessThanOrEqual(16);
 
     // The whole of November: linear in days with the same small constant.
     $month = $queriesFor(function () use ($rebuilder) {
@@ -432,7 +433,8 @@ it('closes a day whose rows ingestion already created with the same queries as o
     $existing = $queriesFor(fn () => $rebuilder->closeDay('2026-10-05'));
 
     // 14: Phase 5 adds closeDay's own lock read, the batch's locked months and the safety net's re-read of the lock.
-    expect($existing)->toBe($created)->and($created)->toBeLessThanOrEqual(14)
+    // 16: Phase 6c adds the batch's settled person-months and the safety net's open rows for its settled check.
+    expect($existing)->toBe($created)->and($created)->toBeLessThanOrEqual(16)
         ->and(Attendance::query()->where('date', '2026-10-05')->whereNull('status')->count())->toBe(0)
         ->and(Attendance::query()->where('date', '2026-10-05')->where('closed', true)->count())->toBe(55)
         ->and(Attendance::query()->where('date', '2026-10-05')->where('status', 'present')->count())->toBe(20);

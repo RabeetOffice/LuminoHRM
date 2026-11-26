@@ -118,8 +118,8 @@ it('shows the empty list when there is no closed review', function () {
     expect($props['employee']['reviews'])->toBe(['closed' => []]);
 });
 
-it('puts the Reviews tab after Assets', function () {
+it('puts the Reviews tab after Assets (HR then sees Exit last)', function () {
     $tabs = $this->actingAs($this->p['hr'])->get("/employees/{$this->p['employeeEmp']->id}")->inertiaProps()['tabs'];
 
-    expect(array_slice($tabs, -2))->toBe(['assets', 'reviews']);
+    expect(array_slice($tabs, -3))->toBe(['assets', 'reviews', 'exit']);
 });

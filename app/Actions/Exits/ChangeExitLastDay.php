@@ -15,7 +15,8 @@ use Illuminate\Validation\ValidationException;
 
 /**
  * HR moves the last working day of an approved exit (until its settlement is approved). Same rules as recording (not
- * before the joining date, at most 365 days ahead, a past day allowed). The employee's day moves through EmploymentEnd
+ * before the joining date, at most 365 days ahead, a past day allowed, not in a month an approved or paid run already
+ * paid this person). Locks: employee, resignation, payroll_runs shared, settlement. The employee's day moves through EmploymentEnd
  * (payroll lock check, attendance marks, leave trim again: leave already trimmed is not restored); a draft settlement
  * follows the new day (its month) and is marked stale, so it must be recalculated before it can be approved.
  *
@@ -55,6 +56,7 @@ class ChangeExitLastDay
                 ExitGuards::refuse(self::NOT_APPROVED);
             }
 
+            ExitGuards::lockRuns(); // before the settlement row (lock order; EmploymentEnd reads the runs later)
             $settlement = ExitGuards::lockSettlement((int) $locked->id);
 
             if ($settlement?->isFrozen()) {
@@ -62,6 +64,7 @@ class ChangeExitLastDay
             }
 
             ExitGuards::assertLastDay($employee, $lastDay, minToday: false);
+            ExitGuards::assertNotPaidInRun($employee, $lastDay);
 
             if ($locked->status_applied_at !== null && $lastDay >= ExitGuards::today()) {
                 ExitGuards::refuse(self::STATUS_APPLIED, 'last_working_day');

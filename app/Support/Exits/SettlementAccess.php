@@ -16,8 +16,9 @@ use App\Support\Payroll\PayrollAccess;
  *   SettlementAccess::mayEdit($hr, $settlement);     // prepare, lines, tax override, recalculate (drafts)
  *   SettlementAccess::mayApprove($admin, $settlement);
  *
- * editRefusal() gives the exact text for the two named refusals (own settlement, an Admin / HR person's by non-Admin);
- * any other "no" is a 403.
+ * editRefusal() gives the exact text for the two named refusals (own settlement, an Admin / HR person's by non-Admin).
+ * The edit actions raise the own one as a 403 carrying that text, the other as a validation refusal; any other "no" is
+ * a 403.
  */
 final class SettlementAccess
 {

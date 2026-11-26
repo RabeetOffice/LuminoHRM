@@ -50,14 +50,14 @@ class ApplyExitStatus extends Command
             ->where('last_working_day', '<', $date)
             ->orderBy('last_working_day')
             ->orderBy('id')
-            ->pluck('id');
+            ->pluck('employee_id', 'id'); // id => employee_id, read before any transaction (it never changes)
 
         $applied = 0;
         $failed = 0;
 
-        foreach ($ids as $id) {
+        foreach ($ids as $id => $employeeId) {
             try {
-                $applied += DB::transaction(fn (): int => $this->apply((int) $id, $date, $change), 3);
+                $applied += DB::transaction(fn (): int => $this->apply((int) $id, (int) $employeeId, $date, $change), 3);
             } catch (Throwable $e) {
                 $failed++;
                 $message = $this->messageOf($e);
@@ -75,10 +75,10 @@ class ApplyExitStatus extends Command
     }
 
     /** @return int 1 when the exit was handled, 0 when it no longer needed it */
-    private function apply(int $id, string $date, ChangeEmployeeStatus $change): int
+    private function apply(int $id, int $employeeId, string $date, ChangeEmployeeStatus $change): int
     {
-        $probe = Resignation::query()->whereKey($id)->firstOrFail(['id', 'employee_id']);
-        $employee = ExitGuards::lockEmployee((int) $probe->employee_id);
+        // The employee lock is the first statement of the transaction (no plain read fixes the snapshot before it).
+        $employee = ExitGuards::lockEmployee($employeeId);
         $exit = ExitGuards::lockResignation($id, $employee);
         $day = $exit->last_working_day->format('Y-m-d');
 

@@ -4,9 +4,11 @@ namespace App\Actions\Exits;
 
 use App\Models\Employee;
 use App\Models\FinalSettlement;
+use App\Models\PayrollRun;
 use App\Models\Resignation;
 use App\Support\Attendance\AttendanceClock;
 use App\Support\Exits\ExitStates;
+use App\Support\Exits\SettlementChecks;
 use Carbon\CarbonImmutable;
 use Illuminate\Validation\ValidationException;
 use Throwable;
@@ -15,7 +17,7 @@ use Throwable;
  * Checks and locks every exit action shares, so the refusal texts and the lock order live in one place.
  *
  * Lock order (a rule for every exit and settlement write): the employee row FOR UPDATE first, then the resignation row,
- * then the settlement row, then loans by id. Everything that decides something is read after the locks.
+ * then payroll_runs shared (lockRuns), then the settlement row, then loans by id. Everything that decides something is read after the locks.
  *
  * Refusals are ValidationException keyed by the field they belong to (last_working_day, reason, note) or "exit" when they
  * belong to the whole action; a person who may not act at all is an AuthorizationException (403) raised by the caller.
@@ -108,6 +110,32 @@ final class ExitGuards
     public static function lockSettlement(int $resignationId): ?FinalSettlement
     {
         return FinalSettlement::query()->where('resignation_id', $resignationId)->lockForUpdate()->first();
+    }
+
+    /**
+     * payroll_runs LOCK IN SHARE MODE (every run row, by month only), taken after the resignation row and before the
+     * settlement row, so every exit write keeps the order employee -> resignation -> payroll_runs -> settlement -> loans
+     * (the order ApproveSettlement and the PayrollLock readers use).
+     */
+    public static function lockRuns(): void
+    {
+        PayrollRun::query()->orderBy('month')->sharedLock()->pluck('status', 'month');
+    }
+
+    /**
+     * Refuses a last working day whose month was already paid to this person by an approved or paid payroll run (a
+     * non-excluded line): the settlement of that month would pay it twice (SettlementChecks::paidInRun). The caller
+     * holds the employee row and has checked the day is a real date.
+     *
+     * @throws ValidationException [last_working_day]
+     */
+    public static function assertNotPaidInRun(Employee $employee, string $day): void
+    {
+        $paid = SettlementChecks::paidInRun($employee, substr($day, 0, 7));
+
+        if ($paid !== null) {
+            self::refuse($paid, 'last_working_day');
+        }
     }
 
     /** Refuses an ended exit. */

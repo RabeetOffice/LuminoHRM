@@ -7,6 +7,7 @@ use App\Models\Resignation;
 use App\Models\User;
 use App\Support\Audit\Audit;
 use App\Support\Exits\ExitStates;
+use App\Support\Exits\SettlementChecks;
 use App\Support\Exits\SettlementResult;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -18,9 +19,9 @@ use Illuminate\Validation\ValidationException;
  * last working day, calculated straight away. exit.clearance + PayrollAccess::mayEditSalary, never one's own, an
  * Admin / HR person's only by an Admin.
  *
- * Locks: employee FOR UPDATE, resignation FOR UPDATE, the exit's settlement row FOR UPDATE (none yet; the unique
- * resignation_id index backs a race). Refusals [settlement]: own / privileged (SettlementAccess), NOT_APPROVED,
- * EXISTS. Audited "Settlement prepared" with the figures.
+ * Locks: employee FOR UPDATE, resignation FOR UPDATE, payroll_runs shared, the exit's settlement row FOR UPDATE (none
+ * yet; the unique resignation_id index backs a race). Refusals [settlement]: own / privileged (SettlementAccess),
+ * NOT_APPROVED, the month already paid by an approved or paid run (SettlementChecks::paidMessage), EXISTS. Audited "Settlement prepared" with the figures.
  */
 class PrepareSettlement
 {
@@ -40,6 +41,14 @@ class PrepareSettlement
 
                 if ($locked->status !== ExitStates::APPROVED) {
                     ExitGuards::refuse(self::NOT_APPROVED, 'settlement');
+                }
+
+                // A month already paid by an approved or paid run would be paid twice (approval re-checks it).
+                ExitGuards::lockRuns();
+                $paid = SettlementChecks::paidInRun($employee, $locked->last_working_day->format('Y-m'));
+
+                if ($paid !== null) {
+                    ExitGuards::refuse($paid, 'settlement');
                 }
 
                 if (ExitGuards::lockSettlement((int) $locked->id) !== null) {

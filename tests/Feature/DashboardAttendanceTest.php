@@ -399,9 +399,10 @@ it('reads a fixed number of queries whatever the number of people and days', fun
     $large = $count();
 
     // Measured: 14 queries for the whole request (10 for attendance and the rest, 3 for the Phase 4 leave figures:
-    // open requests, people on leave today, requests by status, 1 for the Phase 5 "Payroll This Month" run); the
-    // bound (unchanged) leaves a margin of 1.
-    expect($large)->toBe($small)->and($large)->toBeLessThanOrEqual(15);
+    // open requests, people on leave today, requests by status, 1 for the Phase 5 "Payroll This Month" run), plus 6
+    // fixed ones for the Phase 6c exit cards (exits waiting: decisions, clearance, ready settlements, Admin count; leavers
+    // in the next 30 days) = 20 to 21; the bound leaves a margin of 1.
+    expect($large)->toBe($small)->and($large)->toBeLessThanOrEqual(22);
 });
 
 // ---------------------------------------------------------------- leave (Phase 4)

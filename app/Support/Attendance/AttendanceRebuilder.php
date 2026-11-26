@@ -290,13 +290,18 @@ class AttendanceRebuilder
         // A row still pending here could not be decided: it stays open (the next close tries again) and is flagged.
         // The month may have been approved since the check above: re-read the lock first, in the same transaction
         // (shared lock on payroll_runs before the attendance rows), and leave a just-approved day alone.
-        DB::transaction(function () use ($date): void {
+        // Idle (the day had no row and this close wrote none, e.g. while the start date is unset): no settlement read.
+        $idle = $rows->isEmpty() && $written === 0;
+
+        DB::transaction(function () use ($date, $idle): void {
             if (self::monthLocked($date)) {
                 return;
             }
 
-            // People whose final settlement for this month is approved keep their day exactly as it was paid.
-            $settled = self::settledOn($date, Attendance::query()->toBase()->where('date', $date)->where('is_manual', false)
+            // People whose final settlement for this month is approved keep their day exactly as it was paid. Skipped
+            // while idle: a row another writer adds meanwhile is never one of a settled person (every writer refuses a
+            // settled person-month), so there is nobody to leave out.
+            $settled = $idle ? [] : self::settledOn($date, Attendance::query()->toBase()->where('date', $date)->where('is_manual', false)
                 ->where(fn ($q) => $q->where('closed', false)->orWhereNull('status'))->distinct()->pluck('employee_id')->all());
 
             Attendance::query()->where('date', $date)->where('closed', false)->where('is_manual', false)

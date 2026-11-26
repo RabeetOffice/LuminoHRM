@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\Designation;
 use App\Models\Employee;
 use App\Models\FinalSettlement;
 use App\Support\Exits\SettlementStatementPdf;
@@ -20,10 +21,10 @@ beforeEach(function () {
 });
 
 /** An approved settlement of an exit ending 2026-12-10 with a full stored breakdown (figures in paisa). */
-function ssSettlement(array $attrs = [], array $settlement = []): FinalSettlement
+function ssSettlement(array $attrs = [], array $settlement = [], string $code = 'LD-0042'): FinalSettlement
 {
     $user = userWithRole('employee');
-    $employee = employeeFor($user, ['joining_date' => '2024-03-01', 'employee_code' => 'LD-0042', 'first_name' => 'Sara', 'last_name' => 'Ahmed']);
+    $employee = employeeFor($user, ['joining_date' => '2024-03-01', 'employee_code' => $code, 'first_name' => 'Sara', 'last_name' => 'Ahmed']);
     $exit = approvedExit($employee, '2026-12-10');
 
     return settlementRow($exit, [
@@ -92,7 +93,7 @@ it('renders the same content after the profile or settings change', function () 
     $s = ssSettlement();
     $before = SettlementStatementPdf::content($s);
 
-    Employee::query()->whereKey($s->employee_id)->update(['first_name' => 'Changed', 'designation_id' => null]);
+    Employee::query()->whereKey($s->employee_id)->update(['first_name' => 'Changed', 'designation_id' => Designation::factory()->create(['name' => 'Changed role'])->id]);
     Settings::set('company', ['name' => 'Another Name']);
 
     expect(SettlementStatementPdf::content($s->refresh()))->toBe($before);
@@ -119,7 +120,7 @@ it('serves the statement to Admin and HR and refuses a draft', function () {
     $this->actingAs(userWithRole('hr'))->get(route('exit.settlements.statement', $s))
         ->assertOk()->assertHeader('Content-Type', 'application/pdf');
 
-    $draft = ssSettlement(['status' => 'draft']);
+    $draft = ssSettlement(['status' => 'draft'], [], 'LD-0043'); // a second person: codes are unique
     $this->actingAs(userWithRole('admin'))->get(route('exit.settlements.statement', $draft))
         ->assertNotFound();
 });

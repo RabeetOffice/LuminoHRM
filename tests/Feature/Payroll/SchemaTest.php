@@ -27,7 +27,7 @@ const PS_TABLES = [
         'id', 'employee_id', 'type', 'amount', 'installment', 'start_month', 'opening_repaid', 'status', 'note', 'created_by',
         'cancelled_by', 'cancelled_at', 'cancel_reason', 'created_at', 'updated_at',
     ],
-    'loan_repayments' => ['id', 'loan_id', 'payroll_item_id', 'amount', 'month', 'note', 'created_by', 'created_at', 'updated_at'],
+    'loan_repayments' => ['id', 'loan_id', 'payroll_item_id', 'final_settlement_id', 'amount', 'month', 'note', 'created_by', 'created_at', 'updated_at'],
     'loan_skips' => ['id', 'loan_id', 'month', 'reason', 'created_by', 'created_at', 'updated_at'],
     'opening_balances' => ['id', 'employee_id', 'tax_year', 'tax_deducted', 'taxable_income', 'note', 'created_at', 'updated_at'],
     'payroll_runs' => [

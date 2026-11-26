@@ -5,6 +5,7 @@ use App\Models\Department;
 use App\Models\Designation;
 use App\Models\Employee;
 use App\Models\Resignation;
+use App\Models\User;
 use App\Support\Exits\ExperienceLetter;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
@@ -100,6 +101,8 @@ it('refuses a letter before the exit is approved', function () {
 it('refuses your own letter', function () {
     [$employee, $exit] = elExit();
     $hr = userWithRole('hr');
+    // The record belongs to one login only: move it from the employee's login to the HR login.
+    User::query()->where('employee_id', $employee->id)->update(['employee_id' => null]);
     $hr->forceFill(['employee_id' => $employee->id])->save();
 
     expect(fn () => app(IssueExperienceLetter::class)->handle($hr, $exit))

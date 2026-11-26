@@ -21,7 +21,8 @@ use Illuminate\Validation\ValidationException;
  * Rules: never for oneself ("You cannot record an exit for yourself."); an Admin or HR person's only by an Admin; type
  * resignation or termination; reason 1 to 1,000 characters; submitted on a real date, not in the future; last working day
  * not before the joining date and at most 365 days ahead (a past day is allowed: the payroll lock check decides, when the
- * day is set at approval). One open exit per person.
+ * day is set at approval), and not in a month an approved or paid payroll run already paid this person (the settlement
+ * would pay it twice). One open exit per person.
  */
 class RecordExit
 {
@@ -84,6 +85,7 @@ class RecordExit
             }
 
             ExitGuards::assertLastDay($locked, $lastDay, minToday: false);
+            ExitGuards::assertNotPaidInRun($locked, $lastDay);
 
             $resignation = Resignation::query()->create([
                 'employee_id' => $locked->id,

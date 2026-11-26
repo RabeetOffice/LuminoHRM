@@ -69,6 +69,7 @@ class CancelExit
                 ExitGuards::refuse(self::NOT_APPROVED);
             }
 
+            ExitGuards::lockRuns(); // before the settlement row (lock order; EmploymentEnd reads the runs later)
             $settlement = ExitGuards::lockSettlement((int) $locked->id);
 
             if ($settlement?->isFrozen()) {

@@ -239,8 +239,8 @@ it('walks every page prop of each role and finds only the allowed keys', functio
         expect(array_keys($props['employeeCount']))->toBe(['scope', 'total', 'probation']);
     }
 })->with([
-    ['admin', ['hasEmployee', 'employeeCount', 'birthdays', 'attendanceDay', 'attendanceToday', 'lateToday', 'attendanceTrend', 'pendingLeaves', 'onLeaveToday', 'leaveByStatus', 'payrollThisMonth']],
-    ['hr', ['hasEmployee', 'employeeCount', 'birthdays', 'attendanceDay', 'attendanceToday', 'lateToday', 'attendanceTrend', 'pendingLeaves', 'onLeaveToday', 'leaveByStatus', 'payrollThisMonth']],
-    ['manager', ['hasEmployee', 'employeeCount', 'attendanceDay', 'attendanceToday', 'lateToday', 'attendanceTrend', 'pendingLeaves', 'onLeaveToday', 'leaveByStatus']],
+    ['admin', ['hasEmployee', 'employeeCount', 'birthdays', 'attendanceDay', 'attendanceToday', 'lateToday', 'attendanceTrend', 'pendingLeaves', 'onLeaveToday', 'leaveByStatus', 'payrollThisMonth', 'exitsWaiting', 'upcomingLeavers']],
+    ['hr', ['hasEmployee', 'employeeCount', 'birthdays', 'attendanceDay', 'attendanceToday', 'lateToday', 'attendanceTrend', 'pendingLeaves', 'onLeaveToday', 'leaveByStatus', 'payrollThisMonth', 'exitsWaiting', 'upcomingLeavers']],
+    ['manager', ['hasEmployee', 'employeeCount', 'attendanceDay', 'attendanceToday', 'lateToday', 'attendanceTrend', 'pendingLeaves', 'onLeaveToday', 'leaveByStatus', 'exitsWaiting']],
     ['employee', ['hasEmployee']],
 ]);

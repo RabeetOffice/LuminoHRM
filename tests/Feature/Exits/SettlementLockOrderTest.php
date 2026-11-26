@@ -2,6 +2,8 @@
 
 use App\Actions\Attendance\ApplyManualCorrection;
 use App\Actions\Exits\ApproveSettlement;
+use App\Actions\Exits\CancelExit;
+use App\Actions\Exits\ChangeExitLastDay;
 use App\Actions\Exits\PrepareSettlement;
 use App\Actions\Payroll\LoanActions;
 use App\Support\Settings;
@@ -125,4 +127,39 @@ it('a writer that locks no employee row share-locks the settlement rows before t
     expect($runs)->toBeGreaterThanOrEqual(0)
         ->and($settlements)->toBeGreaterThan($runs)
         ->and($attendance)->toBeGreaterThan($settlements);
+});
+
+it('changing the last day and cancelling: employee, resignation, payroll runs shared, then the settlement row', function (string $action) {
+    $e = stPerson();
+    $exit = approvedExit($e, '2026-12-20');
+    settlementRow($exit);
+
+    $statements = sloStatements(fn () => $action === 'change'
+        ? app(ChangeExitLastDay::class)->handle($this->hr, $exit, '2026-12-24')
+        : app(CancelExit::class)->handle($this->hr, $exit, 'Stays on.'));
+
+    $employee = sloFirst($statements, 'employees', '/* for update */');
+    $resignation = sloFirst($statements, 'resignations', '/* for update */');
+    $runs = sloFirst($statements, 'payroll_runs', '/* shared */');
+    $settlement = sloFirst($statements, 'final_settlements', '/* for update */');
+
+    expect($employee)->toBe(0)
+        ->and($resignation)->toBe(1)
+        ->and($runs)->toBeGreaterThan($resignation)
+        ->and($settlement)->toBeGreaterThan($runs);
+})->with(['change', 'cancel']);
+
+it('the nightly status job: the employee lock is the first statement of each exit transaction', function () {
+    $e = stPerson();
+    approvedExit($e, '2026-12-01');
+
+    $statements = sloStatements(fn () => $this->artisan('hrm:exit-apply-status')->assertSuccessful());
+
+    // The list of exits is read before any transaction; the next statement is the employee row FOR UPDATE (no plain
+    // read of the exit row inside the transaction fixes the snapshot first).
+    $list = array_key_first(array_filter($statements, fn (string $sql) => str_starts_with($sql, 'select') && str_contains($sql, 'from "resignations"')));
+
+    expect($list)->not->toBeNull()
+        ->and($statements[$list + 1])->toStartWith('select * from "employees"')
+        ->and($statements[$list + 1])->toEndWith('/* for update */');
 });
