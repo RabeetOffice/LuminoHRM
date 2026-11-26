@@ -6,10 +6,12 @@ use App\Http\Controllers\Payroll\SalaryProfileController;
 use App\Mail\LeaveRequestSubmitted;
 use App\Models\AssetAssignment;
 use App\Models\Employee;
+use App\Models\FinalSettlement;
 use App\Models\LeaveRequest;
 use App\Models\Loan;
 use App\Models\PayrollItem;
 use App\Models\PayrollRun;
+use App\Models\Resignation;
 use App\Models\Review;
 use App\Models\SalaryProfile;
 use App\Models\Shift;
@@ -20,6 +22,8 @@ use App\Support\Attendance\MonthGrid;
 use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
 use App\Support\EmployeeRoles;
+use App\Support\Exits\ExitRouting;
+use App\Support\Exits\ExitView;
 use App\Support\Leave\BalanceLine;
 use App\Support\Leave\LeaveBalances;
 use App\Support\Performance\ReviewAccess;
@@ -68,6 +72,11 @@ use Illuminate\Http\Resources\Json\JsonResource;
  *              the person's CLOSED reviews, newest first. Never an open or skipped review, never a rating, comment, note or
  *              reason. `url` only when ReviewAccess lets the viewer open that review (the key is absent otherwise).
  *
+ *   exit       {current: row|null, history: [row], can_record} for whoever holds exit.clearance, and for anyone who may see one of
+ *              this person's exits (ExitRouting::scope: the person themself, a manager for a direct report). A row is the exit
+ *              as ExitView::row() gives it (type, stage, dates, notice; the settlement status and its `net` (paisa) only with
+ *              exit.clearance + payroll.view). Absent (key and tab) for everyone else.
+ *
  * Never add a field to a group without asking whether the roles that see that group may see it, and never return
  * the model or a relation as it is.
  *
@@ -87,6 +96,7 @@ class EmployeeProfileResource extends JsonResource
         'salary' => 'salary',
         'assets' => 'assets',
         'reviews' => 'reviews',
+        'exit' => 'exit',
     ];
 
     /** @var list<string> */
@@ -125,6 +135,11 @@ class EmployeeProfileResource extends JsonResource
         // Closed review history: the same people who may open the profile (what each review shows is ReviewAccess's call).
         $this->groups[] = 'reviews';
         $this->viewer = $viewer;
+
+        if ($viewer->can('exit.clearance') || (new ExitRouting)->scope(Resignation::query()->where('employee_id', $resource->getKey()), $viewer)->exists()) {
+            $this->groups[] = 'exit';
+        }
+
         $this->assign = $viewer->can('assets.assign');
         $this->viewAll = $viewer->can('employees.view-all');
         $this->manage = $access->canManage();
@@ -219,7 +234,56 @@ class EmployeeProfileResource extends JsonResource
             $data['reviews'] = $this->reviews();
         }
 
+        if ($this->allows('exit')) {
+            $data['exit'] = $this->exit();
+        }
+
         return $data;
+    }
+
+    /**
+     * The Exit tab: the exits this viewer may see for the person (newest first), the open one apart. The link goes to the exit
+     * page for HR, Admin and managers, to My Resignation for the person themself. Settlement figures only with payroll.view.
+     *
+     * @return array{current: array<string, mixed>|null, history: list<array<string, mixed>>, can_record: bool}
+     */
+    private function exit(): array
+    {
+        $routing = new ExitRouting;
+        $money = $this->viewer->can('exit.clearance') && $this->viewer->can('payroll.view');
+        $page = $this->viewer->canAny(['exit.clearance', 'exit.approve-team']);
+
+        $exits = $routing->scope(Resignation::query()->where('employee_id', $this->resource->getKey()), $this->viewer)
+            ->with(['employee.department:id,name', 'employee.designation:id,name', 'employee.manager:id,first_name,last_name'])
+            ->orderByDesc('id')
+            ->get();
+        $routing->prime($exits);
+
+        $settlements = $money && $exits->isNotEmpty()
+            ? FinalSettlement::query()->whereIn('resignation_id', $exits->modelKeys())->get(['resignation_id', 'status', 'net'])->keyBy('resignation_id')
+            : collect();
+
+        $rows = $exits->map(function (Resignation $r) use ($routing, $money, $page, $settlements): array {
+            $settlement = $settlements->get($r->id);
+            $row = ExitView::row($r, $routing, $money, $settlement?->status);
+            $row['url'] = $page ? '/exit/'.$r->id : '/my/resignation';
+
+            if ($money && $settlement !== null) {
+                $row['net'] = (int) $settlement->net;
+            }
+
+            return $row;
+        });
+
+        $open = $exits->first(fn (Resignation $r) => $r->isOpen());
+
+        return [
+            'current' => $open === null ? null : $rows[$exits->search($open)],
+            'history' => $rows->reject(fn (array $row) => $open !== null && $row['id'] === $open->id)->values()->all(),
+            'can_record' => $open === null
+                && in_array($this->resource->status, ['active', 'probation'], true)
+                && $routing->mayRecordFor($this->viewer, $this->resource),
+        ];
     }
 
     /** 13 digits as 12345-1234567-1; anything else exactly as stored; null stays null. */

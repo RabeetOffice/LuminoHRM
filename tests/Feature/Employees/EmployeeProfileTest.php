@@ -25,7 +25,7 @@ const EPR_DEVICE = 'MCH-88123-ZQ';
 const EPR_DOC_TITLE = 'Secret Contract Scan';
 
 const EPR_ALL_TABS = ['basic', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave', 'assets', 'reviews'];
-const EPR_PAYROLL_TABS = ['basic', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave', 'salary', 'assets', 'reviews'];
+const EPR_PAYROLL_TABS = ['basic', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave', 'salary', 'assets', 'reviews', 'exit'];
 
 /** A fully filled employee: every group has data, and the restricted data is distinctive. */
 function eprRecord(array $attrs = [], ?User $user = null): Employee
@@ -134,7 +134,7 @@ it('shows an admin any record with all six groups and every tab', function () {
     $props = eprProps($this->actingAs($admin)->get("/employees/{$e->id}")->assertOk());
 
     expect($props['tabs'])->toBe(EPR_PAYROLL_TABS)
-        ->and(array_keys($props['employee']))->toBe(['id', 'code', 'name', 'photo_url', 'basic', 'identity', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave', 'salary', 'assets', 'reviews'])
+        ->and(array_keys($props['employee']))->toBe(['id', 'code', 'name', 'photo_url', 'basic', 'identity', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave', 'salary', 'assets', 'reviews', 'exit'])
         ->and($props['employee']['name'])->toBe('Ayesha Khan')
         ->and($props['employee']['code'])->toBe($e->employee_code)
         ->and($props['employee']['basic'])->toBe([

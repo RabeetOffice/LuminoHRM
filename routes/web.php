@@ -50,6 +50,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // My Reviews: the signed-in person's own reviews (every role; the account's own employee record only, no person in the URL).
     Route::get('my/reviews', [\App\Http\Controllers\Performance\MyReviewController::class, 'show'])->name('my.reviews');
 
+    // My Resignation: the signed-in person's own exit (every role; no person in the URL). Resign, and withdraw before the final
+    // approval. The statement and letter downloads are registered with the exit documents below.
+    Route::get('my/resignation', [\App\Http\Controllers\Exits\MyResignationController::class, 'show'])->name('my.resignation');
+    Route::post('my/resignation', [\App\Http\Controllers\Exits\MyResignationController::class, 'store'])->name('my.resignation.store');
+    Route::post('my/resignation/{resignation}/withdraw', [\App\Http\Controllers\Exits\MyResignationController::class, 'withdraw'])->whereNumber('resignation')->name('my.resignation.withdraw');
+
     // My Payslips: the signed-in person's own payslips of approved / paid runs (any other item id = 403).
     Route::get('my/payslips', [\App\Http\Controllers\MyPayslipController::class, 'index'])->name('my.payslips');
     Route::get('my/payslips/{item}', [\App\Http\Controllers\MyPayslipController::class, 'download'])->whereNumber('item')->name('my.payslips.download');
@@ -201,6 +207,31 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     // Performance > Reviews: HR and Admin see the cycles, a manager the team list (checked in the controller, 403 otherwise).
     Route::get('performance/reviews', [\App\Http\Controllers\Performance\ReviewListController::class, 'index'])->name('performance.reviews.index');
+
+    // Exit > Resignations & Clearance. The list and the page are for exit.clearance and exit.approve-team (the controller checks and
+    // scopes with ExitRouting: 403 for an id out of scope); each write re-checks the actor under its locks. Static paths first.
+    Route::controller(\App\Http\Controllers\Exits\ExitController::class)->name('exit.')->group(function () {
+        Route::get('exit', 'index')->name('index');
+        Route::get('exit/employee-options', 'employeeOptions')->name('employee-options');
+        Route::post('exit', 'store')->name('store');
+        Route::get('exit/{resignation}', 'show')->whereNumber('resignation')->name('show');
+        Route::post('exit/{resignation}/decide', 'decide')->whereNumber('resignation')->name('decide');
+        Route::put('exit/{resignation}/last-day', 'lastDay')->whereNumber('resignation')->name('last-day');
+        Route::post('exit/{resignation}/cancel', 'cancel')->whereNumber('resignation')->name('cancel');
+    });
+    Route::put('exit/clearance/{clearance}', [\App\Http\Controllers\Exits\ClearanceController::class, 'update'])->middleware('can:exit.clearance')->whereNumber('clearance')->name('exit.clearance.update');
+    // Final settlement writes: exit.clearance and payroll.view (Admin, HR); the actions check SettlementAccess.
+    Route::middleware(['can:exit.clearance', 'can:payroll.view'])->controller(\App\Http\Controllers\Exits\SettlementController::class)->group(function () {
+        Route::post('exit/{resignation}/settlement', 'prepare')->whereNumber('resignation')->name('exit.settlement.prepare');
+        Route::prefix('exit/settlements/{settlement}')->where(['settlement' => '[0-9]+'])->name('exit.settlements.')->group(function () {
+            Route::post('recalculate', 'recalculate')->name('recalculate');
+            Route::post('lines', 'addLine')->name('lines.store');
+            Route::delete('lines/{line}', 'removeLine')->whereNumber('line')->name('lines.destroy');
+            Route::put('tax', 'tax')->name('tax');
+            Route::post('approve', 'approve')->name('approve');
+            Route::post('paid', 'paid')->name('paid');
+        });
+    });
 
     // Assets: the register's writes (Task 4 adds the pages). Add, edit and status: Admin and HR; delete: Admin only.
     Route::middleware('can:assets.assign')->prefix('assets')->name('assets.')->controller(\App\Http\Controllers\Assets\AssetController::class)->group(function () {

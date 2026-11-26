@@ -9,6 +9,7 @@ use App\Support\Attendance\DashboardAttendance;
 use App\Support\Attendance\MonthGrid;
 use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
+use App\Support\Exits\DashboardExits;
 use App\Support\Leave\DashboardLeave;
 use App\Support\Leave\LeaveBalances;
 use App\Support\Payroll\DashboardPayroll;
@@ -58,6 +59,12 @@ use Inertia\Response;
  *                  (App\Support\Performance\ReviewsWaiting): their own review waiting for a self-review, reviews they rate,
  *                  reviews ready to close (performance.manage only); up to five links. Counts only: no score, rating or
  *                  comment. The card shows when a count is above zero. Absent without an employee record.
+ *   exitsWaiting   {count, items: [{id, label, url}]}  for exit.clearance / exit.approve-team / exit.manage only
+ *                  (App\Support\Exits\DashboardExits): exits waiting for the viewer's decision (their manager step, or the
+ *                  final step), approved exits with clearance unfinished (exit.clearance) and settlements ready to approve
+ *                  (exit.manage). Names and stages only; no reason, no figure. The card shows above zero.
+ *   upcomingLeavers {count, names, more}  for exit.clearance only: approved exits with the last working day in the next 30
+ *                  days, up to five names.
  */
 class DashboardController extends Controller
 {
@@ -122,6 +129,14 @@ class DashboardController extends Controller
         if ($user->employee_id !== null) {
             $props['myAssets'] = DashboardAssets::mine((int) $user->employee_id);
             $props['waitingReviews'] = ReviewsWaiting::for($user);
+        }
+
+        if ($user->canAny(['exit.clearance', 'exit.approve-team', 'exit.manage'])) {
+            $props['exitsWaiting'] = DashboardExits::waiting($user);
+        }
+
+        if ($user->can('exit.clearance')) {
+            $props['upcomingLeavers'] = DashboardExits::upcoming();
         }
 
         return Inertia::render('dashboard', $props);
