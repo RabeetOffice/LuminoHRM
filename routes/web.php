@@ -167,6 +167,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
     });
     Route::delete('assets/{asset}', [\App\Http\Controllers\Assets\AssetController::class, 'destroy'])->middleware('can:assets.manage')->whereNumber('asset')->name('assets.destroy');
 
+    // Assets: hand-overs (Admin, HR). No route edits an assignment's dates or holder, and none deletes one.
+    Route::middleware('can:assets.assign')->prefix('assets')->name('assets.')->controller(\App\Http\Controllers\Assets\AssignmentController::class)->group(function () {
+        Route::post('{asset}/assign', 'assign')->whereNumber('asset')->name('assign');
+        Route::post('assignments/{assignment}/return', 'return')->whereNumber('assignment')->name('assignments.return');
+        Route::patch('assignments/{assignment}/note', 'note')->whereNumber('assignment')->name('assignments.note');
+    });
+
     // Attendance > Raw Punches: every punch the machines sent (Admin, HR). Giving an unknown machine user ID to an
     // employee also needs attendance.edit (and employees.manage, checked in the controller): it is an employee update.
     Route::get('attendance/punches', [\App\Http\Controllers\Attendance\PunchController::class, 'index'])
