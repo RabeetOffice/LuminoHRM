@@ -11,7 +11,7 @@ import {
     DialogTitle,
 } from '@/components/ui/dialog';
 import { Spinner } from '@/components/ui/spinner';
-import { formatMoney, peopleCount } from '@/lib/payroll';
+import { formatMoney } from '@/lib/payroll';
 
 type Props = {
     runId: number;
@@ -20,8 +20,10 @@ type Props = {
     gross: number;
     tax: number;
     net: number;
-    /** How many people get a payslip email. */
+    /** How many payslips are generated (included lines). */
     payslipCount: number;
+    /** Of those, how many go by email (active login with an email). */
+    emailedCount: number;
     /** The approver's own line is in this run (allowed only for the sole active Admin). */
     approvesOwn: boolean;
     /** The fingerprint of the figures the page was rendered with. */
@@ -44,13 +46,15 @@ export function ApproveRunDialog({
     tax,
     net,
     payslipCount,
+    emailedCount,
     approvesOwn,
     fingerprint,
     onClose,
 }: Props) {
     const form = useForm({ fingerprint });
     // The refusal of the rules (not tied to one field) comes back under `run`.
-    const runError = (form.errors as Record<string, string | undefined>).run;
+    const bag = form.errors as Record<string, string | undefined>;
+    const runError = bag.run ?? bag.month;
 
     const submit = (event: FormEvent) => {
         event.preventDefault();
@@ -99,7 +103,9 @@ export function ApproveRunDialog({
                         ))}
                     </dl>
                     <p className="text-sm text-muted-foreground">
-                        Payslips will be emailed to {peopleCount(payslipCount)}.
+                        {payslipCount}{' '}
+                        {payslipCount === 1 ? 'payslip' : 'payslips'} will be
+                        generated; {emailedCount} will be emailed.
                     </p>
                     {approvesOwn && (
                         <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">

@@ -167,6 +167,23 @@ function taxNote(detail: Detail): string {
     return tax.mode === 'fixed' ? 'Fixed amount' : 'No tax';
 }
 
+/** The first run / month / adjustment error from the server (rules the page cannot show on a field). */
+function formError(errors: object): string | undefined {
+    const bag = errors as Record<string, string | undefined>;
+
+    return bag.run ?? bag.month ?? bag.adjustment;
+}
+
+function FormError({ errors }: { errors: object }) {
+    const message = formError(errors);
+
+    return message ? (
+        <p role="alert" className="text-sm text-destructive">
+            {message}
+        </p>
+    ) : null;
+}
+
 /** Add a one-off addition or deduction to the line. */
 function AddItemForm({
     runId,
@@ -252,6 +269,7 @@ function AddItemForm({
                     </Label>
                 </div>
             )}
+            <FormError errors={errors} />
             <Button
                 type="submit"
                 variant="outline"
@@ -324,6 +342,7 @@ function TaxForm({
                     />
                 </Field>
             </div>
+            <FormError errors={errors} />
             <div className="flex flex-wrap gap-2">
                 <Button
                     type="submit"
@@ -419,6 +438,7 @@ function LoanRow({
                         {form.processing && <Spinner />}
                         Bring back
                     </Button>
+                    <FormError errors={form.errors} />
                 </div>
             ) : (
                 <form
@@ -450,6 +470,7 @@ function LoanRow({
                             }
                         />
                     </Field>
+                    <FormError errors={form.errors} />
                     <Button
                         type="submit"
                         variant="outline"
@@ -514,6 +535,7 @@ function ExcludeForm({
                     {form.processing && <Spinner />}
                     Include again
                 </Button>
+                <FormError errors={form.errors} />
             </div>
         );
     }
@@ -541,6 +563,7 @@ function ExcludeForm({
                     onChange={(e) => form.setData('reason', e.target.value)}
                 />
             </Field>
+            <FormError errors={form.errors} />
             <Button
                 type="submit"
                 variant="outline"
@@ -566,6 +589,16 @@ export function LineDrawer({ runId, line, onClose }: Props) {
     const [failed, setFailed] = useState(false);
     const [busy, setBusy] = useState(false);
     const [version, setVersion] = useState(0);
+    const [actionError, setActionError] = useState<string | null>(null);
+    // Keep showing the last line while the drawer slides shut.
+    const [kept, setKept] = useState<RunLine | null>(line);
+
+    if (line !== null && line !== kept) {
+        setKept(line);
+    }
+
+    const shown = line ?? kept;
+    const shownId = shown?.id ?? null;
     const lineId = line?.id ?? null;
     const lineStamp = line
         ? `${line.net}:${line.tax}:${line.excluded}:${line.loan_deduction}`
@@ -603,14 +636,37 @@ export function LineDrawer({ runId, line, onClose }: Props) {
     }, [runId, lineId, lineStamp, version]);
 
     useEffect(() => {
-        // A different person: forget the previous one while it loads.
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setDetail(null);
-        setFailed(false);
+        // A different person: clear the last error (old figures are ignored by id, so no skeleton flash on close).
+        if (lineId !== null) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect
+            setFailed(false);
+            setActionError(null);
+        }
     }, [lineId]);
 
     const changed = useCallback(() => setVersion((v) => v + 1), []);
-    const current = detail !== null && detail.id === lineId ? detail : null;
+    const current = detail !== null && detail.id === shownId ? detail : null;
+
+    const removeAdjustment = (item: number, adjustment: number) => {
+        setActionError(null);
+        router.delete(
+            PayrollItemController.destroyAdjustment({
+                run: runId,
+                item,
+                adjustment,
+            }).url,
+            {
+                preserveScroll: true,
+                onStart: () => setBusy(true),
+                onFinish: () => setBusy(false),
+                onSuccess: changed,
+                onError: (errors) =>
+                    setActionError(
+                        formError(errors) ?? 'Could not remove this item.',
+                    ),
+            },
+        );
+    };
     const breakdown = current?.breakdown ?? null;
     const edit = current?.can_edit === true;
 
@@ -622,12 +678,12 @@ export function LineDrawer({ runId, line, onClose }: Props) {
             <SheetContent className="w-full overflow-y-auto sm:max-w-lg">
                 <SheetHeader>
                     <SheetTitle>
-                        {line?.employee.name ?? 'Payroll line'}
+                        {shown?.employee.name ?? 'Payroll line'}
                     </SheetTitle>
                     <SheetDescription>
-                        {line?.employee.code}
-                        {line?.employee.department
-                            ? ` · ${line.employee.department}`
+                        {shown?.employee.code}
+                        {shown?.employee.department
+                            ? ` · ${shown.employee.department}`
                             : ''}
                     </SheetDescription>
                 </SheetHeader>
@@ -812,30 +868,9 @@ export function LineDrawer({ runId, line, onClose }: Props) {
                                                                 aria-label={`Remove ${a.label}`}
                                                                 disabled={busy}
                                                                 onClick={() =>
-                                                                    router.delete(
-                                                                        PayrollItemController.destroyAdjustment(
-                                                                            {
-                                                                                run: runId,
-                                                                                item: current.id,
-                                                                                adjustment:
-                                                                                    a.id,
-                                                                            },
-                                                                        ).url,
-                                                                        {
-                                                                            preserveScroll: true,
-                                                                            onStart:
-                                                                                () =>
-                                                                                    setBusy(
-                                                                                        true,
-                                                                                    ),
-                                                                            onFinish:
-                                                                                () =>
-                                                                                    setBusy(
-                                                                                        false,
-                                                                                    ),
-                                                                            onSuccess:
-                                                                                changed,
-                                                                        },
+                                                                    removeAdjustment(
+                                                                        current.id,
+                                                                        a.id,
                                                                     )
                                                                 }
                                                             >
@@ -848,6 +883,21 @@ export function LineDrawer({ runId, line, onClose }: Props) {
                                         </ul>
                                     )}
                                 </Block>
+                            )}
+
+                            {actionError && (
+                                <p
+                                    role="alert"
+                                    className="text-sm text-destructive"
+                                >
+                                    {actionError}
+                                </p>
+                            )}
+
+                            {!edit && current.status === 'draft' && (
+                                <p className="text-sm text-muted-foreground">
+                                    Only an Admin can change this line.
+                                </p>
                             )}
 
                             {edit && (
@@ -909,7 +959,8 @@ export function LineDrawer({ runId, line, onClose }: Props) {
                                         variant="outline"
                                         disabled={busy}
                                         className="justify-self-start"
-                                        onClick={() =>
+                                        onClick={() => {
+                                            setActionError(null);
                                             router.post(
                                                 PayrollRunController.recalculate(
                                                     runId,
@@ -925,9 +976,14 @@ export function LineDrawer({ runId, line, onClose }: Props) {
                                                     onFinish: () =>
                                                         setBusy(false),
                                                     onSuccess: changed,
+                                                    onError: (errors) =>
+                                                        setActionError(
+                                                            formError(errors) ??
+                                                                'Could not recalculate this line.',
+                                                        ),
                                                 },
-                                            )
-                                        }
+                                            );
+                                        }}
                                     >
                                         <RefreshCw />
                                         Recalculate this line
@@ -935,13 +991,13 @@ export function LineDrawer({ runId, line, onClose }: Props) {
                                 </>
                             )}
 
-                            {line?.payslip_url && (
+                            {shown?.payslip_url && (
                                 <Button
                                     asChild
                                     variant="outline"
                                     className="justify-self-start"
                                 >
-                                    <a href={line.payslip_url}>
+                                    <a href={shown.payslip_url}>
                                         <Download />
                                         Payslip
                                     </a>

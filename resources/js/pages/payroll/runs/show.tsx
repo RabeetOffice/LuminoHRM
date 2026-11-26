@@ -10,6 +10,7 @@ import {
     Trash2,
 } from 'lucide-react';
 import { useState } from 'react';
+import { toast } from 'sonner';
 import type { ReactNode } from 'react';
 import PayrollRunController from '@/actions/App/Http/Controllers/Payroll/PayrollRunController';
 import { ConfirmDialog } from '@/components/hrm/confirm-dialog';
@@ -51,6 +52,7 @@ type Run = {
     can_pay: boolean;
     approves_own: boolean;
     payslip_count: number;
+    emailed_count: number;
     today: string;
 };
 
@@ -136,6 +138,11 @@ export default function RunShow({
     const blocking = checks.some((c) => c.severity === 'block');
     const openLine = lines.find((l) => l.id === open) ?? null;
 
+    const failed = (errors: Record<string, string>) =>
+        toast.error(
+            Object.values(errors)[0] ?? 'Something went wrong. Try again.',
+        );
+
     const recalculate = () =>
         router.post(
             PayrollRunController.recalculate(run.id).url,
@@ -144,16 +151,17 @@ export default function RunShow({
                 preserveScroll: true,
                 onStart: () => setRecalculating(true),
                 onFinish: () => setRecalculating(false),
+                onError: failed,
             },
         );
 
     const remove = () =>
         router.delete(PayrollRunController.destroy(run.id).url, {
             onStart: () => setDeleting(true),
-            onFinish: () => {
-                setDeleting(false);
-                setDialog(null);
-            },
+            onFinish: () => setDeleting(false),
+            // Only a deleted draft closes the dialog (the page then leaves); a refusal keeps it open with a toast.
+            onSuccess: () => setDialog(null),
+            onError: failed,
         });
 
     const history = [
@@ -230,7 +238,9 @@ export default function RunShow({
                     <StatusPill tone={pill.tone}>{pill.label}</StatusPill>
                     {draft && !run.can_approve && (
                         <span className="text-sm text-muted-foreground">
-                            Only an Admin can approve this payroll.
+                            {run.approves_own
+                                ? 'This payroll includes your own pay; another Admin must approve it.'
+                                : 'Only an Admin can approve this payroll.'}
                         </span>
                     )}
                     {draft && run.can_approve && blocking && (
@@ -319,6 +329,7 @@ export default function RunShow({
                     tax={run.tax}
                     net={run.net}
                     payslipCount={run.payslip_count}
+                    emailedCount={run.emailed_count}
                     approvesOwn={run.approves_own}
                     fingerprint={run.fingerprint}
                     onClose={() => setDialog(null)}

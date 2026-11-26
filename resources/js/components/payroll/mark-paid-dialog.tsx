@@ -34,7 +34,8 @@ export function MarkPaidDialog({ runId, label, month, today, onClose }: Props) {
     const form = useForm({ paid_on: today >= first ? today : first });
     const { data, errors } = form;
     // The refusal of the rules (not tied to one field) comes back under `run`.
-    const runError = (errors as Record<string, string | undefined>).run;
+    const bag = errors as Record<string, string | undefined>;
+    const runError = bag.run ?? bag.month;
 
     const submit = (event: FormEvent) => {
         event.preventDefault();

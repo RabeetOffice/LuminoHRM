@@ -303,7 +303,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::post('{run}/approve', 'approve')->whereNumber('run')->middleware('can:payroll.approve')->name('approve');
     });
 
-    Route::prefix('payroll/runs/{run}/items/{item}')->name('payroll.items.')->whereNumber(['run', 'item'])
+    Route::prefix('payroll/runs/{run}/items/{item}')->name('payroll.items.')->whereNumber(['run', 'item'])->scopeBindings()
         ->controller(\App\Http\Controllers\Payroll\PayrollItemController::class)->group(function () {
             Route::get('/', 'show')->middleware('can:payroll.view')->name('show');
 
@@ -312,7 +312,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
                 Route::delete('adjustments/{adjustment}', 'destroyAdjustment')->whereNumber('adjustment')->name('adjustments.destroy');
                 Route::put('tax', 'tax')->name('tax');
                 Route::put('exclude', 'exclude')->name('exclude');
-                Route::put('loans/{loan}', 'loanSkip')->whereNumber('loan')->name('loan-skip');
+                Route::put('loans/{loan}', 'loanSkip')->whereNumber('loan')->withoutScopedBindings()->name('loan-skip');
             });
         });
 

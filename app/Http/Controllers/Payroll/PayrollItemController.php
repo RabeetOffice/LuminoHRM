@@ -17,12 +17,11 @@ use App\Support\Payroll\PayrollAccess;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /**
- * One line of a payroll run: the drawer's data (JSON) and HR's inputs on a draft line. The line must belong to the run
- * in the URL (404 otherwise), and so must an adjustment to the line and a loan to the line's person.
+ * One line of a payroll run: the drawer's data (JSON) and HR's inputs on a draft line. The routes use scoped bindings (a line of
+ * another run, an adjustment of another line: 404 before any body validation); a loan must be the line's person's (404).
  *
  *   GET    /payroll/runs/{run}/items/{item}                        can:payroll.view  the stored breakdown, inputs, loans
  *   POST   /payroll/runs/{run}/items/{item}/adjustments            can:payroll.run   add a one-off addition / deduction
@@ -32,14 +31,13 @@ use Illuminate\Validation\ValidationException;
  *   PUT    /payroll/runs/{run}/items/{item}/loans/{loan}           skipped (bool) + reason: this month's installment
  *
  * The inputs are PayrollLineInputs / LoanActions (draft runs only, PayrollAccess::mayEditSalary, 403 otherwise, each
- * recalculating the line); a loan skip and the recalculation of that person run in one transaction. Money in the JSON
+ * recalculating the line); a loan skip and the recalculation of that person are two separate transactions (lock order). Money in the JSON
  * is integer paisa and the breakdown is exactly what is stored; the loans list reads only for a draft run.
  */
 class PayrollItemController extends Controller
 {
     public function show(Request $request, PayrollRun $run, PayrollItem $item): JsonResponse
     {
-        $this->belongs($run, $item);
         /** @var User $user */
         $user = $request->user();
         $item->load(['employee.user.roles', 'adjustments']);
@@ -79,7 +77,6 @@ class PayrollItemController extends Controller
 
     public function storeAdjustment(PayrollAdjustmentRequest $request, PayrollRun $run, PayrollItem $item, PayrollLineInputs $inputs): RedirectResponse
     {
-        $this->belongs($run, $item);
         $inputs->addAdjustment(
             $request->user(), $item, (string) $request->validated('label'), (string) $request->validated('type'),
             $request->amount(), $request->taxable(),
@@ -90,9 +87,6 @@ class PayrollItemController extends Controller
 
     public function destroyAdjustment(Request $request, PayrollRun $run, PayrollItem $item, PayrollAdjustment $adjustment, PayrollLineInputs $inputs): RedirectResponse
     {
-        $this->belongs($run, $item);
-        abort_unless($adjustment->payroll_item_id === $item->id, 404);
-
         $inputs->removeAdjustment($request->user(), $adjustment);
 
         return back()->with('success', 'Removed.');
@@ -100,7 +94,6 @@ class PayrollItemController extends Controller
 
     public function tax(PayrollTaxOverrideRequest $request, PayrollRun $run, PayrollItem $item, PayrollLineInputs $inputs): RedirectResponse
     {
-        $this->belongs($run, $item);
         $amount = $request->amount();
         $inputs->overrideTax($request->user(), $item, $amount, $request->validated('reason'));
 
@@ -109,7 +102,6 @@ class PayrollItemController extends Controller
 
     public function exclude(Request $request, PayrollRun $run, PayrollItem $item, PayrollLineInputs $inputs): RedirectResponse
     {
-        $this->belongs($run, $item);
         $data = $request->validate([
             'excluded' => ['required', 'boolean'],
             'reason' => ['nullable', 'string', 'max:255'],
@@ -128,7 +120,6 @@ class PayrollItemController extends Controller
 
     public function loanSkip(Request $request, PayrollRun $run, PayrollItem $item, Loan $loan, LoanActions $loans, GeneratePayrollRun $generate): RedirectResponse
     {
-        $this->belongs($run, $item);
         abort_unless($loan->employee_id === $item->employee_id, 404);
         $data = $request->validate([
             'skipped' => ['required', 'boolean'],
@@ -147,24 +138,17 @@ class PayrollItemController extends Controller
             throw ValidationException::withMessages(['reason' => 'Give a reason.']);
         }
 
-        // Skip and recalculate together: the line never shows an installment that was just skipped.
-        DB::transaction(function () use ($user, $run, $item, $loan, $loans, $generate, $skip, $data): void {
-            if ($skip) {
-                $loans->skip($user, $loan, $run->month, (string) $data['reason']);
-            } else {
-                $loans->unskip($user, $loan, $run->month);
-            }
+        // Two steps, each in its own transaction, so the lock order stays employee -> loan and, separately, employees ->
+        // run (approval takes run -> loans). If approval slips in between, its fingerprint protocol catches the change.
+        if ($skip) {
+            $loans->skip($user, $loan, $run->month, (string) $data['reason']);
+        } else {
+            $loans->unskip($user, $loan, $run->month);
+        }
 
-            $generate->recalculate($user, $run, $item->employee_id);
-        }, 3);
+        $generate->recalculate($user, $run, $item->employee_id);
 
         return back()->with('success', $skip ? 'Installment skipped for this month.' : 'Installment restored.');
-    }
-
-    /** The line must belong to the run in the URL. */
-    private function belongs(PayrollRun $run, PayrollItem $item): void
-    {
-        abort_unless($item->payroll_run_id === $run->id, 404);
     }
 
     /**

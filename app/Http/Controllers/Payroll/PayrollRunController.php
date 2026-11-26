@@ -130,6 +130,11 @@ class PayrollRunController extends Controller
                 'can_pay' => $run->status === 'approved' && $mayRun,
                 'approves_own' => PayrollAccess::approvesOwn($user, $run),
                 'payslip_count' => $items->where('excluded', false)->count(),
+                // Of those, the people with an active login and an email: the ones the payslip is mailed to.
+                'emailed_count' => $items->where('excluded', false)->filter(
+                    fn (PayrollItem $item): bool => $item->employee->user?->is_active === true
+                        && trim((string) $item->employee->user->email) !== '',
+                )->count(),
                 'today' => app(AttendanceClock::class)->attendanceToday(),
             ],
             'checks' => $checks,
@@ -164,7 +169,7 @@ class PayrollRunController extends Controller
             'downloads' => [
                 'bank_sheet' => $locked && $mayRun && Route::has('payroll.runs.bank-sheet')
                     ? route('payroll.runs.bank-sheet', $run) : null,
-                'summary' => Route::has('payroll.runs.summary-export')
+                'summary' => $locked && Route::has('payroll.runs.summary-export')
                     ? route('payroll.runs.summary-export', $run) : null,
                 'payslips' => $locked && Route::has('payroll.payslips.index')
                     ? route('payroll.payslips.index', ['month' => $run->month]) : null,

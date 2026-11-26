@@ -184,7 +184,7 @@ test('the run page shows blocking checks first with their people, totals and lin
         ->where('lines.0.payslip_url', null)
         ->where('lines.1.blocking', ['no_profile'])
         ->where('downloads.bank_sheet', null)
-        ->where('downloads.summary', url("/payroll/runs/{$run->id}/summary")));
+        ->where('downloads.summary', null));
 });
 
 test('the page of an HR user does not offer approval, and their own line is not editable', function () {
@@ -201,6 +201,23 @@ test('the page of an HR user does not offer approval, and their own line is not 
         ->has('lines', 2)
         ->where('lines', fn ($lines) => collect($lines)->firstWhere('employee.id', $hrEmployee->id)['can_edit'] === false
             && collect($lines)->firstWhere('employee.id', $e->id)['can_edit'] === true));
+});
+
+test('a draft offers no downloads, and counts the payslips that will be mailed', function () {
+    [$e, $run] = rsSetUp();
+
+    $this->actingAs($this->hr)->get("/payroll/runs/{$run->id}")->assertInertia(fn (Assert $page) => $page
+        ->where('downloads.summary', null)
+        ->where('downloads.bank_sheet', null)
+        ->where('downloads.payslips', null)
+        ->where('run.payslip_count', 1)
+        ->where('run.emailed_count', 0));
+
+    // An active login with an email counts; an inactive one does not.
+    $login = User::factory()->create(['employee_id' => $e->id, 'is_active' => true]);
+    $this->actingAs($this->hr)->get("/payroll/runs/{$run->id}")->assertInertia(fn (Assert $page) => $page->where('run.emailed_count', 1));
+    $login->forceFill(['is_active' => false])->save();
+    $this->actingAs($this->hr)->get("/payroll/runs/{$run->id}")->assertInertia(fn (Assert $page) => $page->where('run.emailed_count', 0));
 });
 
 test('an approved run shows downloads and payslip links, no edit controls, and the warnings it was approved with', function () {
@@ -222,12 +239,12 @@ test('an approved run shows downloads and payslip links, no edit controls, and t
         ->where('checks', $run->fresh()->summary['checks']));
 });
 
-test('the run page reads a fixed number of queries whatever the headcount', function () {
+test('the run page reads a fixed number of queries whatever the headcount', function (string $viewer) {
     [, $run] = rsSetUp();
-    $count = function () use ($run): int {
+    $count = function () use ($run, $viewer): int {
         DB::flushQueryLog();
         DB::enableQueryLog();
-        $this->actingAs($this->admin)->get("/payroll/runs/{$run->id}")->assertOk();
+        $this->actingAs($this->{$viewer})->get("/payroll/runs/{$run->id}")->assertOk();
         $log = DB::getQueryLog();
         DB::disableQueryLog();
 
@@ -247,7 +264,7 @@ test('the run page reads a fixed number of queries whatever the headcount', func
     app(GeneratePayrollRun::class)->recalculate($this->hr, $run);
 
     expect(PayrollItem::count())->toBe(6)->and($count())->toBe($few);
-});
+})->with(['admin', 'hr']);
 
 // --- run actions ---------------------------------------------------------------------------------------------------
 
@@ -278,6 +295,15 @@ test('approve with a stale fingerprint reloads with the changed message and appr
     $this->actingAs($this->admin)->post("/payroll/runs/{$run->id}/approve", ['fingerprint' => $run->fresh()->fingerprint()])
         ->assertSessionHas('success');
     expect($run->fresh()->status)->toBe('approved');
+});
+
+test('a changed fingerprint with no changed line has its own message', function () {
+    [, $run] = rsSetUp();
+
+    $this->actingAs($this->admin)->from("/payroll/runs/{$run->id}")->post("/payroll/runs/{$run->id}/approve", ['fingerprint' => str_repeat('a', 64)])
+        ->assertRedirect("/payroll/runs/{$run->id}")
+        ->assertSessionHas('error', 'The figures changed since you opened this page — review and approve again.');
+    expect($run->fresh()->status)->toBe('draft');
 });
 
 test('approve needs a fingerprint and is refused while a blocking check exists', function () {
@@ -370,6 +396,25 @@ test('a line, adjustment or loan of another run or person is 404', function () {
     $this->actingAs($this->admin)->put(rsItemUrl($run, $item, "/loans/{$otherLoan->id}"), ['skipped' => true, 'reason' => 'Short this month.'])->assertNotFound();
 
     expect(PayrollAdjustment::count())->toBe(1)->and(LoanSkip::count())->toBe(0);
+});
+
+test('a malformed body on a foreign line is 404, an unknown run is 404, and guests go to login', function () {
+    [$e, $run] = rsSetUp();
+    $item = prItem($run, $e);
+    $otherRun = payrollRun('2026-10');
+    $otherItem = PayrollItem::factory()->create(['payroll_run_id' => $otherRun->id, 'employee_id' => $e->id]);
+
+    $this->actingAs($this->admin)->post(rsItemUrl($run, $otherItem, '/adjustments'), [])->assertNotFound();
+    $this->actingAs($this->admin)->put(rsItemUrl($run, $otherItem, '/tax'), ['amount' => 'abc'])->assertNotFound();
+    $this->actingAs($this->admin)->put(rsItemUrl($run, $otherItem, '/exclude'), [])->assertNotFound();
+    $this->actingAs($this->admin)->get('/payroll/runs/999999')->assertNotFound();
+    $this->actingAs($this->admin)->getJson('/payroll/runs/999999/items/'.$item->id)->assertNotFound();
+    $this->actingAs($this->admin)->post('/payroll/runs/999999/recalculate')->assertNotFound();
+
+    auth()->logout();
+    $this->get('/payroll/runs')->assertRedirect('/login');
+    $this->get("/payroll/runs/{$run->id}")->assertRedirect('/login');
+    $this->post(rsItemUrl($run, $item, '/adjustments'), [])->assertRedirect('/login');
 });
 
 test('HR adds and removes a one-off item; tax follows an addition', function () {
