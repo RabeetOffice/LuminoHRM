@@ -66,6 +66,59 @@
     --color-brand-ink: var(--brand-ink);
     --color-banner: var(--banner);
     --color-banner-foreground: var(--banner-foreground);
+
+    /* Glass materials (values per theme live in :root / .dark below). */
+    --color-surface-inset: var(--surface-inset);
+    --color-surface-card: var(--surface-card);
+    --color-surface-control: var(--surface-control);
+    --color-glass-border: var(--glass-border);
+    --color-tooltip: var(--tooltip-bg);
+    --color-tooltip-foreground: var(--tooltip-fg);
+
+    /* Elevation: a light top highlight plus layered soft shadows. */
+    --shadow-glass-xs: var(--glass-highlight), var(--elev-1);
+    --shadow-glass-sm: var(--glass-highlight), var(--elev-2);
+    --shadow-glass-md: var(--glass-highlight), var(--elev-3);
+    --shadow-glass-lg: var(--glass-highlight), var(--elev-4);
+
+    /* Motion curves. glide = ease-out quint, spring = slight overshoot, exit = quick ease-in. */
+    --ease-glide: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-spring: cubic-bezier(0.34, 1.32, 0.64, 1);
+    --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+
+    --animate-page-enter: page-enter var(--duration-page) var(--ease-glide) both;
+    --animate-rise-in: rise-in var(--duration-slow) var(--ease-glide) both;
+
+    @keyframes page-enter {
+        from {
+            opacity: 0;
+            transform: translate3d(0, 10px, 0);
+        }
+        to {
+            opacity: 1;
+            transform: none;
+        }
+    }
+
+    @keyframes rise-in {
+        from {
+            opacity: 0;
+            transform: translate3d(0, 8px, 0) scale(0.99);
+        }
+        to {
+            opacity: 1;
+            transform: none;
+        }
+    }
+
+    @keyframes ambient-drift {
+        from {
+            transform: translate3d(0, 0, 0) scale(1);
+        }
+        to {
+            transform: translate3d(2%, -1.5%, 0) scale(1.05);
+        }
+    }
 }
 
 :root {
@@ -84,7 +137,8 @@
     --secondary: oklch(0.97 0 0);
     --secondary-foreground: oklch(0.205 0 0);
     --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
+    /* 0.52, not shadcn's 0.556: keeps 4.5:1 on the translucent glass surfaces. */
+    --muted-foreground: oklch(0.52 0 0);
     --accent: oklch(0.97 0 0);
     --accent-foreground: oklch(0.205 0 0);
     --destructive: oklch(0.577 0.245 27.325);
@@ -107,6 +161,42 @@
     --sidebar-accent-foreground: #0a7a56;
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: #10b77f;
+
+    /* Motion tokens. Exits run faster than entrances. */
+    --duration-fast: 160ms;
+    --duration-normal: 240ms;
+    --duration-slow: 340ms;
+    --duration-page: 300ms;
+    --duration-exit: 140ms;
+    --stagger-step: 35ms;
+
+    /* Glass. Opacities are tuned so muted text keeps 4.5:1 over the ambient background. */
+    --glass-bg: rgb(255 255 255 / 0.62); /* sidebar, sticky header */
+    --glass-bg-strong: rgb(255 255 255 / 0.94); /* popovers, dialogs, sheets */
+    --glass-solid: oklch(0.99 0.002 170); /* fallback without backdrop-filter */
+    --glass-border: rgb(10 20 16 / 0.08);
+    --glass-highlight: inset 0 1px 0 0 rgb(255 255 255 / 0.75);
+    --glass-blur: 20px;
+    --glass-blur-strong: 28px;
+    --glass-saturate: 180%;
+    --surface-inset: rgb(255 255 255 / 0.55); /* the main content panel */
+    --surface-card: rgb(255 255 255 / 0.8);
+    --surface-control: rgb(255 255 255 / 0.65); /* inputs, outline buttons */
+    --tooltip-bg: rgb(23 23 23 / 0.9);
+    --tooltip-fg: #ffffff;
+    --elev-1: 0 1px 2px rgb(16 24 20 / 0.05), 0 1px 1px rgb(16 24 20 / 0.03);
+    --elev-2:
+        0 1px 2px rgb(16 24 20 / 0.04), 0 4px 14px -4px rgb(16 24 20 / 0.08);
+    --elev-3:
+        0 2px 4px rgb(16 24 20 / 0.04), 0 14px 34px -10px rgb(16 24 20 / 0.14);
+    --elev-4:
+        0 4px 8px rgb(16 24 20 / 0.05), 0 28px 60px -14px rgb(16 24 20 / 0.24);
+
+    /* Ambient background: a soft brand-tinted wash behind the shell. */
+    --ambient-base: oklch(0.972 0.008 170);
+    --ambient-1: color-mix(in oklab, var(--primary) 18%, transparent);
+    --ambient-2: rgb(125 211 252 / 0.2);
+    --ambient-3: color-mix(in oklab, var(--primary) 10%, transparent);
 }
 
 .dark {
@@ -145,6 +235,100 @@
     --sidebar-accent-foreground: #34d399;
     --sidebar-border: oklch(0.269 0 0);
     --sidebar-ring: #10b77f;
+
+    --glass-bg: oklch(0.2 0.004 170 / 0.62);
+    --glass-bg-strong: oklch(0.205 0.004 170 / 0.92);
+    --glass-solid: oklch(0.2 0.002 170);
+    --glass-border: rgb(255 255 255 / 0.09);
+    --glass-highlight: inset 0 1px 0 0 rgb(255 255 255 / 0.06);
+    --surface-inset: oklch(0.17 0.003 170 / 0.6);
+    --surface-card: oklch(0.235 0.004 170 / 0.62);
+    --surface-control: rgb(255 255 255 / 0.04);
+    --tooltip-bg: rgb(245 245 245 / 0.92);
+    --tooltip-fg: #111111;
+    --elev-1: 0 1px 2px rgb(0 0 0 / 0.3);
+    --elev-2: 0 1px 2px rgb(0 0 0 / 0.3), 0 6px 16px -6px rgb(0 0 0 / 0.4);
+    --elev-3: 0 2px 4px rgb(0 0 0 / 0.3), 0 16px 36px -10px rgb(0 0 0 / 0.5);
+    --elev-4: 0 4px 8px rgb(0 0 0 / 0.35), 0 30px 64px -14px rgb(0 0 0 / 0.6);
+
+    --ambient-base: oklch(0.16 0.012 170);
+    --ambient-1: color-mix(in oklab, var(--primary) 16%, transparent);
+    --ambient-2: rgb(56 189 248 / 0.08);
+    --ambient-3: color-mix(in oklab, var(--primary) 8%, transparent);
+}
+
+/* No backdrop-filter (old browsers, some low-power modes): glass becomes an opaque panel. */
+@supports not (
+    (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
+) {
+    :root,
+    .dark {
+        --glass-bg: var(--glass-solid);
+        --glass-bg-strong: var(--glass-solid);
+    }
+}
+
+/* Frosted panel: sidebar, sticky header. Pair with border-glass-border and a shadow-glass-*. */
+@utility glass {
+    background-color: var(--glass-bg);
+    -webkit-backdrop-filter: blur(var(--glass-blur))
+        saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+/* Denser glass for floating layers that sit over content: menus, dialogs, sheets. */
+@utility glass-strong {
+    background-color: var(--glass-bg-strong);
+    -webkit-backdrop-filter: blur(var(--glass-blur-strong))
+        saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur-strong))
+        saturate(var(--glass-saturate));
+}
+
+/* Staggered reveal for a list or grid: each direct child rises in, 35ms apart, capped at 10. */
+@utility stagger-children {
+    & > * {
+        animation: var(--animate-rise-in);
+        animation-delay: calc(
+            min(var(--stagger-index, 10), 10) * var(--stagger-step)
+        );
+    }
+    & > *:nth-child(1) {
+        --stagger-index: 0;
+    }
+    & > *:nth-child(2) {
+        --stagger-index: 1;
+    }
+    & > *:nth-child(3) {
+        --stagger-index: 2;
+    }
+    & > *:nth-child(4) {
+        --stagger-index: 3;
+    }
+    & > *:nth-child(5) {
+        --stagger-index: 4;
+    }
+    & > *:nth-child(6) {
+        --stagger-index: 5;
+    }
+    & > *:nth-child(7) {
+        --stagger-index: 6;
+    }
+    & > *:nth-child(8) {
+        --stagger-index: 7;
+    }
+    & > *:nth-child(9) {
+        --stagger-index: 8;
+    }
+    & > *:nth-child(10) {
+        --stagger-index: 9;
+    }
+}
+
+/* One element that rises in; set --stagger-index inline (see revealStyle in lib/motion.ts). */
+@utility reveal {
+    animation: var(--animate-rise-in);
+    animation-delay: calc(var(--stagger-index, 0) * var(--stagger-step));
 }
 
 @layer base {
@@ -153,6 +337,60 @@
     }
 
     body {
-        @apply bg-background text-base text-foreground;
+        @apply text-base text-foreground;
+        background-color: transparent;
+    }
+
+    /*
+     * Ambient background on its own fixed layer, so only a transform animates (no repaint).
+     * The html element keeps its plain theme colour from app.blade.php underneath.
+     */
+    body::before {
+        content: '';
+        position: fixed;
+        inset: -8%;
+        z-index: -1;
+        pointer-events: none;
+        background:
+            radial-gradient(
+                50% 45% at 12% 8%,
+                var(--ambient-1),
+                transparent 70%
+            ),
+            radial-gradient(
+                45% 40% at 92% 12%,
+                var(--ambient-2),
+                transparent 70%
+            ),
+            radial-gradient(
+                55% 50% at 70% 100%,
+                var(--ambient-3),
+                transparent 70%
+            ),
+            var(--ambient-base);
+        animation: ambient-drift 48s ease-in-out infinite alternate;
+        will-change: transform;
+    }
+
+    /* Page content (the element after the app header) fades and rises in on each visit. */
+    [data-app-header] + * {
+        animation: var(--animate-page-enter);
+    }
+}
+
+/* Reduced motion: no drift, no reveals, no slides; state changes are instant. */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-delay: 0ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+
+    body::before {
+        animation: none !important;
     }
 }
