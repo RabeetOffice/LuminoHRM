@@ -140,7 +140,7 @@ const dash = <span className="text-muted-foreground">–</span>;
 const minutesCell = (value: number, tone?: string) =>
     value > 0 ? <span className={tone}>{formatMinutes(value)}</span> : dash;
 
-/** On a phone the worked / late / early / overtime columns are hidden: one compact line instead. */
+/** Below xl (a laptop with the sidebar open has about 650px) the worked / late / early / overtime columns are hidden: one compact line instead. */
 function compactMinutes(row: DailyRow): string {
     return [
         row.worked_minutes > 0 && `Worked ${formatMinutes(row.worked_minutes)}`,
@@ -357,7 +357,7 @@ export default function Daily({
                     <div>
                         {row.clock_in ? formatClockTime(row.clock_in) : dash}
                         {compact !== '' && (
-                            <p className="mt-0.5 text-xs whitespace-normal text-muted-foreground lg:hidden">
+                            <p className="mt-0.5 text-xs whitespace-normal text-muted-foreground xl:hidden">
                                 {compact}
                             </p>
                         )}
@@ -389,13 +389,13 @@ export default function Daily({
         {
             key: 'worked',
             header: 'Worked',
-            className: 'hidden whitespace-nowrap tabular-nums md:table-cell',
+            className: 'hidden whitespace-nowrap tabular-nums xl:table-cell',
             cell: (row) => minutesCell(row.worked_minutes),
         },
         {
             key: 'late',
             header: 'Late',
-            className: 'hidden whitespace-nowrap tabular-nums lg:table-cell',
+            className: 'hidden whitespace-nowrap tabular-nums xl:table-cell',
             cell: (row) =>
                 minutesCell(
                     row.late_minutes,
@@ -405,7 +405,7 @@ export default function Daily({
         {
             key: 'early',
             header: 'Early',
-            className: 'hidden whitespace-nowrap tabular-nums lg:table-cell',
+            className: 'hidden whitespace-nowrap tabular-nums xl:table-cell',
             cell: (row) =>
                 minutesCell(
                     row.early_minutes,
@@ -415,7 +415,7 @@ export default function Daily({
         {
             key: 'overtime',
             header: 'Overtime',
-            className: 'hidden whitespace-nowrap tabular-nums lg:table-cell',
+            className: 'hidden whitespace-nowrap tabular-nums xl:table-cell',
             cell: (row) =>
                 minutesCell(
                     row.overtime_minutes,

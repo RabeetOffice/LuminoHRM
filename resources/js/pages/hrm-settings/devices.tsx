@@ -253,28 +253,35 @@ export default function Devices({
                     <span className="font-mono text-xs text-muted-foreground">
                         {row.serial_no}
                     </span>
-                    <span className="sm:hidden">{status(row)}</span>
+                    <span className="xl:hidden">{status(row)}</span>
+                    {/* The columns hidden below xl (a laptop with the sidebar open has about 650px), stacked under the name. */}
+                    <span className="text-xs text-muted-foreground xl:hidden">
+                        Contact {moment(row.last_seen_at)}
+                    </span>
+                    <span className="text-xs text-muted-foreground xl:hidden">
+                        Punch {moment(row.last_punch_at)}
+                    </span>
                 </div>
             ),
         },
         {
             key: 'status',
             header: 'Status',
-            className: 'hidden sm:table-cell',
+            className: 'hidden xl:table-cell',
             cell: status,
         },
         {
             key: 'seen',
             header: 'Last contact',
             className:
-                'hidden whitespace-nowrap text-muted-foreground md:table-cell',
+                'hidden whitespace-nowrap text-muted-foreground xl:table-cell',
             cell: (row) => moment(row.last_seen_at),
         },
         {
             key: 'punch',
             header: 'Last punch',
             className:
-                'hidden whitespace-nowrap text-muted-foreground lg:table-cell',
+                'hidden whitespace-nowrap text-muted-foreground xl:table-cell',
             cell: (row) => moment(row.last_punch_at),
         },
         {

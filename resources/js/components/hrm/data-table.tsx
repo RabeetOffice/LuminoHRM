@@ -212,7 +212,7 @@ export function DataTable<T>({
                                     type="button"
                                     onClick={() => setTerm('')}
                                     aria-label="Clear search"
-                                    className="absolute top-1/2 right-2 flex size-6 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
+                                    className="absolute top-1/2 right-2 flex size-6 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
                                 >
                                     <X className="size-4" />
                                 </button>

@@ -104,11 +104,11 @@ export default function ExitIndex({
                         {row.employee.department &&
                             ` · ${row.employee.department}`}
                     </span>
-                    <span className="text-xs text-muted-foreground md:hidden">
+                    <span className="text-xs text-muted-foreground xl:hidden">
                         {exitTypeLabel(row.type)} · Last day{' '}
                         {formatDate(row.last_working_day, dateFormat)}
                     </span>
-                    <span className="text-xs text-muted-foreground lg:hidden">
+                    <span className="text-xs text-muted-foreground xl:hidden">
                         {row.notice.label}
                     </span>
                 </div>
@@ -117,7 +117,7 @@ export default function ExitIndex({
         {
             key: 'type',
             header: 'Type',
-            className: 'hidden md:table-cell',
+            className: 'hidden xl:table-cell',
             cell: (row) => (
                 <StatusPill tone={exitTypeTone(row.type)}>
                     {exitTypeLabel(row.type)}
@@ -127,19 +127,19 @@ export default function ExitIndex({
         {
             key: 'submitted',
             header: 'Submitted',
-            className: 'hidden whitespace-nowrap lg:table-cell',
+            className: 'hidden whitespace-nowrap xl:table-cell',
             cell: (row) => formatDate(row.submitted_on, dateFormat),
         },
         {
             key: 'last_day',
             header: 'Last day',
-            className: 'hidden whitespace-nowrap md:table-cell',
+            className: 'hidden whitespace-nowrap xl:table-cell',
             cell: (row) => formatDate(row.last_working_day, dateFormat),
         },
         {
             key: 'notice',
             header: 'Notice',
-            className: 'hidden lg:table-cell',
+            className: 'hidden xl:table-cell',
             cell: (row) => (
                 <StatusPill tone={noticeTone(row.notice)}>
                     {row.notice.label}

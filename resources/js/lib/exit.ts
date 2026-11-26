@@ -116,7 +116,9 @@ const STATUS_LABELS: Record<ExitStatus, string> = {
 
 /** The words for a status; unknown values come back as given. */
 export function exitStatusLabel(status: string): string {
-    return STATUS_LABELS[status as ExitStatus] ?? status;
+    return Object.hasOwn(STATUS_LABELS, status)
+        ? STATUS_LABELS[status as ExitStatus]
+        : status;
 }
 
 /** The pill colour for an exit. After approval the finer stage ("Paid", "Left") changes the colour of the pill. */

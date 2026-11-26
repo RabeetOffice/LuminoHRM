@@ -101,6 +101,12 @@ export default function Payslips({ rows, filters, months, can_resend }: Props) {
                         {row.employee.code}
                         <span className="sm:hidden"> · {row.month_label}</span>
                     </div>
+                    {/* The columns hidden below xl (a laptop with the sidebar open has about 650px), stacked under the name. */}
+                    <div className="text-xs text-muted-foreground xl:hidden">
+                        {row.emailed_at
+                            ? `Emailed ${when(row.emailed_at)}`
+                            : 'Not emailed'}
+                    </div>
                 </div>
             ),
         },
@@ -120,13 +126,13 @@ export default function Payslips({ rows, filters, months, can_resend }: Props) {
             key: 'generated',
             header: 'Generated',
             className:
-                'hidden whitespace-nowrap text-muted-foreground lg:table-cell',
+                'hidden whitespace-nowrap text-muted-foreground xl:table-cell',
             cell: (row) => when(row.generated_at) ?? 'Not yet',
         },
         {
             key: 'emailed',
             header: 'Emailed',
-            className: 'hidden whitespace-nowrap md:table-cell',
+            className: 'hidden whitespace-nowrap xl:table-cell',
             cell: (row) =>
                 row.emailed_at ? (
                     <StatusPill tone="green">{when(row.emailed_at)}</StatusPill>

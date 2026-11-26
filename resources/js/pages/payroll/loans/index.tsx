@@ -102,36 +102,50 @@ export default function LoansIndex({
                     <span className="block text-xs text-muted-foreground">
                         {row.employee.code}
                     </span>
+                    {/* The columns hidden below xl (a laptop with the sidebar open has about 650px), stacked under the name. */}
+                    <span className="block text-xs text-muted-foreground xl:hidden">
+                        {loanTypeLabel(row.type)} · {formatMoney(row.amount)} ·{' '}
+                        {formatMoney(row.installment)} a month
+                    </span>
+                    <span className="block text-xs text-muted-foreground xl:hidden">
+                        Starts {shortMonthLabel(row.start_month)} · repaid{' '}
+                        {formatMoney(row.repaid)} · next{' '}
+                        {row.next_month ? shortMonthLabel(row.next_month) : '—'}
+                    </span>
                 </Link>
             ),
         },
         {
             key: 'type',
             header: 'Type',
+            className: 'hidden xl:table-cell',
             cell: (row) => loanTypeLabel(row.type),
         },
         {
             key: 'amount',
             header: 'Amount',
-            className: 'text-right tabular-nums whitespace-nowrap',
+            className:
+                'hidden text-right xl:table-cell tabular-nums whitespace-nowrap',
             cell: (row) => formatMoney(row.amount),
         },
         {
             key: 'installment',
             header: 'Installment',
-            className: 'text-right tabular-nums whitespace-nowrap',
+            className:
+                'hidden text-right xl:table-cell tabular-nums whitespace-nowrap',
             cell: (row) => formatMoney(row.installment),
         },
         {
             key: 'start',
             header: 'Starts',
-            className: 'whitespace-nowrap',
+            className: 'hidden whitespace-nowrap xl:table-cell',
             cell: (row) => shortMonthLabel(row.start_month),
         },
         {
             key: 'repaid',
             header: 'Repaid',
-            className: 'text-right tabular-nums whitespace-nowrap',
+            className:
+                'hidden text-right xl:table-cell tabular-nums whitespace-nowrap',
             cell: (row) => formatMoney(row.repaid),
         },
         {
@@ -143,7 +157,7 @@ export default function LoansIndex({
         {
             key: 'next',
             header: 'Next deduction',
-            className: 'whitespace-nowrap',
+            className: 'hidden whitespace-nowrap xl:table-cell',
             cell: (row) =>
                 row.next_month ? shortMonthLabel(row.next_month) : '—',
         },

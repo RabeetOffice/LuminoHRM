@@ -242,7 +242,7 @@ export function AssignDialog({ asset, today, onClose }: Props) {
                                             type="button"
                                             onClick={() => choose(person)}
                                             className={cn(
-                                                'flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-muted focus-visible:bg-muted focus-visible:outline-none',
+                                                'flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-muted focus-visible:bg-muted focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none focus-visible:ring-inset',
                                                 data.employee_id ===
                                                     String(person.id) &&
                                                     'bg-muted font-medium',

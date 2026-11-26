@@ -193,8 +193,16 @@ describe('ready flag', () => {
     });
 
     test('with includeUnready false, unready items are hidden even when a search matches them', () => {
+        // Every real page is ready now, so use a made-up unready entry.
+        const groups: NavGroup[] = [
+            {
+                label: 'G',
+                items: [{ title: 'Resignations', href: '/x', ready: false }],
+            },
+        ];
+
         expect(
-            filterNavigation(navigation, allPermissions, 'resignations', hide),
+            filterNavigation(groups, allPermissions, 'resignations', hide),
         ).toEqual([]);
     });
 

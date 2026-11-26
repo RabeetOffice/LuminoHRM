@@ -111,8 +111,8 @@ export default function Kpis({ kpis, filters, options }: Props) {
                             {row.description}
                         </span>
                     )}
-                    {/* The columns hidden on a phone, stacked under the name. */}
-                    <span className="text-xs font-normal text-muted-foreground md:hidden">
+                    {/* The columns hidden below xl (a laptop with the sidebar open has about 650px), stacked under the name. */}
+                    <span className="text-xs font-normal text-muted-foreground xl:hidden">
                         {row.target.type === 'designation'
                             ? 'Designation'
                             : 'Person'}
@@ -124,7 +124,7 @@ export default function Kpis({ kpis, filters, options }: Props) {
         {
             key: 'target',
             header: 'Applies to',
-            className: 'hidden md:table-cell',
+            className: 'hidden xl:table-cell',
             cell: (row) => (
                 <div className="grid gap-0.5">
                     <span>{row.target.name}</span>
@@ -139,8 +139,8 @@ export default function Kpis({ kpis, filters, options }: Props) {
         {
             key: 'weight',
             header: 'Weight',
-            className: 'hidden text-right tabular-nums md:table-cell',
-            headerClassName: 'hidden text-right md:table-cell',
+            className: 'hidden text-right tabular-nums xl:table-cell',
+            headerClassName: 'hidden text-right xl:table-cell',
             cell: (row) => row.weight,
         },
         {
@@ -156,8 +156,8 @@ export default function Kpis({ kpis, filters, options }: Props) {
             key: 'uses',
             header: 'Used in',
             className:
-                'hidden whitespace-nowrap text-muted-foreground lg:table-cell',
-            headerClassName: 'hidden lg:table-cell',
+                'hidden whitespace-nowrap text-muted-foreground xl:table-cell',
+            headerClassName: 'hidden xl:table-cell',
             cell: (row) =>
                 row.uses === 0
                     ? '–'

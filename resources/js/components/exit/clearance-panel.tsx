@@ -94,7 +94,7 @@ export function ClearancePanel({
                                         aria-hidden="true"
                                         className={
                                             item.cleared
-                                                ? 'mt-0.5 flex size-4 shrink-0 items-center justify-center text-emerald-600'
+                                                ? 'mt-0.5 flex size-4 shrink-0 items-center justify-center text-emerald-600 dark:text-emerald-400'
                                                 : 'mt-0.5 size-4 shrink-0 rounded-[4px] border border-input'
                                         }
                                     >

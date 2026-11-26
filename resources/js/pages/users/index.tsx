@@ -157,9 +157,16 @@ export default function Users({ users, counts, roleOptions, filters }: Props) {
                                 </Badge>
                             )}
                         </div>
-                        {/* Phones: email, role and status sit under the name so the row actions stay on screen. */}
-                        <div className="max-w-[9.5rem] truncate text-xs text-muted-foreground md:hidden">
+                        {/* Below xl (a laptop with the sidebar open has about 650px) the email, linked employee and last sign-in sit under the name; role and status sit here on a phone. */}
+                        <div className="max-w-[14rem] truncate text-xs text-muted-foreground xl:hidden">
                             {row.email}
+                        </div>
+                        <div className="text-xs text-muted-foreground xl:hidden">
+                            {row.employee
+                                ? `${row.employee.name} · ${row.employee.code}`
+                                : 'Not linked to an employee'}
+                            {' · '}
+                            {lastSignIn(row.last_login_at)}
                         </div>
                         <div className="mt-1 flex flex-wrap items-center gap-1 sm:hidden">
                             <Badge variant="secondary">
@@ -176,13 +183,13 @@ export default function Users({ users, counts, roleOptions, filters }: Props) {
         {
             key: 'email',
             header: 'Email',
-            className: 'hidden text-muted-foreground md:table-cell',
+            className: 'hidden text-muted-foreground xl:table-cell',
             cell: (row) => row.email,
         },
         {
             key: 'employee',
             header: 'Employee',
-            className: 'hidden lg:table-cell',
+            className: 'hidden xl:table-cell',
             cell: (row) =>
                 row.employee ? (
                     <Link
@@ -225,7 +232,7 @@ export default function Users({ users, counts, roleOptions, filters }: Props) {
             key: 'last_sign_in',
             header: 'Last sign-in',
             className:
-                'hidden whitespace-nowrap text-muted-foreground lg:table-cell',
+                'hidden whitespace-nowrap text-muted-foreground xl:table-cell',
             cell: (row) => lastSignIn(row.last_login_at),
         },
         {

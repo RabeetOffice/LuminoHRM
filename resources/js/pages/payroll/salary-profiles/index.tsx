@@ -85,6 +85,13 @@ export default function SalaryProfiles({ rows, filters, departments }: Props) {
                         {row.code}
                         {row.department ? ` · ${row.department}` : ''}
                     </p>
+                    {/* The columns hidden below xl (a laptop with the sidebar open has about 650px), stacked under the name. */}
+                    {row.salary && (
+                        <p className="truncate text-xs text-muted-foreground xl:hidden">
+                            Tax {row.salary.tax} · from{' '}
+                            {formatDate(row.salary.effective_from, dateFormat)}
+                        </p>
+                    )}
                 </div>
             ),
         },
@@ -105,7 +112,7 @@ export default function SalaryProfiles({ rows, filters, departments }: Props) {
         {
             key: 'tax',
             header: 'Tax',
-            className: 'whitespace-nowrap',
+            className: 'hidden whitespace-nowrap xl:table-cell',
             cell: (row) =>
                 row.salary ? (
                     row.salary.tax
@@ -116,7 +123,7 @@ export default function SalaryProfiles({ rows, filters, departments }: Props) {
         {
             key: 'effective',
             header: 'Effective from',
-            className: 'whitespace-nowrap',
+            className: 'hidden whitespace-nowrap xl:table-cell',
             cell: (row) =>
                 row.salary ? (
                     <span className="inline-flex items-center gap-2">

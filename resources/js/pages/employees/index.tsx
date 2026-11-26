@@ -314,6 +314,16 @@ export default function Employees({
                         <div className="max-w-40 truncate text-xs text-muted-foreground">
                             {row.email}
                         </div>
+                        {/* The columns hidden below xl (a laptop with the sidebar open has about 650px), stacked under the name. */}
+                        <div className="text-xs text-muted-foreground xl:hidden">
+                            {[row.code, row.department, row.designation]
+                                .filter(Boolean)
+                                .join(' · ')}
+                        </div>
+                        <div className="text-xs text-muted-foreground xl:hidden">
+                            Joined {formatDate(row.joining_date, dateFormat)} ·{' '}
+                            {LOGIN_PILL[row.login].label}
+                        </div>
                     </div>
                 </div>
             ),
@@ -321,19 +331,19 @@ export default function Employees({
         {
             key: 'code',
             header: 'Employee ID',
-            className: 'px-3 whitespace-nowrap',
+            className: 'hidden px-3 whitespace-nowrap xl:table-cell',
             cell: (row) => <CodeBadge code={row.code} />,
         },
         {
             key: 'department',
             header: 'Department',
-            className: 'min-w-28 px-3',
+            className: 'hidden min-w-28 px-3 xl:table-cell',
             cell: (row) => row.department,
         },
         {
             key: 'designation',
             header: 'Designation',
-            className: 'min-w-32 px-3',
+            className: 'hidden min-w-32 px-3 xl:table-cell',
             cell: (row) => row.designation,
         },
         {
@@ -349,7 +359,8 @@ export default function Employees({
         {
             key: 'joined',
             header: 'Joined',
-            className: 'px-3 whitespace-nowrap text-muted-foreground',
+            className:
+                'hidden px-3 whitespace-nowrap text-muted-foreground xl:table-cell',
             cell: (row) => (
                 <span className="inline-flex items-center gap-1.5">
                     <CalendarDays aria-hidden="true" className="size-3.5" />
@@ -360,7 +371,7 @@ export default function Employees({
         {
             key: 'login',
             header: 'Login',
-            className: 'px-3',
+            className: 'hidden px-3 xl:table-cell',
             cell: (row) => (
                 <StatusPill tone={LOGIN_PILL[row.login].tone}>
                     {LOGIN_PILL[row.login].label}

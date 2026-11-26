@@ -91,13 +91,11 @@ export default function Shifts({ shifts, weekdays }: Props) {
                             <StatusPill tone="green">Default</StatusPill>
                         )}
                     </div>
-                    {/* The columns hidden on smaller screens, as one line under the name. */}
-                    <p className="text-xs font-normal text-muted-foreground lg:hidden">
-                        <span className="md:hidden">
-                            Grace {shift.grace_minutes} min · Half day under{' '}
-                            {hours(shift.half_day_hours)} ·{' '}
-                        </span>
-                        Offs {offsText(shift.weekly_offs)}
+                    {/* The columns hidden below xl (a laptop with the sidebar open has about 650px), as one line under the name. */}
+                    <p className="text-xs font-normal text-muted-foreground xl:hidden">
+                        Grace {shift.grace_minutes} min · Half day under{' '}
+                        {hours(shift.half_day_hours)} · Offs{' '}
+                        {offsText(shift.weekly_offs)}
                         <span className="sm:hidden">
                             {' '}
                             · {employeesText(shift.employees_count)}
@@ -116,20 +114,20 @@ export default function Shifts({ shifts, weekdays }: Props) {
             key: 'grace',
             header: 'Grace',
             className:
-                'hidden text-muted-foreground tabular-nums md:table-cell',
+                'hidden text-muted-foreground tabular-nums xl:table-cell',
             cell: (shift) => `${shift.grace_minutes} min`,
         },
         {
             key: 'half-day',
             header: 'Half day under',
             className:
-                'hidden text-muted-foreground tabular-nums md:table-cell',
+                'hidden text-muted-foreground tabular-nums xl:table-cell',
             cell: (shift) => hours(shift.half_day_hours),
         },
         {
             key: 'offs',
             header: 'Weekly offs',
-            className: 'hidden text-muted-foreground lg:table-cell',
+            className: 'hidden text-muted-foreground xl:table-cell',
             cell: (shift) => offsText(shift.weekly_offs),
         },
         {

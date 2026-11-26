@@ -1,7 +1,9 @@
 import { usePage } from '@inertiajs/react';
 import { Download, FileText } from 'lucide-react';
+import { useState } from 'react';
 import ExitDocumentController from '@/actions/App/Http/Controllers/Exits/ExitDocumentController';
 import { ActionError, useExitAction } from '@/components/exit/use-exit-action';
+import { ConfirmDialog } from '@/components/hrm/confirm-dialog';
 import { StatusPill } from '@/components/hrm/status-pill';
 import { Button } from '@/components/ui/button';
 import { formatDate } from '@/lib/format-date';
@@ -28,6 +30,7 @@ export function LetterCard({
 }) {
     const dateFormat = usePage().props.app.dateFormat;
     const { busy, error, run } = useExitAction();
+    const [confirming, setConfirming] = useState(false);
 
     return (
         <section
@@ -70,12 +73,7 @@ export function LetterCard({
                         type="button"
                         variant={letter.issued ? 'outline' : 'default'}
                         disabled={!letter.can_issue || busy !== null}
-                        onClick={() =>
-                            run(
-                                'issue',
-                                ExitDocumentController.issue(resignationId),
-                            )
-                        }
+                        onClick={() => setConfirming(true)}
                     >
                         <FileText />{' '}
                         {letter.issued ? 'Issue again' : 'Issue letter'}
@@ -96,6 +94,29 @@ export function LetterCard({
                     </p>
                 )}
             </div>
+            <ConfirmDialog
+                open={confirming}
+                onOpenChange={setConfirming}
+                title={
+                    letter.issued
+                        ? 'Issue the letter again?'
+                        : 'Issue the experience letter?'
+                }
+                description={
+                    letter.issued
+                        ? 'The text is generated again from the current template and replaces the letter already issued. The employee will be able to download the new version from My Resignation.'
+                        : 'The employee will be able to download this letter from My Resignation as soon as it is issued.'
+                }
+                confirmLabel="Issue letter"
+                destructive={false}
+                processing={busy === 'issue'}
+                onConfirm={() =>
+                    run('issue', ExitDocumentController.issue(resignationId), {
+                        onSuccess: () => setConfirming(false),
+                        onError: () => setConfirming(false),
+                    })
+                }
+            />
         </section>
     );
 }

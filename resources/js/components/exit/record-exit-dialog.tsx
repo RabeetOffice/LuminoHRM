@@ -157,7 +157,7 @@ export function RecordExitDialog({ today, types, person, onClose }: Props) {
                         {!person && (
                             <button
                                 type="button"
-                                className="text-sm text-brand-ink hover:underline"
+                                className="rounded-sm text-sm text-brand-ink outline-none hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50"
                                 onClick={() => {
                                     setPicked(null);
                                     form.setData('employee_id', '');
@@ -187,7 +187,7 @@ export function RecordExitDialog({ today, types, person, onClose }: Props) {
                                     Could not load people.
                                     <button
                                         type="button"
-                                        className="font-medium underline"
+                                        className="rounded-sm font-medium underline outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
                                         onClick={() => {
                                             setFailedFor(null);
                                             setAttempt((n) => n + 1);
@@ -216,7 +216,7 @@ export function RecordExitDialog({ today, types, person, onClose }: Props) {
                                             type="button"
                                             onClick={() => choose(p)}
                                             className={cn(
-                                                'flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left text-sm hover:bg-accent',
+                                                'flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left text-sm outline-none hover:bg-accent focus-visible:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-inset',
                                             )}
                                         >
                                             <span className="font-medium">
