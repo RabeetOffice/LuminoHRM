@@ -83,6 +83,7 @@ describe('ready flag', () => {
             'Workforce',
             'Growth',
             'Finance & Assets',
+            'Exit',
             'System',
             'My Space',
         ]);
@@ -129,17 +130,21 @@ describe('ready flag', () => {
             'Tax Report',
         ]);
         expect(r[4].items.map((i) => i.title)).toEqual([
+            'Resignations & Clearance',
+        ]);
+        expect(r[5].items.map((i) => i.title)).toEqual([
             'Settings',
             'Users & Roles',
             'Audit Log',
         ]);
-        expect(r[5].items.map((i) => i.title)).toEqual([
+        expect(r[6].items.map((i) => i.title)).toEqual([
             'My Profile',
             'My Attendance',
             'My Leaves',
             'My Payslips',
             'My Assets',
             'My Reviews',
+            'My Resignation',
         ]);
     });
 
@@ -275,11 +280,38 @@ describe('soon entries (default)', () => {
         r.map((g) => [g.label, g.items.map((i) => i.title)]);
 
     test('an unready entry the user may see comes back flagged soon', () => {
-        const r = filterNavigation(navigation, ['exit.clearance']);
-        const exit = r
+        const groups: NavGroup[] = [
+            {
+                label: 'G',
+                items: [{ title: 'Later', href: '/later', ready: false }],
+            },
+        ];
+        const r = filterNavigation(groups, []);
+        expect(r[0].items[0].soon).toBe(true);
+    });
+
+    test('Resignations & Clearance is ready for exit.clearance and exit.approve-team', () => {
+        for (const perm of ['exit.clearance', 'exit.approve-team']) {
+            const exit = filterNavigation(navigation, [perm])
+                .flatMap((g) => g.items)
+                .find((i) => i.title === 'Resignations & Clearance');
+            expect(exit?.soon).toBe(false);
+            expect(toUrl(exit?.href ?? '')).toBe('/exit');
+        }
+
+        const without = filterNavigation(navigation, ['employees.view-all'])
             .flatMap((g) => g.items)
-            .find((i) => i.title === 'Resignations & Clearance');
-        expect(exit?.soon).toBe(true);
+            .map((i) => i.title);
+        expect(without).not.toContain('Resignations & Clearance');
+    });
+
+    test('My Resignation is in My Space for everyone, ready, with no permission', () => {
+        const entry = filterNavigation(navigation, [])
+            .find((g) => g.label === 'My Space')
+            ?.items.find((i) => i.title === 'My Resignation');
+        expect(entry?.soon).toBe(false);
+        expect(toUrl(entry?.href ?? '')).toBe('/my/resignation');
+        expect(entry?.permission).toBeUndefined();
     });
 
     test('the Calendar is ready for every signed-in user', () => {
@@ -328,11 +360,13 @@ describe('soon entries (default)', () => {
                     'My Payslips',
                     'My Assets',
                     'My Reviews',
+                    'My Resignation',
                 ],
             ],
         ]);
         const soon = r.flatMap((g) => g.items).map((i) => i.soon);
         expect(soon).toEqual([
+            false,
             false,
             false,
             false,
@@ -495,14 +529,14 @@ describe('soon entries (default)', () => {
         expect(parent.children).toBeUndefined();
     });
 
-    test('search matches a soon entry by title', () => {
+    test('search matches the exit entry by title', () => {
         const r = filterNavigation(
             navigation,
             ['exit.clearance'],
             'resignations',
         );
         expect(titlesOf(r)).toEqual([['Exit', ['Resignations & Clearance']]]);
-        expect(r[0].items[0].soon).toBe(true);
+        expect(r[0].items[0].soon).toBe(false);
     });
 
     test('search with no match returns an empty list', () => {
@@ -511,7 +545,7 @@ describe('soon entries (default)', () => {
         );
     });
 
-    test('group labels stay even when every entry is soon', () => {
+    test('the Exit group shows for exit.clearance', () => {
         const r = filterNavigation(navigation, ['exit.clearance']);
         expect(r.map((g) => g.label)).toContain('Exit');
     });
@@ -541,6 +575,7 @@ describe('soon entries (default)', () => {
             'Employees',
             'Organization Chart',
             'Departments & Designations',
+            'Resignations & Clearance',
             'Settings',
             'Users & Roles',
             'Audit Log',
@@ -550,6 +585,7 @@ describe('soon entries (default)', () => {
             'My Payslips',
             'My Assets',
             'My Reviews',
+            'My Resignation',
         ]);
     });
 

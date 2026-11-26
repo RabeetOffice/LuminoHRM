@@ -6,6 +6,7 @@ import {
     CalendarDays,
     CalendarRange,
     Clock,
+    DoorClosed,
     DoorOpen,
     FileText,
     LayoutGrid,
@@ -39,6 +40,7 @@ import {
     assets as myAssets,
     attendance as myAttendance,
     leaves as myLeaves,
+    resignation as myResignation,
 } from '@/routes/my';
 import { index as organizationIndex } from '@/routes/organization';
 import { index as usersIndex } from '@/routes/users';
@@ -78,8 +80,6 @@ export type FilterOptions = {
      */
     includeUnready?: boolean;
 };
-
-const unready = { ready: false } as const;
 
 export const navigation: NavGroup[] = [
     {
@@ -233,7 +233,6 @@ export const navigation: NavGroup[] = [
                 href: '/exit',
                 icon: DoorOpen,
                 permission: ['exit.clearance', 'exit.approve-team'],
-                ...unready,
             },
         ],
     },
@@ -292,6 +291,11 @@ export const navigation: NavGroup[] = [
                 title: 'My Reviews',
                 href: '/my/reviews',
                 icon: Star,
+            },
+            {
+                title: 'My Resignation',
+                href: myResignation(),
+                icon: DoorClosed,
             },
         ],
     },

@@ -245,7 +245,7 @@ class EmployeeProfileResource extends JsonResource
      * The Exit tab: the exits this viewer may see for the person (newest first), the open one apart. The link goes to the exit
      * page for HR, Admin and managers, to My Resignation for the person themself. Settlement figures only with payroll.view.
      *
-     * @return array{current: array<string, mixed>|null, history: list<array<string, mixed>>, can_record: bool}
+     * @return array{current: array<string, mixed>|null, history: list<array<string, mixed>>, can_record: bool, today: string, types: list<string>}
      */
     private function exit(): array
     {
@@ -263,7 +263,11 @@ class EmployeeProfileResource extends JsonResource
             ? FinalSettlement::query()->whereIn('resignation_id', $exits->modelKeys())->get(['resignation_id', 'status', 'net'])->keyBy('resignation_id')
             : collect();
 
-        $rows = $exits->map(function (Resignation $r) use ($routing, $money, $page, $settlements): array {
+        $open = $exits->first(fn (Resignation $r) => $r->isOpen());
+        $current = null;
+        $history = [];
+
+        foreach ($exits as $r) {
             $settlement = $settlements->get($r->id);
             $row = ExitView::row($r, $routing, $money, $settlement?->status);
             $row['url'] = $page ? '/exit/'.$r->id : '/my/resignation';
@@ -272,17 +276,22 @@ class EmployeeProfileResource extends JsonResource
                 $row['net'] = (int) $settlement->net;
             }
 
-            return $row;
-        });
-
-        $open = $exits->first(fn (Resignation $r) => $r->isOpen());
+            if ($open !== null && $r->is($open)) {
+                $current = $row;
+            } else {
+                $history[] = $row;
+            }
+        }
 
         return [
-            'current' => $open === null ? null : $rows[$exits->search($open)],
-            'history' => $rows->reject(fn (array $row) => $open !== null && $row['id'] === $open->id)->values()->all(),
+            'current' => $current,
+            'history' => $history,
             'can_record' => $open === null
                 && in_array($this->resource->status, ['active', 'probation'], true)
                 && $routing->mayRecordFor($this->viewer, $this->resource),
+            // For the "Record exit" dialog: the attendance day and the types it offers.
+            'today' => app(AttendanceClock::class)->attendanceToday(),
+            'types' => array_values(array_map('strval', (array) config('hrm.exit.types'))),
         ];
     }
 

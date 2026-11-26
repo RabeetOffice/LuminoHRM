@@ -38,11 +38,11 @@ final class DashboardExits
 
         return [
             'count' => count($ids),
-            'items' => $rows->map(fn (Resignation $r) => [
+            'items' => array_values($rows->map(fn (Resignation $r) => [
                 'id' => (int) $r->id,
                 'label' => $r->employee->full_name.' · '.$r->stageLabel(),
                 'url' => '/exit/'.$r->id,
-            ])->values()->all(),
+            ])->all()),
         ];
     }
 
@@ -66,14 +66,13 @@ final class DashboardExits
             return ['count' => 0, 'names' => [], 'more' => 0];
         }
 
-        $names = $base()
+        $names = array_values($base()
             ->orderBy('resignations.last_working_day')
             ->orderBy('resignations.id')
             ->limit(self::NAMES)
             ->get(['employees.first_name', 'employees.last_name'])
             ->map(fn ($row) => trim($row->first_name.' '.$row->last_name))
-            ->values()
-            ->all();
+            ->all());
 
         return ['count' => $count, 'names' => $names, 'more' => max(0, $count - self::NAMES)];
     }

@@ -25,7 +25,7 @@ use Illuminate\Http\Request;
  * The final settlement's writes. Every route needs exit.clearance and payroll.view (Admin, HR): a Manager or an Employee
  * is 403 before anything is read. The exit must be one the user may see (403 otherwise); each action then checks that the
  * user may edit or approve THIS settlement (SettlementAccess) under its locks. Refusals are validation errors keyed
- * `settlement` (the whole action) or by field; the screen shows them.
+ * `settlement` (the whole action) or by field (`amount`, `label`, `reason`, `paid_on`...); the screen shows every one.
  */
 class SettlementController extends Controller
 {

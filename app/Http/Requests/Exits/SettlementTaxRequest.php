@@ -25,7 +25,7 @@ class SettlementTaxRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'amount' => ['nullable', 'integer', 'min:0', 'max:99999999'],
+            'amount' => ['nullable', 'integer', 'min:0', 'max:10000000'],
             'reason' => ['nullable', 'string', 'max:300'],
         ];
     }
@@ -34,9 +34,9 @@ class SettlementTaxRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'amount.integer' => 'Enter the tax in whole rupees.',
-            'amount.min' => 'Enter the tax in whole rupees.',
-            'amount.max' => 'Enter the tax in whole rupees.',
+            'amount.integer' => 'Enter a tax amount between 0 and 10,000,000 rupees.',
+            'amount.min' => 'Enter a tax amount between 0 and 10,000,000 rupees.',
+            'amount.max' => 'Enter a tax amount between 0 and 10,000,000 rupees.',
             'reason.max' => 'The reason can be at most 300 characters.',
         ];
     }

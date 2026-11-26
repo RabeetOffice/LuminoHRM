@@ -151,7 +151,7 @@ class ExitController extends Controller
                     'code' => $e->employee_code,
                     'name' => $e->full_name,
                     'department' => $e->department?->name,
-                    'joining_date' => $e->joining_date?->format('Y-m-d'),
+                    'joining_date' => $e->joining_date->format('Y-m-d'),
                 ])->values()->all(),
         ]);
     }

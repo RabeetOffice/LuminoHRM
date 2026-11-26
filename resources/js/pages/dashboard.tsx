@@ -5,6 +5,14 @@ import { MyAssetsCard } from '@/components/assets/assets-panel';
 import type { MyAssets } from '@/components/assets/assets-panel';
 import { Avatar } from '@/components/hrm/avatar';
 import { PageHeader } from '@/components/hrm/page-header';
+import {
+    ExitsWaitingCard,
+    UpcomingLeaversCard,
+} from '@/components/exit/dashboard-cards';
+import type {
+    ExitsWaiting,
+    UpcomingLeavers,
+} from '@/components/exit/dashboard-cards';
 import { WaitingReviewsCard } from '@/components/performance/waiting-reviews-card';
 import type { WaitingReviews } from '@/components/performance/waiting-reviews-card';
 import {
@@ -129,6 +137,10 @@ type Props = {
     myAssets?: MyAssets;
     /** Reviews waiting on the viewer (everyone with an employee record); the card shows only above zero. */
     waitingReviews?: WaitingReviews;
+    /** Exits waiting on the viewer (exit.clearance, exit.approve-team, exit.manage); the card shows only above zero. */
+    exitsWaiting?: ExitsWaiting;
+    /** Approved exits whose last day is in the next 30 days (exit.clearance only). */
+    upcomingLeavers?: UpcomingLeavers;
 };
 
 const SERIES_META: Record<TrendSeriesKey, { label: string; bar: string }> = {
@@ -156,6 +168,8 @@ export default function Dashboard({
     latestPayslip,
     myAssets,
     waitingReviews,
+    exitsWaiting,
+    upcomingLeavers,
 }: Props) {
     const { auth, app } = usePage().props;
     const can = useCan();
@@ -362,6 +376,8 @@ export default function Dashboard({
                             myReviewsHref={myReviews.url()}
                         />
                     )}
+                    <ExitsWaitingCard waiting={exitsWaiting} />
+                    <UpcomingLeaversCard leavers={upcomingLeavers} />
                     {birthdays && <BirthdaysCard people={birthdays} />}
                 </section>
             </div>

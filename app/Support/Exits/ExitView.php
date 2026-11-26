@@ -11,7 +11,7 @@ use App\Models\Resignation;
 use App\Models\User;
 use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\Leavers;
-use App\Support\Payroll\PayrollAccess;
+use App\Support\Payroll\Money;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 
@@ -51,7 +51,7 @@ final class ExitView
         $approved = $resignation->status === ExitStates::APPROVED;
 
         $settlement = $money || ($own && $approved)
-            ? FinalSettlement::query()->where('resignation_id', $resignation->id)->first(['id', 'resignation_id', 'status', 'month'])
+            ? FinalSettlement::query()->where('resignation_id', $resignation->id)->first(['id', 'resignation_id', 'employee_id', 'status', 'month'])
             : null;
 
         $props = [
@@ -99,8 +99,9 @@ final class ExitView
             $props['clearance'] = self::clearance($resignation, $manage && $money && ! ($settlement?->isFrozen() ?? false));
         }
 
-        if ($money) {
-            $props['settlement'] = $approved ? self::settlement($user, $resignation, $routing, $manage) : null;
+        // A person's own settlement is theirs to read only once it is approved (SettlementAccess::mayView).
+        if ($money && $approved && ($settlement === null || SettlementAccess::mayView($user, $settlement))) {
+            $props['settlement'] = self::settlement($user, $resignation, $routing, $manage);
         }
 
         if ($admin && $approved) {
@@ -309,11 +310,14 @@ final class ExitView
     private static function settlement(User $user, Resignation $resignation, ExitRouting $routing, bool $manage): array
     {
         $settlement = FinalSettlement::query()->with('lines')->where('resignation_id', $resignation->id)->first();
-        $employee = $resignation->employee;
-        $mayEditSalary = $manage && PayrollAccess::mayEditSalary($user, $employee);
+        $refusal = SettlementAccess::editRefusal($user, $resignation, $routing);
 
         if ($settlement === null) {
-            return ['exists' => false, 'can' => ['prepare' => $mayEditSalary, 'edit' => false, 'approve' => false, 'paid' => false]];
+            return [
+                'exists' => false,
+                'edit_refusal' => $refusal,
+                'can' => ['prepare' => SettlementAccess::mayEditFor($user, $resignation, $routing), 'edit' => false, 'approve' => false, 'paid' => false],
+            ];
         }
 
         $draft = $settlement->status === 'draft';
@@ -327,9 +331,11 @@ final class ExitView
         }
 
         $edit = $draft && SettlementAccess::mayEdit($user, $settlement);
+        $daysPaid = (int) ($breakdown['period']['days_paid'] ?? 0);
 
         return [
             'exists' => true,
+            'edit_refusal' => $refusal,
             'id' => (int) $settlement->id,
             'status' => $settlement->status,
             'month' => $settlement->month,
@@ -343,6 +349,8 @@ final class ExitView
             ],
             'loans' => array_values((array) ($detail['loans'] ?? [])),
             'loan_shortfall' => (int) $settlement->loan_shortfall,
+            // A hint for the notice-shortfall line: what one paid day of the final month came to (earned basic + allowances / days paid).
+            'day_pay' => $daysPaid > 0 ? Money::div((int) $settlement->basic + (int) $settlement->allowances, $daysPaid) : null,
             'owed_by_employee' => max(0, -1 * (int) $settlement->net),
             'lines' => $settlement->lines->map(fn (FinalSettlementLine $line) => [
                 'id' => (int) $line->id,
@@ -357,7 +365,7 @@ final class ExitView
                 'amount' => $settlement->tax_overridden ? (int) $settlement->tax_override : null,
                 'reason' => $settlement->tax_overridden ? $settlement->tax_override_reason : null,
             ],
-            'checks' => $draft ? array_values(SettlementChecks::for($settlement)) : [],
+            'checks' => $draft ? SettlementChecks::for($settlement) : [],
             'approved_at' => self::day($settlement->approved_at),
             'approved_by' => $names[$settlement->approved_by] ?? null,
             'own_settlement' => (bool) $settlement->own_settlement,
@@ -390,7 +398,7 @@ final class ExitView
         ];
     }
 
-    /** @return array{applied: bool, text: string|null, error: string|null} */
+    /** @return array{applied: bool, on: string|null, status: string, error: string|null} */
     private static function statusLine(Resignation $resignation): array
     {
         $applied = $resignation->status_applied_at !== null;
@@ -415,7 +423,7 @@ final class ExitView
             return [];
         }
 
-        return FinalSettlement::query()->whereIn('resignation_id', $resignations->modelKeys())->pluck('status', 'resignation_id')
+        return FinalSettlement::query()->whereIn('resignation_id', $resignations->pluck('id')->all())->pluck('status', 'resignation_id')
             ->mapWithKeys(fn ($status, $id) => [(int) $id => (string) $status])->all();
     }
 }

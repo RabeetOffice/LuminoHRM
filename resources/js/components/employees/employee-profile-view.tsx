@@ -11,6 +11,8 @@ import {
 } from 'lucide-react';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
+import { ExitTab } from '@/components/exit/exit-tab';
+import type { ProfileExit } from '@/components/exit/exit-tab';
 import { AssetsPanel } from '@/components/assets/assets-panel';
 import type { ProfileAssets } from '@/components/assets/assets-panel';
 import { DocumentsPanel } from '@/components/employees/documents-panel';
@@ -100,6 +102,8 @@ export type EmployeeProfile = {
     assets?: ProfileAssets;
     /** The person's closed reviews, newest first. */
     reviews?: ProfileReviews;
+    /** The open exit and the history: HR and Admin, and whoever may see one of this person's exits. */
+    exit?: ProfileExit;
 };
 
 /** One salary profile on the Salary tab. Money in paisa. */
@@ -426,6 +430,7 @@ export function EmployeeProfileView({
         salary,
         assets,
         reviews,
+        exit,
     } = employee;
 
     const activeTab =
@@ -615,6 +620,16 @@ export function EmployeeProfileView({
         ),
         assets: assets && <AssetsPanel assets={assets} date={date} />,
         reviews: reviews && <ReviewsPanel reviews={reviews} date={date} />,
+        exit: exit && (
+            <ExitTab
+                exit={exit}
+                person={{
+                    id: employee.id,
+                    code: employee.code,
+                    name: employee.name,
+                }}
+            />
+        ),
     };
 
     return (
