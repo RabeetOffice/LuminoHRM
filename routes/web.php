@@ -173,6 +173,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // Performance > a review's workflow (signed in only: ReviewAccess decides, 403 otherwise; each action re-checks the actor
     // under its locks). Static performance/reviews/... routes go above these.
     Route::prefix('performance/reviews/{review}')->name('performance.reviews.')->controller(\App\Http\Controllers\Performance\ReviewController::class)->group(function () {
+        Route::get('/', 'show')->whereNumber('review')->name('show');
         Route::put('self', 'selfDraft')->whereNumber('review')->name('self-draft');
         Route::post('self/submit', 'selfSubmit')->whereNumber('review')->name('self-submit');
         Route::post('waive', 'waive')->whereNumber('review')->name('waive');

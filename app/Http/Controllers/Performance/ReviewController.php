@@ -20,16 +20,27 @@ use App\Http\Requests\Performance\SendBackRequest;
 use App\Http\Requests\Performance\SkipRequest;
 use App\Models\Review;
 use App\Support\Performance\ReviewAccess;
+use App\Support\Performance\ReviewView;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Inertia\Inertia;
+use Inertia\Response;
 
 /**
- * The review workflow's writes (Task 5 adds show). Routes are auth only: a review outside the viewer's ReviewAccess::scope
+ * The review page and the review workflow's writes. Routes are auth only: a review outside the viewer's ReviewAccess::scope
  * is 403, and each action checks the actor again under the locks (AuthorizationException -> 403). Refusals come back as
  * validation errors.
  */
 class ReviewController extends Controller
 {
+    /** The review page. The props come from ReviewView only; a review the viewer may not open is 403. */
+    public function show(Request $request, int $review): Response
+    {
+        $found = $this->visible($request, $review);
+
+        return Inertia::render('performance/review', ReviewView::for($request->user(), $found));
+    }
+
     public function selfDraft(RatingsRequest $request, int $review, SaveSelfRatings $action): RedirectResponse
     {
         $action->handle($request->user(), $this->visible($request, $review), $request->ratings());
