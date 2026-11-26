@@ -23,7 +23,7 @@ class ChangeAssetStatus
             $locked = Asset::query()->whereKey($asset->getKey())->lockForUpdate()->firstOrFail();
 
             return $this->within($by, $locked, $to);
-        });
+        }, 3);
     }
 
     /**

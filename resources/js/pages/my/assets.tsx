@@ -23,8 +23,6 @@ type MyAssetRow = {
     returned_on: string | null;
     condition_out: string;
     return_condition: string | null;
-    note: string | null;
-    return_note: string | null;
 };
 
 type Props = {
@@ -72,14 +70,6 @@ export default function MyAssets({ employee, holding, history }: Props) {
                         {row.return_condition &&
                             ` · Back: ${assetConditionLabel(row.return_condition)}`}
                     </span>
-                    {(row.note || row.return_note) && (
-                        <span className="grid gap-0.5 text-xs break-words text-muted-foreground lg:hidden">
-                            {row.note && <span>Out: {row.note}</span>}
-                            {row.return_note && (
-                                <span>Back: {row.return_note}</span>
-                            )}
-                        </span>
-                    )}
                 </div>
             ),
         },
@@ -111,24 +101,6 @@ export default function MyAssets({ employee, holding, history }: Props) {
                     )}
                 </div>
             ),
-        },
-        {
-            key: 'notes',
-            header: 'Notes',
-            className: 'hidden lg:table-cell',
-            cell: (row) => {
-                const notes = [row.note, row.return_note].filter(Boolean);
-
-                return notes.length === 0 ? (
-                    <span className="text-muted-foreground">–</span>
-                ) : (
-                    <div className="grid gap-0.5 text-sm">
-                        {notes.map((note, index) => (
-                            <span key={index}>{note}</span>
-                        ))}
-                    </div>
-                );
-            },
         },
     ];
 
@@ -201,12 +173,6 @@ export default function MyAssets({ employee, holding, history }: Props) {
                                                         asset.condition_out,
                                                     )}
                                                 />
-                                                {asset.note && (
-                                                    <Line
-                                                        label="Note"
-                                                        value={asset.note}
-                                                    />
-                                                )}
                                             </dl>
                                         </li>
                                     ))}

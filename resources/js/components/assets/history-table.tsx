@@ -44,22 +44,22 @@ export function HistoryTable({
                     <span className="text-xs font-normal text-muted-foreground">
                         {row.employee.code}
                     </span>
-                    {/* The columns hidden on narrow screens, stacked under the name. */}
-                    <span className="text-xs font-normal text-muted-foreground md:hidden">
+                    {/* The columns hidden below xl (a laptop with the sidebar open has about 650px), stacked under the name. */}
+                    <span className="text-xs font-normal text-muted-foreground xl:hidden">
                         {period(row, dateFormat)}
                     </span>
-                    <span className="text-xs font-normal text-muted-foreground sm:hidden">
+                    <span className="text-xs font-normal text-muted-foreground xl:hidden">
                         {conditionText(row)}
                     </span>
                     {(row.note || row.return_note) && (
-                        <span className="grid gap-0.5 text-xs font-normal break-words whitespace-normal text-muted-foreground lg:hidden">
+                        <span className="grid gap-0.5 text-xs font-normal break-words whitespace-normal text-muted-foreground xl:hidden">
                             {row.note && <span>Out: {row.note}</span>}
                             {row.return_note && (
                                 <span>Back: {row.return_note}</span>
                             )}
                         </span>
                     )}
-                    <span className="text-xs font-normal text-muted-foreground xl:hidden">
+                    <span className="text-xs font-normal text-muted-foreground 2xl:hidden">
                         {recordedBy(row)}
                     </span>
                 </div>
@@ -68,7 +68,7 @@ export function HistoryTable({
         {
             key: 'period',
             header: 'Held',
-            className: 'hidden whitespace-nowrap tabular-nums md:table-cell',
+            className: 'hidden whitespace-nowrap tabular-nums xl:table-cell',
             cell: (row) => period(row, dateFormat),
         },
         {
@@ -84,13 +84,13 @@ export function HistoryTable({
         {
             key: 'condition',
             header: 'Condition',
-            className: 'hidden whitespace-nowrap sm:table-cell',
+            className: 'hidden whitespace-nowrap xl:table-cell',
             cell: (row) => conditionText(row),
         },
         {
             key: 'notes',
             header: 'Notes',
-            className: 'hidden max-w-64 text-muted-foreground lg:table-cell',
+            className: 'hidden max-w-64 text-muted-foreground xl:table-cell',
             cell: (row) => (
                 <div className="grid gap-1 text-sm break-words whitespace-normal">
                     {row.note && <span>Out: {row.note}</span>}
@@ -102,7 +102,7 @@ export function HistoryTable({
         {
             key: 'by',
             header: 'Recorded by',
-            className: 'hidden text-muted-foreground xl:table-cell',
+            className: 'hidden text-muted-foreground 2xl:table-cell',
             cell: (row) => (
                 <div className="grid gap-0.5 text-sm">
                     <span>Out: {row.assigned_by ?? '–'}</span>

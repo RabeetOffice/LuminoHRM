@@ -94,8 +94,6 @@ class MyAssetController extends Controller
             'returned_on' => $a->returned_on?->format('Y-m-d'),
             'condition_out' => $a->condition_out,
             'return_condition' => $a->return_condition,
-            'note' => $a->note,
-            'return_note' => $a->return_note,
         ];
     }
 }

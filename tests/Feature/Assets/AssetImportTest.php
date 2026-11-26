@@ -442,6 +442,56 @@ it('checks the rows again under the locks: a hand-over made just as the run begi
         ->and(Activity::query()->where('description', 'Asset assigned')->count())->toBe(0);
 });
 
+it('refuses the run when a row would now need an asset it did not lock: a serial that gained an owner after the preview', function () {
+    $hr = userWithRole('hr');
+
+    // A new asset with the serial NEW-1: the preview says "new asset".
+    $preview = ariPreview($hr, ariXlsx([ariRow(['Name' => 'From file', 'Serial' => 'NEW-1'])]));
+    expect($preview['rows'][0]['action'])->toBe('New asset');
+
+    // When the run's transaction opens, another asset with that serial exists: the re-check now reads the row as an update
+    // of an asset the run never listed, so it is refused, not written.
+    $intruder = null;
+    Event::listen(TransactionBeginning::class, function () use (&$intruder): void {
+        $intruder ??= assetRow(['asset_code' => 'AST-0001', 'serial_number' => 'NEW-1', 'name' => 'Intruder']);
+    });
+
+    ariRun($hr, $preview['token'])->assertSessionHas('error', EmployeeImportController::CHANGED);
+
+    // The intruder is written on the test's connection, so the refused run rolls it back with everything else.
+    expect($intruder)->not->toBeNull()
+        ->and(Asset::query()->where('name', 'From file')->count())->toBe(0)
+        ->and(Asset::query()->count())->toBe(0)
+        ->and(ariImports())->toBe(0)
+        ->and(Activity::query()->where('description', 'Asset updated')->count())->toBe(0);
+});
+
+it('refuses the run when a row would now need an employee it did not lock: an employee code that moved', function () {
+    $hr = userWithRole('hr');
+    $sara = ariSara();
+    $other = aaPerson(['employee_code' => 'LD-0199', 'first_name' => 'Omar', 'last_name' => 'Sheikh']);
+
+    $preview = ariPreview($hr, ariXlsx([ariRow(['Name' => 'Handed', 'Serial' => 'S-9', 'Status' => 'Assigned', 'Holder Employee Code' => 'LD-0101', 'Assigned Date' => '2026-11-20'])]));
+    expect($preview['totals']['errors'])->toBe(0);
+
+    // The code LD-0101 moves to another person when the run starts.
+    $moved = false;
+    Event::listen(TransactionBeginning::class, function () use (&$moved, $sara, $other): void {
+        if (! $moved) {
+            $moved = true;
+            Employee::query()->whereKey($sara->id)->update(['employee_code' => 'LD-0100']);
+            Employee::query()->whereKey($other->id)->update(['employee_code' => 'LD-0101']);
+        }
+    });
+
+    ariRun($hr, $preview['token'])->assertSessionHas('error', EmployeeImportController::CHANGED);
+
+    expect($moved)->toBeTrue()
+        ->and(Asset::query()->count())->toBe(0)
+        ->and(AssetAssignment::query()->count())->toBe(0)
+        ->and(ariImports())->toBe(0);
+});
+
 it('runs one import at a time, whatever the upload token', function () {
     $hr = userWithRole('hr');
     $preview = ariPreview($hr, ariXlsx([ariRow()]));

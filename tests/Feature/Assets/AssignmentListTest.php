@@ -147,15 +147,37 @@ it('gives a Manager only their team, read-only, and no cost anywhere', function 
         ->where('assignments.data.1.asset.code', 'AST-0002'));
 
     $json = json_encode($response->viewData('page')['props']);
-    expect($json)->not->toContain('cost')->not->toContain('AST-0003')->not->toContain('AST-0004');
+    expect($json)->not->toContain('cost')->not->toContain('purchase_date')->not->toContain('AST-0003')->not->toContain('AST-0004');
 });
+
+it('keeps a Manager search inside their team, whatever the term matches', function (string $term, int $total) {
+    $manager = userWithRole('manager');
+    $me = employeeFor($manager, ['first_name' => 'Mona', 'last_name' => 'Khan']);
+    $report = Employee::factory()->create(['manager_id' => $me->id, 'first_name' => 'Rida', 'last_name' => 'Team', 'employee_code' => 'EMP-0301']);
+    $other = Employee::factory()->create(['first_name' => 'Rida', 'last_name' => 'Outsider', 'employee_code' => 'EMP-0302']);
+    assignedAsset($report, ['asset_code' => 'AST-0001', 'serial_number' => 'SN-SHARED-1', 'name' => 'Shared Laptop']);
+    assignedAsset($other, ['asset_code' => 'AST-0002', 'serial_number' => 'SN-SHARED-2', 'name' => 'Shared Laptop']);
+    assignedAsset($other, ['asset_code' => 'AST-0003', 'serial_number' => 'SN-OUT-3', 'name' => 'Outside Phone', 'returned_on' => '2026-11-10', 'return_condition' => 'good', 'assigned_on' => '2026-11-01']);
+
+    $response = $this->actingAs($manager)->get('/assets/assignments?status=all&'.http_build_query(['search' => $term]))->assertOk();
+
+    $response->assertInertia(fn (Assert $page) => $page->where('assignments.total', $total));
+    // The search box echoes the term in `filters`, so only the rows are searched for the outsider's data.
+    expect(json_encode($response->viewData('page')['props']['assignments']))->not->toContain('AST-0002')->not->toContain('AST-0003')->not->toContain('Outsider');
+})->with([
+    'asset name shared with an outsider' => ['shared laptop', 1],
+    'first name shared with an outsider' => ['rida', 1],
+    'outsider asset code' => ['AST-0002', 0],
+    'outsider employee code' => ['EMP-0302', 0],
+    'outsider serial' => ['SN-OUT', 0],
+]);
 
 it('never sends a cost to Admin or HR either', function (string $role) {
     assignedAsset(Employee::factory()->create(), ['asset_code' => 'AST-0001', 'cost' => 9900000]);
 
     $json = json_encode(assignmentsAs($role)->viewData('page')['props']);
 
-    expect($json)->not->toContain('cost')->not->toContain('9900000');
+    expect($json)->not->toContain('cost')->not->toContain('9900000')->not->toContain('purchase_date');
 })->with(['admin', 'hr']);
 
 it('refuses an Employee and a guest', function () {

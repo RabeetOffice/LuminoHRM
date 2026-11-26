@@ -66,11 +66,22 @@ const ALL = 'all';
 const IMPORT_HREF = '/assets/import';
 const EXPORT_HREF = '/assets/export';
 
-function CodeBadge({ code }: { code: string }) {
+const BADGE =
+    'inline-flex rounded-md bg-blue-50 px-2 py-0.5 text-xs font-medium whitespace-nowrap text-blue-700 dark:bg-blue-500/15 dark:text-blue-300';
+
+/** The asset code; a link to the asset page unless the viewer may not open it (the read-only team list). */
+function CodeBadge({ code, id }: { code: string; id?: number }) {
+    if (id === undefined) {
+        return <span className={BADGE}>{code}</span>;
+    }
+
     return (
-        <span className="inline-flex rounded-md bg-blue-50 px-2 py-0.5 text-xs font-medium whitespace-nowrap text-blue-700 dark:bg-blue-500/15 dark:text-blue-300">
+        <Link
+            href={show(id)}
+            className={`${BADGE} hover:underline focus-visible:underline`}
+        >
             {code}
-        </span>
+        </Link>
     );
 }
 
@@ -114,7 +125,12 @@ export default function Assets({
             key: 'code',
             header: 'Asset ID',
             className: 'hidden whitespace-nowrap sm:table-cell',
-            cell: (row) => <CodeBadge code={row.asset_code} />,
+            cell: (row) => (
+                <CodeBadge
+                    code={row.asset_code}
+                    id={team ? undefined : row.id}
+                />
+            ),
         },
         {
             key: 'name',
@@ -124,7 +140,10 @@ export default function Assets({
                 <div className="grid gap-0.5">
                     {/* The ID column is hidden on a phone: the badge moves under the name. */}
                     <span className="sm:hidden">
-                        <CodeBadge code={row.asset_code} />
+                        <CodeBadge
+                            code={row.asset_code}
+                            id={team ? undefined : row.id}
+                        />
                     </span>
                     {team ? (
                         <span>{row.name}</span>
@@ -136,14 +155,21 @@ export default function Assets({
                             {row.name}
                         </Link>
                     )}
-                    {/* The columns hidden on smaller screens, as one line under the name. */}
-                    <span className="text-xs font-normal text-muted-foreground lg:hidden">
-                        {[row.category, row.serial_number]
+                    {/* The columns hidden below xl (a laptop with the sidebar open has about 650px), stacked under the name. */}
+                    <span className="text-xs font-normal text-muted-foreground xl:hidden">
+                        {[
+                            row.category,
+                            row.serial_number,
+                            assetConditionLabel(row.condition),
+                            row.cost === null || row.cost === undefined
+                                ? null
+                                : formatMoney(row.cost),
+                        ]
                             .filter(Boolean)
                             .join(' · ')}
                     </span>
                     {row.holder && (
-                        <span className="text-xs font-normal text-muted-foreground md:hidden">
+                        <span className="text-xs font-normal text-muted-foreground xl:hidden">
                             Held by {personLabel(row.holder)}
                         </span>
                     )}
@@ -153,7 +179,7 @@ export default function Assets({
         {
             key: 'category',
             header: 'Category',
-            className: 'hidden text-muted-foreground lg:table-cell',
+            className: 'hidden text-muted-foreground xl:table-cell',
             cell: (row) => row.category ?? '–',
         },
         {
@@ -165,7 +191,7 @@ export default function Assets({
         {
             key: 'condition',
             header: 'Condition',
-            className: 'hidden sm:table-cell',
+            className: 'hidden xl:table-cell',
             cell: (row) => assetConditionLabel(row.condition),
         },
         {
@@ -176,7 +202,7 @@ export default function Assets({
         {
             key: 'holder',
             header: 'Held by',
-            className: 'hidden min-w-36 md:table-cell',
+            className: 'hidden min-w-36 xl:table-cell',
             cell: (row) =>
                 row.holder ? (
                     <div className="grid gap-0.5">
@@ -198,8 +224,8 @@ export default function Assets({
                       key: 'cost',
                       header: 'Cost',
                       className:
-                          'hidden text-right whitespace-nowrap tabular-nums md:table-cell',
-                      headerClassName: 'hidden text-right md:table-cell',
+                          'hidden text-right whitespace-nowrap tabular-nums xl:table-cell',
+                      headerClassName: 'hidden text-right xl:table-cell',
                       cell: (row: AssetRow) =>
                           row.cost === null || row.cost === undefined
                               ? '–'

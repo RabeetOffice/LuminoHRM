@@ -30,7 +30,7 @@ Success (phase gate): the real register is imported at go-live (holders included
 
 - All Phase 0 to 5 constraints hold: localhost only, no deploys; PHP at `C:\php84\php.exe`; focused tests while working; work on `main`, no branches; commit by explicit path; naive dates (`Y-m-d` strings, `onDate` / `betweenDates`), `AttendanceClock::attendanceToday()` as the only "today"; audit inside the same transaction; 403 for out-of-scope ids; money as integer paisa through `App\Support\Payroll\Money`.
 - **Permissions** already seeded (no new names, no `hrm:sync-access` change): `assets.manage` (admin), `assets.assign` (admin, hr), `assets.view-team` (admin, hr, manager). Everyone has My Assets.
-- **Locking** (MariaDB REPEATABLE READ): `DB::transaction(fn, 3)`; assign and return lock the **employee row first, then the asset row FOR UPDATE**, and decide after the locks (the project's "employee row first" rule). Edits, status changes and deletes of an asset lock only the asset row. Categories lock the category row. SQLite (tests) ignores row locks, so the order is proven by a statement-order test and the guarantee by a unique index (5.5).
+- **Locking** (MariaDB REPEATABLE READ): `DB::transaction(fn, 3)` on every asset write; assign and return lock the **employee row first, then the asset row FOR UPDATE**, and decide after the locks (the project's "employee row first" rule). Edits, status changes and deletes of an asset lock only the asset row. Categories lock the category row. SQLite (tests) ignores row locks, so the order is proven by a statement-order test and the guarantee by a unique index (5.5).
 - Shared hosting: no binaries; import and export with `maatwebsite/excel` as in Phase 5.
 
 ## 4. Approaches considered
@@ -115,7 +115,7 @@ Refused when the employee has any assignment, open or returned: "This employee h
 - A holder makes an open assignment under the same rules as 5.5 (active or probation employee; assigned date required, not in the future, not before joining; the asset must be available). A holder with a status other than `assigned` is an error; `assigned` without a holder is an error; blank status means `assigned` with a holder, else `available`. An asset already held: the same holder is unchanged (a different assigned date is only a warning); another holder, or a status other than assigned, is an error ("Return it on the asset page first"); the import never returns anything.
 - Status changes in a row follow 5.4, so `retired` rows need `assets.manage` and HR gets a row error for them.
 - Category must already exist (unknown is a row error). Cost is whole rupees. Condition is required on a new asset and kept when blank on an update.
-- Audit: one entry with counts only (5.12).
+- Audit: one entry per changed row (created, updated, status changed, assigned) plus one `Assets imported` entry with the counts (5.12).
 
 ### 5.11 Export
 
@@ -128,18 +128,19 @@ Area `assets` (added to `Audit::AREAS`; section in `docs/audit-log.md`). Written
 - `Asset created`, `Asset updated` (old and new values), `Asset deleted` (keeps code and name), `Asset status changed` (old and new, by hand only).
 - `Asset assigned` and `Asset returned` (subject the employee; asset id, code and name, dates, conditions, notes; a return also holds the next status), `Asset assignment note changed`.
 - `Asset category created`, `updated`, `deleted`.
-- `Assets imported` (counts only: rows, created, updated, unchanged, assigned) and `Assets exported` (rows and filters, written before the file is built). Import rows write no per-row entries.
+- `Assets imported` (counts only: rows, created, updated, unchanged, assigned) and `Assets exported` (rows and filters, written before the file is built). An import also writes one entry per changed row, through the same actions as a hand edit (`Asset created`, `Asset updated`, `Asset status changed`, `Asset assigned`), so each asset has a full trail; unchanged rows write none.
 
 ### 5.13 Locking summary
 
 | Action | Order |
 |---|---|
 | Assign, Return | employee row FOR UPDATE, then asset row FOR UPDATE |
+| Create | every asset row FOR UPDATE (the code scan), then the category row shared |
 | Edit, status change, delete | asset row FOR UPDATE (category row shared when the category changes) |
 | Category delete | category row FOR UPDATE, then the usage check |
-| Import run | one run at a time (cache lock); employees by id ascending, categories shared, assets by id ascending, then writes |
+| Import run | one run at a time (cache lock); employees by id ascending, categories shared, assets by id ascending (every asset row when the file has new rows, so the code scans find them locked), then writes |
 
-No path takes an asset row and then an employee row, so no cycle exists.
+No path takes an asset row and then an employee row, so no cycle exists. Create and edit both take asset rows before the category. The import takes its categories before its assets; the only cycle left (an import or create waiting on a category rename that waits on an edit) is narrow, and MariaDB resolves it by rolling one back: every asset transaction runs `DB::transaction(fn, 3)`, so it is retried.
 
 ## 6. Data (outline; the plan fixes columns)
 
@@ -154,7 +155,7 @@ No path takes an asset row and then an employee row, so no cycle exists.
 2. **Asset Code import column.** The decided column list has no code, but "re-import by asset code" needs one. Default: an optional leading Asset Code column.
 3. **No edit or undo of an open assignment.** A wrong hand-over is returned the same day and assigned again. Default: as stated; allowing edits while open is a small change.
 4. **Unknown category in an import row** is an error (not created on the fly).
-5. **Import audit** is counts only per the decision, so assignments made by an import have no `Asset assigned` entry.
+5. **Import audit** (ruled 26 Nov): one entry per changed row (created, updated, status changed, assigned) plus one `Assets imported` entry with the counts, so imported hand-overs have an `Asset assigned` entry like any other.
 6. **Two notes** per assignment (hand-over, return), both editable after the return.
 7. **Purchase date** may not be in the future, and an assignment may predate the purchase date (not checked).
 

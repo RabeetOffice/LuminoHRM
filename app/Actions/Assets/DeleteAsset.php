@@ -40,7 +40,7 @@ class DeleteAsset
                 $locked->delete();
 
                 Audit::record('assets', 'Asset deleted', $locked, ['old' => $kept], $by);
-            });
+            }, 3);
         } catch (QueryException $e) {
             // Only a foreign key refusal (SQLSTATE 23000): an assignment appeared after the check above.
             if ($e->getCode() !== '23000') {

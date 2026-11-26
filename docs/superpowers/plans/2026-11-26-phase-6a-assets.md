@@ -42,7 +42,7 @@
 2. Import has an optional leading **Asset Code** column so a re-import can match by code (Task 7).
 3. An open assignment cannot be edited or undone; fix = return the same day and assign again (Task 3).
 4. An unknown category in an import row is an error (Task 7).
-5. Import audit is counts only, so imported hand-overs have no `Asset assigned` entry (Task 7).
+5. Import audit: one entry per changed row (created, updated, status changed, assigned) plus one `Assets imported` entry with the counts (Task 7).
 6. Both notes of an assignment stay editable after the return (Task 3).
 7. Purchase date cannot be in the future; an assignment before the purchase date is not checked (Tasks 2, 3).
 

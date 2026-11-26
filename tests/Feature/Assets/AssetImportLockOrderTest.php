@@ -109,7 +109,7 @@ it('compiles the run\'s three lock queries to FOR UPDATE and LOCK IN SHARE MODE 
         ->toEndWith('order by `id` asc for update');
 });
 
-it('locks the employees ascending, then the categories, then the assets ascending, before writing', function () {
+it('with new rows, locks the employees ascending, then the categories, then every asset row ascending, before writing', function () {
     $hr = userWithRole('hr');
     // Ids deliberately out of file order.
     $third = aaPerson(['employee_code' => 'LD-0103']);
@@ -132,7 +132,7 @@ it('locks the employees ascending, then the categories, then the assets ascendin
 
     $employees = ailIndex($statements, fn ($s) => str_contains($s, 'from "employees"') && str_ends_with($s, '/* for update */'));
     $categories = ailIndex($statements, fn ($s) => str_contains($s, 'from "asset_categories"') && str_ends_with($s, '/* shared */'));
-    $assets = ailIndex($statements, fn ($s) => str_contains($s, 'from "assets" where "assets"."id" in') && str_ends_with($s, '/* for update */'));
+    $assets = ailIndex($statements, fn ($s) => str_contains($s, 'from "assets"') && str_ends_with($s, '/* for update */'));
     $firstWrite = ailIndex($statements, fn ($s) => str_starts_with($s, 'insert') || str_starts_with($s, 'update'));
 
     // The first three statements of the transaction are the three locks, in this order.
@@ -144,8 +144,11 @@ it('locks the employees ascending, then the categories, then the assets ascendin
         ->and($sql[0])->toContain('in ('.ailIds([$first->id, $second->id, $third->id]).')')
         ->and($sql[1])->toContain('order by "id" asc')
         ->and($sql[1])->toContain('in ('.ailIds([assetCategory('Laptop')->id, assetCategory('Phone')->id, assetCategory('Monitor')->id]).')')
-        ->and($sql[2])->toContain('order by "id" asc')
-        ->and($sql[2])->toContain('in ('.ailIds([$assetA->id, $assetB->id, $held->id]).')');
+        // A file with a new row locks the whole register once, ascending, with no id filter: the new row's code scan
+        // (AssetCode::next) then finds every row already locked by this transaction.
+        ->and($sql[2])->toContain('order by "id" asc')->not->toContain('"assets"."id" in')
+        ->and($sql[2])->not->toContain('where');
+    expect(array_filter($sql, fn ($s) => str_contains($s, 'from "assets"') && str_contains($s, '/*')))->toHaveCount(2);
 
     // Never an asset row locked before an employee row, and never an employee row locked after the assets.
     $assetLockBefore = array_filter(array_slice($sql, 0, $employees), fn ($s) => str_contains($s, 'from "assets"') && str_contains($s, '/*'));
@@ -157,6 +160,26 @@ it('locks the employees ascending, then the categories, then the assets ascendin
         ->and(array_filter($sql, fn ($s) => str_starts_with($s, 'insert into "asset_assignments"')))->toHaveCount(2);
 
     assertAssetInvariant();
+});
+
+it('without a new row, locks only the own assets of the file, ascending', function () {
+    $hr = userWithRole('hr');
+    $sara = aaPerson(['employee_code' => 'LD-0101']);
+    $assetB = assetRow(['asset_code' => 'AST-0001', 'serial_number' => 'B', 'name' => 'B']);
+    $assetA = assetRow(['asset_code' => 'AST-0002', 'serial_number' => 'A', 'name' => 'A']);
+    assetRow(['asset_code' => 'AST-0003', 'serial_number' => 'C', 'name' => 'C']);
+
+    $preview = ariPreview($hr, ariXlsx([
+        ['AST-0002', 'A', 'Laptop', null, null, null, null, null, 'LD-0101', '2026-11-25'],
+        ['AST-0001', 'B', 'Laptop', null, null, 5000, null, null, null, null],
+    ]));
+    expect($preview['totals']['errors'])->toBe(0);
+
+    $sql = array_column(ailRunStatements(fn () => ariRun($hr, $preview['token'])->assertSessionHas('success')), 'sql');
+
+    expect($sql[0])->toContain('from "employees"')->toContain('in ('.$sara->id.')')
+        ->and($sql[2])->toContain('from "assets" where "assets"."id" in')->toContain('in ('.ailIds([$assetA->id, $assetB->id]).')')
+        ->toEndWith('/* for update */');
 });
 
 it('takes no lock on employees or assets before its own transaction', function () {

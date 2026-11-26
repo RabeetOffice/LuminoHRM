@@ -25,13 +25,11 @@ it('shows the account its own current and past assets', function (string $role) 
         ->where('holding.0.assigned_on', '2026-11-20')
         ->where('holding.0.returned_on', null)
         ->where('holding.0.condition_out', 'good')
-        ->where('holding.0.note', 'With charger')
         ->where('history.total', 1)
         ->where('history.data.0.code', 'AST-0002')
         ->where('history.data.0.assigned_on', '2026-09-01')
         ->where('history.data.0.returned_on', '2026-10-15')
-        ->where('history.data.0.return_condition', 'fair')
-        ->where('history.data.0.return_note', 'Cracked screen'));
+        ->where('history.data.0.return_condition', 'fair'));
 })->with(['employee', 'manager', 'hr', 'admin']);
 
 it('never shows another person assets, even the same model', function () {
@@ -84,7 +82,26 @@ it('lists the history newest return first', function () {
         ->where('history.data.1.code', 'AST-0001'));
 });
 
-it('never sends a cost, to any role', function (string $role) {
+it('sends neither the hand-over note nor the return note, to any role', function (string $role) {
+    $user = userWithRole($role);
+    $me = employeeFor($user);
+    assignedAsset($me, ['asset_code' => 'AST-0001', 'assigned_on' => '2026-11-20', 'note' => 'With charger and bag']);
+    assignedAsset($me, ['asset_code' => 'AST-0002', 'assigned_on' => '2026-09-01', 'returned_on' => '2026-10-15', 'return_condition' => 'fair', 'return_note' => 'Cracked screen, discuss deduction']);
+
+    $props = $this->actingAs($user)->get('/my/assets')->assertOk()->viewData('page')['props'];
+
+    $keys = [];
+    array_walk_recursive($props, function ($value, $key) use (&$keys): void {
+        $keys[] = (string) $key;
+    });
+    $json = json_encode($props);
+
+    expect($keys)->not->toContain('note')->not->toContain('return_note')
+        ->and($json)->not->toContain('With charger')->not->toContain('Cracked screen')
+        ->and($json)->toContain('AST-0001')->toContain('AST-0002');
+})->with(['employee', 'manager', 'hr', 'admin']);
+
+it('never sends a cost or a purchase date, to any role', function (string $role) {
     $user = userWithRole($role);
     $me = employeeFor($user);
     assignedAsset($me, ['asset_code' => 'AST-0001', 'cost' => 12345600]);
@@ -92,7 +109,7 @@ it('never sends a cost, to any role', function (string $role) {
 
     $json = json_encode($this->actingAs($user)->get('/my/assets')->assertOk()->viewData('page')['props']);
 
-    expect($json)->not->toContain('cost')->not->toContain('12345600')->not->toContain('65432100');
+    expect($json)->not->toContain('cost')->not->toContain('12345600')->not->toContain('65432100')->not->toContain('purchase_date');
 })->with(['employee', 'manager', 'hr', 'admin']);
 
 it('gives an account without an employee record empty lists', function () {

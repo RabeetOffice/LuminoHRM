@@ -224,9 +224,12 @@ class AssetImportController extends Controller
     private function save(AssetRegisterImport $import, array $parsed, array $checked, User $user): array
     {
         $ids = self::ids($checked);
+        $hasNew = array_filter($checked, fn (array $row) => $row['data'] !== null && $row['data']['asset_id'] === null) !== [];
 
-        return DB::transaction(function () use ($import, $parsed, $user, $ids): array {
-            // 1. Every employee in the file, ascending id. 2. The categories, shared. 3. The existing assets, ascending id.
+        return DB::transaction(function () use ($import, $parsed, $user, $ids, $hasNew): array {
+            // 1. Every employee in the file, ascending id. 2. The categories, shared. 3. The existing assets, ascending id;
+            // with new rows, every asset row, ascending, once: each new row's AssetCode::next() scans them all, so the
+            // scan then finds them already locked by this transaction and cannot wait on a concurrent manual create.
             $employees = $ids['employees'] === [] ? collect()
                 : Employee::query()->whereKey($ids['employees'])->orderBy('id')->lockForUpdate()->get()->keyBy('id');
 
@@ -234,8 +237,12 @@ class AssetImportController extends Controller
                 AssetCategory::query()->whereKey($ids['categories'])->orderBy('id')->sharedLock()->get(['id']);
             }
 
-            $assets = $ids['assets'] === [] ? collect()
-                : Asset::query()->whereKey($ids['assets'])->orderBy('id')->lockForUpdate()->get()->keyBy('id');
+            if ($hasNew) {
+                $assets = Asset::query()->orderBy('id')->lockForUpdate()->get()->keyBy('id');
+            } else {
+                $assets = $ids['assets'] === [] ? collect()
+                    : Asset::query()->whereKey($ids['assets'])->orderBy('id')->lockForUpdate()->get()->keyBy('id');
+            }
 
             // Checked again under the locks: what the preview said may no longer hold. Anything that would now need a row
             // the transaction has not locked (an asset added with the same serial since) counts as a change too.

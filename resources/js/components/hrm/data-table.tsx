@@ -192,7 +192,7 @@ export function DataTable<T>({
             )}
         >
             {hasToolbar && (
-                <div className="flex flex-col gap-3 border-b p-3 sm:flex-row sm:items-center sm:p-4">
+                <div className="flex flex-col gap-3 border-b p-3 sm:flex-row sm:flex-wrap sm:items-center sm:p-4">
                     {search && (
                         <div className="relative w-full sm:max-w-xs">
                             <Search

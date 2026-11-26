@@ -42,7 +42,7 @@ class SaveAsset
     public function create(User $by, array $data): Asset
     {
         try {
-            return DB::transaction(fn () => $this->within($by, null, $data));
+            return DB::transaction(fn () => $this->within($by, null, $data), 3);
         } catch (UniqueConstraintViolationException $e) {
             if (! AssetCode::isCodeConflict($e)) {
                 throw $this->serialConflict($data) ?? $e;
@@ -51,7 +51,7 @@ class SaveAsset
 
         // Someone else took the same code between reading and saving: ask again, once.
         try {
-            return DB::transaction(fn () => $this->within($by, null, $data));
+            return DB::transaction(fn () => $this->within($by, null, $data), 3);
         } catch (UniqueConstraintViolationException $e) {
             throw $this->serialConflict($data) ?? $e;
         }
@@ -65,7 +65,7 @@ class SaveAsset
                 $locked = Asset::query()->whereKey($asset->getKey())->lockForUpdate()->firstOrFail();
 
                 return $this->within($by, $locked, $data);
-            });
+            }, 3);
         } catch (UniqueConstraintViolationException $e) {
             // A same-instant duplicate serial that the check inside the transaction could not see: the validation message,
             // not a 500. Judged on the driver's own message (errorInfo), as AssignAsset does: getMessage() quotes the whole
@@ -103,11 +103,14 @@ class SaveAsset
     /** @param  array<string, mixed>  $clean */
     private function add(User $by, array $clean): Asset
     {
+        // Lock order: every asset row (the code scan), then the category (shared): the same as an edit (asset row, then
+        // category), so a create and an edit cannot wait on each other through a category rename.
+        $code = AssetCode::next();
         $category = $this->lockCategory($clean['asset_category_id'] ?? null);
         $this->refuseSerial($clean['serial_number'] ?? null, null);
 
         $asset = new Asset([
-            'asset_code' => AssetCode::next(),
+            'asset_code' => $code,
             'name' => $clean['name'] ?? '',
             'asset_category_id' => $category->id,
             'serial_number' => $clean['serial_number'] ?? null,
