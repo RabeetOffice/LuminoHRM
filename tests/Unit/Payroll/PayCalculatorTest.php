@@ -116,6 +116,11 @@ function pcCalc(array $overrides = []): PayResult
     expect($r->gross)->toBe($r->basic + $r->allowances + $r->overtime + $r->additions);
     expect(array_sum($r->loanDeductions))->toBe($r->loanDeduction);
 
+    // nothing blocks ⇒ net is not below zero
+    if ($r->blocking === []) {
+        expect($r->net)->toBeGreaterThanOrEqual(0);
+    }
+
     // every stored figure is a whole rupee
     $item = $r->toItemAttributes();
     foreach (['basic', 'allowances', 'overtime', 'additions', 'gross', 'attendance_deduction', 'fixed_deductions',
@@ -708,4 +713,162 @@ it('splits leave into unpaid and paid in the breakdown', function () {
 
     expect($r->breakdown['attendance']['unpaid_leave'])->toBe(0.5)
         ->and($r->breakdown['attendance']['paid_leave'])->toBe(2.5);
+});
+
+// ---------------------------------------------------------------- fix round (Task 2 review)
+
+it('prorates a fixed tax over two segments as one amount, rounded once', function () {
+    // 1,001 × 15 / 30 = 500.5 per segment: rounding each would give 501 + 501 = 1,002.
+    $r = pcCalc(['segments' => [
+        pcSeg('2026-11-01', '2026-11-15', taxMode: 'fixed', taxValue: pcRs(1001), taxBase: null),
+        pcSeg('2026-11-16', '2026-11-30', taxMode: 'fixed', taxValue: pcRs(1001), taxBase: null, profileId: 2),
+    ]]);
+
+    expect($r->tax)->toBe(pcRs(1001));
+});
+
+it('without a loader paid_leave total, subtracts only unpaid leave on counted days that are not days off', function () {
+    $before = pcCalc([
+        'unpaidLeaveHalves' => ['2026-11-02' => 2],
+        'countedFrom' => '2026-11-05',
+        'attendanceTotals' => ['on_leave' => 1],
+    ]);
+    expect($before->breakdown['attendance']['paid_leave'])->toBe(1);
+
+    $offDay = pcCalc([
+        'unpaidLeaveHalves' => ['2026-11-08' => 2, '2026-11-10' => 1],
+        'offDates' => ['2026-11-08'],
+        'attendanceTotals' => ['on_leave' => 2],
+    ]);
+    expect($offDay->breakdown['attendance']['paid_leave'])->toBe(1.5);
+});
+
+it('uses the loader\'s paid_leave total when it is supplied', function () {
+    // Same unpaid leave as the fallback case; the loader's figure (from the cells) wins over the subtraction.
+    $r = pcCalc([
+        'unpaidLeaveHalves' => ['2026-11-02' => 2],
+        'countedFrom' => '2026-11-05',
+        'attendanceTotals' => ['on_leave' => 3, 'paid_leave' => 2.5],
+    ]);
+
+    expect($r->breakdown['attendance']['paid_leave'])->toBe(2.5)
+        ->and($r->breakdown['attendance']['unpaid_leave'])->toBe(1);
+});
+
+it('labels the non-taxable line when one allowance name has both taxabilities', function () {
+    $r = pcCalc(['segments' => [
+        pcSeg('2026-11-01', '2026-11-15', allowances: [['House rent', 24000, true], ['Medical', 6000, false]]),
+        pcSeg('2026-11-16', '2026-11-30', allowances: [['House rent', 24000, true], ['Medical', 6000, true]], profileId: 2),
+    ]]);
+
+    expect(pcLines($r, 'earnings'))->toBe([
+        'Basic salary' => pcRs(60000),
+        'House rent' => pcRs(24000),
+        'Medical (not taxable)' => pcRs(3000),
+        'Medical' => pcRs(3000),
+    ])
+        ->and(count($r->breakdown['earnings']))->toBe(4)
+        ->and($r->taxablePay)->toBe(pcRs(84000 + 3000));
+});
+
+it('refuses a tax override that is negative or not whole rupees', function (int $override) {
+    PayCalculator::calculate(pcInput(['taxOverride' => $override, 'taxOverrideReason' => 'x']));
+})->with([-100, 150, -1])->throws(InvalidArgumentException::class);
+
+it('reviewer case: December with a raise on the 16th, an absence, a half day and 3 lates nets 79,614', function () {
+    /*
+     * D = 31. Profile P 1–15 Dec (15 days), raise 66,000 / 26,400 / 6,000 (gross 98,400, taxable 92,400) 16–31 Dec (16).
+     * Basic R(60,000×15, 31) 29,032 + R(66,000×16, 31) 34,065 = 63,097; house rent 11,613 + 13,626 = 25,239;
+     * medical 2,903 + 3,097 = 6,000; gross 94,336. Halves: 10 Dec 2 (seg 1); 20 Dec 1 + lates 3 → 1 day = 2 (seg 2) → 3.
+     * Attendance R(90,000×2, 62) 2,903 + R(98,400×3, 62) 4,761 = 7,664. Taxable share 2,710 + 4,471 = 7,181;
+     * taxable pay 88,336 − 7,181 = 81,155; tax R(81,155×500, 10,000) = 4,058. PF 1,452 + 1,548 = 3,000.
+     * Net 94,336 − 7,664 − 3,000 − 4,058 = 79,614.
+     */
+    $r = pcCalc([
+        'month' => '2026-12',
+        'daysInMonth' => 31,
+        'windowFrom' => '2026-12-01',
+        'windowTo' => '2026-12-31',
+        'basisDays' => 31,
+        'countedFrom' => '2026-12-01',
+        'segments' => [
+            pcSeg('2026-12-01', '2026-12-15'),
+            pcSeg('2026-12-16', '2026-12-31', 66000, [['House rent', 26400, true], ['Medical', 6000, false]], profileId: 2),
+        ],
+        'attendanceHalves' => ['2026-12-10' => 2, '2026-12-20' => 1],
+        'lateDays' => 3,
+    ]);
+
+    expect($r->gross)->toBe(pcRs(94336))
+        ->and(pcLines($r, 'earnings'))->toBe(['Basic salary' => pcRs(63097), 'House rent' => pcRs(25239), 'Medical' => pcRs(6000)])
+        ->and($r->attendanceDeduction)->toBe(pcRs(7664))
+        ->and($r->fixedDeductions)->toBe(pcRs(3000))
+        ->and($r->taxablePay)->toBe(pcRs(81155))
+        ->and($r->tax)->toBe(pcRs(4058))
+        ->and($r->net)->toBe(pcRs(79614));
+});
+
+it('reviewer case: a February 2027 joiner on the 20th (9 days) nets 26,615', function () {
+    $r = pcCalc([
+        'month' => '2027-02',
+        'daysInMonth' => 28,
+        'windowFrom' => '2027-02-20',
+        'windowTo' => '2027-02-28',
+        'basisDays' => 28,
+        'countedFrom' => '2027-02-20',
+        'segments' => [pcSeg('2027-02-20', '2027-02-28')],
+    ]);
+
+    expect($r->daysPaid)->toBe(9)
+        ->and(pcLines($r, 'earnings'))->toBe(['Basic salary' => pcRs(19286), 'House rent' => pcRs(7714), 'Medical' => pcRs(1929)])
+        ->and($r->gross)->toBe(pcRs(28929))
+        ->and($r->fixedDeductions)->toBe(pcRs(964))
+        ->and($r->tax)->toBe(pcRs(1350))
+        ->and($r->net)->toBe(pcRs(26615));
+});
+
+it('reviewer case: two half days plus lates at rule 3', function (int $lates, int $deduction) {
+    $r = pcCalc([
+        'attendanceHalves' => ['2026-11-03' => 1, '2026-11-04' => 1],
+        'lateDays' => $lates,
+        'lateRuleCount' => 3,
+    ]);
+
+    expect($r->attendanceDeduction)->toBe(pcRs($deduction));
+})->with([[2, 3000], [3, 6000], [5, 6000], [6, 9000]]);
+
+it('reviewer case: net exactly 0 before loans deducts no loan, warns, and does not block', function () {
+    // One day: gross 3,000, provident fund 100, tax override 2,900 → net 0 before loans.
+    $r = pcCalc([
+        'windowFrom' => '2026-11-30',
+        'segments' => [pcSeg('2026-11-30', '2026-11-30')],
+        'taxOverride' => pcRs(2900),
+        'taxOverrideReason' => 'Arrears',
+        'loans' => [pcLoan(4, 12000, 5000)],
+    ]);
+
+    expect($r->net)->toBe(0)
+        ->and($r->loanDeduction)->toBe(0)
+        ->and($r->loanDeductions)->toBe([4 => 0])
+        ->and(pcWarningKeys($r))->toBe(['installment_reduced'])
+        ->and($r->blocking)->toBe([]);
+});
+
+it('reviewer case: date keys in reverse order give an identical result', function () {
+    $forward = [
+        'attendanceHalves' => ['2026-11-03' => 2, '2026-11-04' => 2, '2026-11-05' => 1],
+        'unpaidLeaveHalves' => ['2026-11-06' => 2, '2026-11-14' => 2],
+        'offDates' => ['2026-11-14'],
+        'lateDays' => 5,
+        'loans' => [pcLoan(4, 12000, 5000)],
+        'attendanceTotals' => ['on_leave' => 2],
+    ];
+    $reverse = [
+        ...$forward,
+        'attendanceHalves' => array_reverse($forward['attendanceHalves'], true),
+        'unpaidLeaveHalves' => array_reverse($forward['unpaidLeaveHalves'], true),
+        'offDates' => array_reverse($forward['offDates']),
+    ];
+
+    expect(pcCalc($reverse)->toArray())->toBe(pcCalc($forward)->toArray());
 });

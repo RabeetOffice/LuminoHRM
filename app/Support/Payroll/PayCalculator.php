@@ -3,6 +3,7 @@
 namespace App\Support\Payroll;
 
 use DateTimeImmutable;
+use InvalidArgumentException;
 
 /**
  * Every money rule of a payroll line (Phase 5 design 5.3), pure: no database, no settings, no clock. The loader
@@ -13,8 +14,8 @@ use DateTimeImmutable;
  *
  * All arithmetic is integer paisa. Every computed amount goes through Money::div exactly once (half up to a whole
  * rupee): each prorated component per segment, each attendance-deduction share per segment, overtime, percentage tax,
- * each prorated fixed amount per segment. Entered amounts (adjustments, tax override, loan installments) are used as
- * they are.
+ * each prorated fixed deduction per segment, a fixed tax once over all paid days. Entered amounts (adjustments, tax
+ * override, loan installments) are used as they are; a tax override must be whole rupees and not below zero.
  *
  * Order (design 5.3): earnings by segment → deducted halves per date (capped at 2) + late-rule halves on the last
  * segment → attendance deduction and its taxable / basic shares (capped at earned amounts) → overtime → one-off items
@@ -26,6 +27,10 @@ final class PayCalculator
 
     public static function calculate(PayInput $in): PayResult
     {
+        if ($in->taxOverride !== null && ($in->taxOverride < 0 || $in->taxOverride % 100 !== 0)) {
+            throw new InvalidArgumentException("A tax override must be whole rupees and not below zero [{$in->taxOverride} paisa].");
+        }
+
         if ($in->segments === []) {
             return self::noProfile($in);
         }
@@ -131,6 +136,17 @@ final class PayCalculator
             ];
         }
 
+        // Unpaid halves inside attendance's on_leave total (counted days, not days off), for the paid-leave figure.
+        $unpaidInOnLeave = 0;
+        if ($in->countedFrom !== null) {
+            foreach ($in->unpaidLeaveHalves as $date => $halves) {
+                $date = (string) $date;
+                if ($date >= $in->countedFrom && ! isset($offDates[$date])) {
+                    $unpaidInOnLeave += self::halves($halves);
+                }
+            }
+        }
+
         $lateDaysDeducted = $in->lateRuleCount > 0 && ! $in->exempt ? intdiv(max(0, $in->lateDays), $in->lateRuleCount) : 0;
         $segmentHalves[$lastIndex] += $lateDaysDeducted * 2;
         $totalHalves = array_sum($segmentHalves);
@@ -193,12 +209,10 @@ final class PayCalculator
 
         $overridden = $in->taxOverride !== null;
         if ($overridden) {
-            $tax = max(0, (int) $in->taxOverride);
+            $tax = (int) $in->taxOverride;
         } elseif ($taxMode === 'fixed') {
-            $tax = 0;
-            foreach ($segments as $segment) {
-                $tax += Money::div($last->taxValue * $segment->days, $d);
-            }
+            // One amount (the last profile's) over every paid day, rounded once.
+            $tax = Money::div($last->taxValue * $daysPaid, $d);
         } elseif ($taxMode === 'percentage') {
             $tax = Money::div($taxablePay * $last->taxValue, 10000);
         } else {
@@ -244,8 +258,17 @@ final class PayCalculator
 
         // 10. Breakdown (version 1).
         $earnings = [new PayLine('basic', 'Basic salary', $basic, true)];
+        $taxabilities = [];
         foreach ($allowanceLines as $line) {
-            $earnings[] = new PayLine('allowance', $line['label'], $line['amount'], $line['taxable']);
+            $taxabilities[$line['label']][$line['taxable'] ? 1 : 0] = true;
+        }
+        foreach ($allowanceLines as $line) {
+            // A name taxable in one profile and not in another: mark the non-taxable line so the payslip shows no
+            // duplicate.
+            $label = ! $line['taxable'] && count($taxabilities[$line['label']]) === 2
+                ? "{$line['label']} (not taxable)"
+                : $line['label'];
+            $earnings[] = new PayLine('allowance', $label, $line['amount'], $line['taxable']);
         }
         if ($overtimeLine !== null) {
             $earnings[] = $overtimeLine;
@@ -295,7 +318,7 @@ final class PayCalculator
                 'overridden' => $overridden,
                 'override_reason' => $overridden ? $in->taxOverrideReason : null,
             ],
-            'attendance' => self::attendance($in, $unpaidCounted, $lateDaysDeducted, $totalHalves),
+            'attendance' => self::attendance($in, $unpaidCounted, $unpaidInOnLeave, $lateDaysDeducted, $totalHalves),
             'totals' => $totals,
             'warnings' => $warnings,
         ];
@@ -342,7 +365,7 @@ final class PayCalculator
                 'overridden' => false,
                 'override_reason' => null,
             ],
-            'attendance' => self::attendance($in, 0, 0, 0),
+            'attendance' => self::attendance($in, 0, 0, 0, 0),
             'totals' => [
                 'gross' => 0,
                 'attendance_deduction' => 0,
@@ -385,12 +408,21 @@ final class PayCalculator
         ];
     }
 
-    /** @return array<string, mixed> */
-    private static function attendance(PayInput $in, int $unpaidHalves, int $lateDaysDeducted, int $deductedHalves): array
+    /**
+     * $unpaidHalves: unpaid halves that counted towards the deduction; $unpaidInOnLeaveHalves: unpaid halves on dates
+     * attendance counts (≥ counted_from, not days off), i.e. the part of on_leave that is unpaid.
+     *
+     * @return array<string, mixed>
+     */
+    private static function attendance(PayInput $in, int $unpaidHalves, int $unpaidInOnLeaveHalves, int $lateDaysDeducted, int $deductedHalves): array
     {
         $totals = $in->attendanceTotals;
         $unpaidLeave = self::halvesNumber($unpaidHalves);
         $onLeave = $totals['on_leave'] ?? 0;
+        // The loader's own figure (from the cells) wins; otherwise on_leave minus its unpaid part.
+        $paidLeave = array_key_exists('paid_leave', $totals)
+            ? $totals['paid_leave']
+            : $onLeave - self::halvesNumber($unpaidInOnLeaveHalves);
 
         return [
             'counted_from' => $in->countedFrom,
@@ -400,7 +432,7 @@ final class PayCalculator
             'absent' => $totals['absent'] ?? 0,
             'on_leave' => $onLeave,
             'unpaid_leave' => $unpaidLeave,
-            'paid_leave' => max(0, $onLeave - $unpaidLeave),
+            'paid_leave' => $paidLeave > 0 ? $paidLeave : 0,
             'off' => $totals['off'] ?? 0,
             'late_days_deducted' => $lateDaysDeducted,
             'deducted_halves' => $deductedHalves,
