@@ -14,6 +14,7 @@ use App\Models\User;
 use App\Support\Attendance\AttendanceClock;
 use App\Support\Payroll\PayrollAccess;
 use App\Support\Payroll\PayrollChecks;
+use App\Support\Payroll\PayrollRoster;
 use App\Support\PayrollLock;
 use DateTimeImmutable;
 use Illuminate\Http\RedirectResponse;
@@ -164,7 +165,7 @@ class PayrollRunController extends Controller
                     ? route('payroll.payslips.download', $item)
                     : null,
             ])->values()->all(),
-            'settled_separately' => array_values((array) ($summary['settled_separately'] ?? [])),
+            'settled_separately' => $this->settledWithStatus((array) ($summary['settled_separately'] ?? []), $run->month),
             'left_without_last_day' => array_values((array) ($summary['left_without_last_day'] ?? [])),
             'downloads' => [
                 'bank_sheet' => $locked && $mayRun && Route::has('payroll.runs.bank-sheet')
@@ -175,6 +176,21 @@ class PayrollRunController extends Controller
                     ? route('payroll.payslips.index', ['month' => $run->month]) : null,
             ],
         ]);
+    }
+
+    /**
+     * The run's settled-separately list with each person's final settlement status as it is now (the stored list was
+     * made when the run was generated).
+     *
+     * @param  array<int, mixed>  $list
+     * @return list<array<string, mixed>>
+     */
+    private function settledWithStatus(array $list, string $month): array
+    {
+        $people = array_values(array_filter($list, 'is_array'));
+        $statuses = PayrollRoster::settlementStatuses(array_map(fn (array $p): int => (int) ($p['id'] ?? 0), $people), $month);
+
+        return array_map(fn (array $p): array => [...$p, 'settlement' => $statuses[(int) ($p['id'] ?? 0)] ?? null], $people);
     }
 
     public function recalculate(Request $request, PayrollRun $run, GeneratePayrollRun $generate): RedirectResponse

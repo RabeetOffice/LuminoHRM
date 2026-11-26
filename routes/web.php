@@ -404,6 +404,19 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::get('export', 'export')->name('.export');
         });
 
+    // Exit documents (Phase 6c). Admin / HR: the settlement statement (exit.clearance + payroll.view) and the experience letter
+    // (exit.clearance). The employee's own copies are under my/resignation (the controller insists the exit is theirs).
+    Route::get('exit/settlements/{settlement}/statement', [\App\Http\Controllers\Exits\ExitDocumentController::class, 'statement'])
+        ->whereNumber('settlement')->middleware(['can:exit.clearance', 'can:payroll.view'])->name('exit.settlements.statement');
+    Route::post('exit/{resignation}/letter', [\App\Http\Controllers\Exits\ExitDocumentController::class, 'issue'])
+        ->whereNumber('resignation')->middleware('can:exit.clearance')->name('exit.letter.issue');
+    Route::get('exit/{resignation}/letter', [\App\Http\Controllers\Exits\ExitDocumentController::class, 'letter'])
+        ->whereNumber('resignation')->middleware('can:exit.clearance')->name('exit.letter');
+    Route::get('my/resignation/{resignation}/statement', [\App\Http\Controllers\Exits\ExitDocumentController::class, 'myStatement'])
+        ->whereNumber('resignation')->name('my.resignation.statement');
+    Route::get('my/resignation/{resignation}/letter', [\App\Http\Controllers\Exits\ExitDocumentController::class, 'myLetter'])
+        ->whereNumber('resignation')->name('my.resignation.letter');
+
     // Users and roles. No delete route: accounts are disabled, never removed.
     Route::middleware('can:users.manage')->prefix('users')->name('users.')->group(function () {
         Route::get('/', [UserController::class, 'index'])->name('index');

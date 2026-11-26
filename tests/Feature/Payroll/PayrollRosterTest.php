@@ -59,7 +59,7 @@ it('lists the settled-separately and left people with name, code and date or sta
     $roster = PayrollRoster::forMonth('2026-11');
 
     expect($roster->settledSeparately)->toBe([
-        ['id' => $leaver->id, 'name' => 'Sara Ahmed', 'code' => $leaver->employee_code, 'last_working_day' => '2026-11-20'],
+        ['id' => $leaver->id, 'name' => 'Sara Ahmed', 'code' => $leaver->employee_code, 'last_working_day' => '2026-11-20', 'settlement' => null],
     ])
         ->and($roster->leftWithoutLastDay)->toBe([
             ['id' => $gone->id, 'name' => 'Ali Khan', 'code' => $gone->employee_code, 'status' => 'resigned'],

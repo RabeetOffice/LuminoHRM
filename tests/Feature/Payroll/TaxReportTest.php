@@ -162,8 +162,8 @@ it('reads a fixed number of queries whatever the headcount', function () {
         return $n;
     };
 
-    // Opening rows, counted lines, employees.
-    expect($count(2))->toBe(3)->and($count(9))->toBe(3);
+    // Opening rows, counted lines, settlements, employees.
+    expect($count(2))->toBe(4)->and($count(9))->toBe(4);
 });
 
 // ---------------------------------------------------------------- screen

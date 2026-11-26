@@ -73,3 +73,9 @@ Schedule::command('hrm:prune-device-logs')
 Schedule::command('hrm:leave-allocate')
     ->hourlyAt(40)
     ->withoutOverlapping(30);
+
+// Exits (Phase 6c): the day after an approved exit's last working day the person becomes resigned / terminated and their
+// login is disabled (idempotent; a refusal such as the last active Admin is stored on the exit and retried each run).
+Schedule::command('hrm:exit-apply-status')
+    ->hourlyAt(50)
+    ->withoutOverlapping(30);

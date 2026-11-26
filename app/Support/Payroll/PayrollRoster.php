@@ -3,6 +3,7 @@
 namespace App\Support\Payroll;
 
 use App\Models\Employee;
+use App\Models\FinalSettlement;
 use App\Support\Attendance\Leavers;
 use DateTimeImmutable;
 use DateTimeZone;
@@ -53,6 +54,9 @@ final class PayrollRoster
             ])
             ->all());
 
+        $statuses = self::settlementStatuses(array_column($settled, 'id'), $month);
+        $settled = array_map(fn (array $p): array => [...$p, 'settlement' => $statuses[$p['id']] ?? null], $settled);
+
         $left = array_values(Leavers::onlyWithoutLastDay(Employee::query())
             ->where('joining_date', '<=', $last)
             ->orderBy('employee_code')
@@ -67,6 +71,28 @@ final class PayrollRoster
             ->all());
 
         return new RosterResult($included, $settled, $left);
+    }
+
+    /**
+     * The final settlement status ('draft' | 'approved' | 'paid') of each person's settlement for the month, by employee
+     * id; people without one are absent. One query. The run page reads it again at display time, so the list shows the
+     * settlement's status now, not as it was when the run was generated.
+     *
+     * @param  list<int>  $employeeIds
+     * @return array<int, string>
+     */
+    public static function settlementStatuses(array $employeeIds, string $month): array
+    {
+        if ($employeeIds === []) {
+            return [];
+        }
+
+        return FinalSettlement::query()
+            ->whereIn('employee_id', $employeeIds)
+            ->where('month', $month)
+            ->pluck('status', 'employee_id')
+            ->map(fn ($status): string => (string) $status)
+            ->all();
     }
 
     /**

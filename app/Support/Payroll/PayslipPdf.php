@@ -236,15 +236,24 @@ final class PayslipPdf
     /** The snapshot's logo as a data URI when it is one of our branding files and still on disk (PNG / JPEG). */
     public static function logoDataUri(PayrollItem $item): ?string
     {
-        $company = (array) (($item->run->summary ?? [])['company'] ?? []);
+        return self::logoFromCompany((array) (($item->run->summary ?? [])['company'] ?? []));
+    }
 
-        // The bytes frozen at approval win: a later logo change or a deleted file never alters an issued payslip.
+    /**
+     * The logo of a company snapshot ({logo {mime, data}, logo_path}) as a data URI, or null. Also used by the final
+     * settlement statement, whose summary carries the same snapshot.
+     *
+     * @param  array<string, mixed>  $company
+     */
+    public static function logoFromCompany(array $company): ?string
+    {
+        // The bytes frozen at approval win: a later logo change or a deleted file never alters an issued document.
         $frozen = $company['logo'] ?? null;
         if (is_array($frozen) && in_array($frozen['mime'] ?? null, self::LOGO_TYPES, true) && is_string($frozen['data'] ?? null) && $frozen['data'] !== '') {
             return "data:{$frozen['mime']};base64,{$frozen['data']}";
         }
 
-        // Runs approved before the bytes were frozen: the stored path, while the file is still there.
+        // Snapshots made before the bytes were frozen: the stored path, while the file is still there.
         $path = $company['logo_path'] ?? null;
         $filename = Branding::filename($path);
 
@@ -278,14 +287,14 @@ final class PayslipPdf
         return $code === '' ? 'employee' : $code;
     }
 
-    private static function str(mixed $value, bool $oneLine = true): string
+    public static function str(mixed $value, bool $oneLine = true): string
     {
         $text = is_scalar($value) ? trim((string) $value) : '';
 
         return $oneLine ? trim((string) preg_replace('/\s+/u', ' ', $text)) : $text;
     }
 
-    private static function orDash(mixed $value): string
+    public static function orDash(mixed $value): string
     {
         $text = self::str($value);
 
@@ -293,7 +302,7 @@ final class PayslipPdf
     }
 
     /** "2024-03-01" -> "1 Mar 2024" (no time zone involved). */
-    private static function date(mixed $value): string
+    public static function date(mixed $value): string
     {
         $date = is_string($value) ? DateTimeImmutable::createFromFormat('!Y-m-d', $value) : false;
 
@@ -301,7 +310,7 @@ final class PayslipPdf
     }
 
     /** 4 -> "4", 4.5 -> "4.5". */
-    private static function num(mixed $value): string
+    public static function num(mixed $value): string
     {
         if (! is_numeric($value)) {
             return '0';
@@ -322,7 +331,7 @@ final class PayslipPdf
     }
 
     /** 600 -> "10 h", 45 -> "45 min", 605 -> "10 h 5 min", 0 -> "None". */
-    private static function minutes(int $minutes): string
+    public static function minutes(int $minutes): string
     {
         if ($minutes <= 0) {
             return 'None';

@@ -3,6 +3,7 @@
 namespace App\Support\Payroll;
 
 use App\Models\Employee;
+use App\Models\FinalSettlement;
 use App\Models\OpeningBalance;
 use App\Models\PayrollItem;
 use App\Models\PayrollRun;
@@ -20,7 +21,11 @@ use App\Support\Settings;
  * date"; for a percentage-of-basic profile payroll_items.taxable_pay is only the tax base, which the report ignores
  * (a line stored without that key falls back to taxable_pay).
  *
- * Reads: three queries whatever the headcount (opening rows, counted lines, the listed employees).
+ * Approved / paid final settlements (Phase 6c) count like lines: their month's taxable pay and tax are added to that
+ * employee's month, from the settlement's stored figures (breakdown tax.gross_taxable_pay, else taxable_pay). A person
+ * does not normally have both a line and a settlement in a month; if they do both are added. Drafts never count.
+ *
+ * Reads: four queries whatever the headcount (opening rows, counted lines, settlements, the listed employees).
  */
 final class TaxReport
 {
@@ -58,6 +63,11 @@ final class TaxReport
             $earliest = min($earliest, TaxYear::of($month, self::startMonth()));
         }
 
+        $settled = FinalSettlement::query()->whereIn('status', (array) config('hrm.exit.frozen_statuses'))->min('month');
+        if (is_string($settled) && $settled !== '') {
+            $earliest = min($earliest, TaxYear::of($settled, self::startMonth()));
+        }
+
         return range($current, $earliest);
     }
 
@@ -91,7 +101,13 @@ final class TaxReport
             ->toBase()
             ->get(['payroll_items.employee_id', 'payroll_runs.month', 'payroll_items.taxable_pay', 'payroll_items.tax', 'payroll_items.breakdown']);
 
-        foreach ($items as $item) {
+        $settlements = FinalSettlement::query()
+            ->whereIn('status', (array) config('hrm.exit.frozen_statuses'))
+            ->whereIn('month', $months)
+            ->toBase()
+            ->get(['employee_id', 'month', 'taxable_pay', 'tax', 'breakdown']);
+
+        foreach ($items->concat($settlements) as $item) {
             $id = (int) $item->employee_id;
             $month = (string) $item->month;
             $current = $lines[$id][$month] ?? ['taxable' => 0, 'tax' => 0];

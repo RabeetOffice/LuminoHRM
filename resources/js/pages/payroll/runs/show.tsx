@@ -62,7 +62,10 @@ type Props = {
     run: Run;
     checks: RunCheck[];
     lines: RunLine[];
-    settled_separately: (Person & { last_working_day: string })[];
+    settled_separately: (Person & {
+        last_working_day: string;
+        settlement: 'draft' | 'approved' | 'paid' | null;
+    })[];
     left_without_last_day: (Person & { status: string })[];
     downloads: {
         bank_sheet: string | null;
@@ -70,6 +73,19 @@ type Props = {
         payslips: string | null;
     };
 };
+
+function settlementNote(status: 'draft' | 'approved' | 'paid' | null) {
+    switch (status) {
+        case 'draft':
+            return 'Settlement in draft';
+        case 'approved':
+            return 'Settlement approved';
+        case 'paid':
+            return 'Settlement paid';
+        default:
+            return 'No settlement yet';
+    }
+}
 
 function Tile({ label, children }: { label: string; children: ReactNode }) {
     return (
@@ -301,7 +317,7 @@ export default function RunShow({
                         hint="Their last working day is in this month, so they are paid through the final settlement, not this payroll."
                         people={settled.map((p) => ({
                             ...p,
-                            note: `Last day ${p.last_working_day}`,
+                            note: `Last day ${p.last_working_day} · ${settlementNote(p.settlement)}`,
                         }))}
                     />
                 )}
