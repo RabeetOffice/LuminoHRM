@@ -5,6 +5,8 @@ import { MyAssetsCard } from '@/components/assets/assets-panel';
 import type { MyAssets } from '@/components/assets/assets-panel';
 import { Avatar } from '@/components/hrm/avatar';
 import { PageHeader } from '@/components/hrm/page-header';
+import { WaitingReviewsCard } from '@/components/performance/waiting-reviews-card';
+import type { WaitingReviews } from '@/components/performance/waiting-reviews-card';
 import {
     LeaveStatusCard,
     MyLeaveCard,
@@ -64,7 +66,10 @@ import { cn } from '@/lib/utils';
 import { dashboard } from '@/routes';
 import { daily } from '@/routes/attendance';
 import { show } from '@/routes/employees';
-import { attendance as myAttendanceRoute } from '@/routes/my';
+import {
+    attendance as myAttendanceRoute,
+    reviews as myReviews,
+} from '@/routes/my';
 
 /** Sent only to people who may see employees (Admin, HR: the company; Manager: their team). */
 type EmployeeCount = {
@@ -122,6 +127,8 @@ type Props = {
     latestPayslip?: LatestPayslip;
     /** The viewer's own assets (everyone with an employee record). */
     myAssets?: MyAssets;
+    /** Reviews waiting on the viewer (everyone with an employee record); the card shows only above zero. */
+    waitingReviews?: WaitingReviews;
 };
 
 const SERIES_META: Record<TrendSeriesKey, { label: string; bar: string }> = {
@@ -148,6 +155,7 @@ export default function Dashboard({
     payrollThisMonth,
     latestPayslip,
     myAssets,
+    waitingReviews,
 }: Props) {
     const { auth, app } = usePage().props;
     const can = useCan();
@@ -348,6 +356,12 @@ export default function Dashboard({
                         <LatestPayslipCard payslip={null} />
                     ) : null}
                     {myAssets && <MyAssetsCard mine={myAssets} />}
+                    {waitingReviews && (
+                        <WaitingReviewsCard
+                            waiting={waitingReviews}
+                            myReviewsHref={myReviews.url()}
+                        />
+                    )}
                     {birthdays && <BirthdaysCard people={birthdays} />}
                 </section>
             </div>

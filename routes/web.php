@@ -47,6 +47,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // My Assets: the signed-in person's own assets (every role; the account's own employee record only).
     Route::get('my/assets', [\App\Http\Controllers\Assets\MyAssetController::class, 'show'])->name('my.assets');
 
+    // My Reviews: the signed-in person's own reviews (every role; the account's own employee record only, no person in the URL).
+    Route::get('my/reviews', [\App\Http\Controllers\Performance\MyReviewController::class, 'show'])->name('my.reviews');
+
     // My Payslips: the signed-in person's own payslips of approved / paid runs (any other item id = 403).
     Route::get('my/payslips', [\App\Http\Controllers\MyPayslipController::class, 'index'])->name('my.payslips');
     Route::get('my/payslips/{item}', [\App\Http\Controllers\MyPayslipController::class, 'download'])->whereNumber('item')->name('my.payslips.download');

@@ -10,6 +10,7 @@ use App\Models\LeaveRequest;
 use App\Models\Loan;
 use App\Models\PayrollItem;
 use App\Models\PayrollRun;
+use App\Models\Review;
 use App\Models\SalaryProfile;
 use App\Models\Shift;
 use App\Models\User;
@@ -21,6 +22,9 @@ use App\Support\EmployeeFiles;
 use App\Support\EmployeeRoles;
 use App\Support\Leave\BalanceLine;
 use App\Support\Leave\LeaveBalances;
+use App\Support\Performance\ReviewAccess;
+use App\Support\Performance\ReviewScoring;
+use App\Support\Performance\ReviewStates;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -60,6 +64,10 @@ use Illuminate\Http\Resources\Json\JsonResource;
  *              assets.assign (the key is absent, not null, for everyone else); `can_assign` is always sent: true with
  *              assets.assign, false for everyone else.
  *
+ *   reviews    {closed: [{id, cycle, period {from, to}, final_score, label, reviewer, closed_on, url?}]} for whoever may open the profile:
+ *              the person's CLOSED reviews, newest first. Never an open or skipped review, never a rating, comment, note or
+ *              reason. `url` only when ReviewAccess lets the viewer open that review (the key is absent otherwise).
+ *
  * Never add a field to a group without asking whether the roles that see that group may see it, and never return
  * the model or a relation as it is.
  *
@@ -78,6 +86,7 @@ class EmployeeProfileResource extends JsonResource
         'leave' => 'leave',
         'salary' => 'salary',
         'assets' => 'assets',
+        'reviews' => 'reviews',
     ];
 
     /** @var list<string> */
@@ -90,6 +99,8 @@ class EmployeeProfileResource extends JsonResource
     private readonly bool $own;
 
     private readonly bool $assign;
+
+    private readonly User $viewer;
 
     public function __construct(Employee $resource, private readonly EmployeeAccess $access, User $viewer)
     {
@@ -111,6 +122,9 @@ class EmployeeProfileResource extends JsonResource
         }
         // Whoever may open the profile may see what the person holds; the cost is for assets.assign only.
         $this->groups[] = 'assets';
+        // Closed review history: the same people who may open the profile (what each review shows is ReviewAccess's call).
+        $this->groups[] = 'reviews';
+        $this->viewer = $viewer;
         $this->assign = $viewer->can('assets.assign');
         $this->viewAll = $viewer->can('employees.view-all');
         $this->manage = $access->canManage();
@@ -199,6 +213,10 @@ class EmployeeProfileResource extends JsonResource
 
         if ($this->allows('assets')) {
             $data['assets'] = $this->assets();
+        }
+
+        if ($this->allows('reviews')) {
+            $data['reviews'] = $this->reviews();
         }
 
         return $data;
@@ -433,6 +451,57 @@ class EmployeeProfileResource extends JsonResource
             ])->all()),
             'can_assign' => $this->assign,
         ];
+    }
+
+    /**
+     * The Reviews tab: the person's closed reviews, newest first. The link only where the viewer may open the review (one
+     * ReviewAccess::scope query for all of them).
+     *
+     * @return array{closed: list<array<string, mixed>>}
+     */
+    private function reviews(): array
+    {
+        $closed = Review::query()
+            ->join('review_cycles', 'review_cycles.id', '=', 'reviews.review_cycle_id')
+            ->leftJoin('employees as reviewers', 'reviewers.id', '=', 'reviews.reviewer_id')
+            ->where('reviews.employee_id', $this->resource->getKey())
+            ->where('reviews.status', ReviewStates::CLOSED)
+            ->orderByDesc('reviews.closed_at')
+            ->orderByDesc('reviews.id')
+            ->get([
+                'reviews.id', 'reviews.final_score', 'reviews.closed_at',
+                'review_cycles.name as cycle_name', 'review_cycles.period_start', 'review_cycles.period_end',
+                'reviewers.first_name as reviewer_first', 'reviewers.last_name as reviewer_last',
+            ]);
+
+        if ($closed->isEmpty()) {
+            return ['closed' => []];
+        }
+
+        $zone = app(AttendanceClock::class)->zone();
+        $openable = ReviewAccess::scope(Review::query(), $this->viewer)->whereIn('reviews.id', $closed->modelKeys())
+            ->pluck('reviews.id')->map(fn ($id) => (int) $id)->all();
+
+        return ['closed' => array_values($closed->map(function (Review $review) use ($zone, $openable): array {
+            $score = $review->final_score;
+            $reviewer = trim($review->getAttribute('reviewer_first').' '.$review->getAttribute('reviewer_last'));
+
+            $row = [
+                'id' => (int) $review->id,
+                'cycle' => (string) $review->getAttribute('cycle_name'),
+                'period' => ['from' => substr((string) $review->getRawOriginal('period_start'), 0, 10), 'to' => substr((string) $review->getRawOriginal('period_end'), 0, 10)],
+                'final_score' => $score === null ? null : ReviewScoring::format($score),
+                'label' => $score === null ? null : ReviewScoring::label($score),
+                'reviewer' => $reviewer === '' ? 'HR' : $reviewer,
+                'closed_on' => $review->closed_at?->copy()->setTimezone($zone)->format('Y-m-d'),
+            ];
+
+            if (in_array((int) $review->id, $openable, true)) {
+                $row['url'] = '/performance/reviews/'.$review->id;
+            }
+
+            return $row;
+        })->all())];
     }
 
     /**

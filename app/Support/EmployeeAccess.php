@@ -4,8 +4,10 @@ namespace App\Support;
 
 use App\Models\AttendanceCorrection;
 use App\Models\Employee;
+use App\Models\Kpi;
 use App\Models\LeaveBalance;
 use App\Models\LeaveRequest;
+use App\Models\Review;
 use App\Models\User;
 use App\Support\Leave\LeaveDays;
 use Illuminate\Database\Eloquent\Builder;
@@ -37,6 +39,8 @@ class EmployeeAccess
     public const PAYROLL_MESSAGE = 'This employee has payroll history. Set the status to Inactive, Resigned or Terminated instead.';
 
     public const ASSETS_MESSAGE = 'This employee has asset history. Set the status to Inactive, Resigned or Terminated instead.';
+
+    public const REVIEWS_MESSAGE = 'This employee has performance reviews or KPIs. Set the status to Inactive, Resigned or Terminated instead.';
 
     private ?int $ownId = null;
 
@@ -137,7 +141,20 @@ class EmployeeAccess
             $blockers[] = self::ASSETS_MESSAGE;
         }
 
+        // Review and KPI rows restrict the delete at the database; reviews (as the person reviewed or as the reviewer) and
+        // personal KPIs (active or not) are history to keep.
+        if (self::hasPerformanceRecords((int) $employee->getKey())) {
+            $blockers[] = self::REVIEWS_MESSAGE;
+        }
+
         return $blockers;
+    }
+
+    /** Whether the employee has any review (as reviewee or reviewer) or any personal KPI, whatever its status. */
+    public static function hasPerformanceRecords(int $employeeId): bool
+    {
+        return Review::query()->where('employee_id', $employeeId)->orWhere('reviewer_id', $employeeId)->exists()
+            || Kpi::query()->where('employee_id', $employeeId)->exists();
     }
 
     /**

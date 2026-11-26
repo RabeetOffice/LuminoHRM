@@ -81,6 +81,7 @@ describe('ready flag', () => {
         expect(r.map((g) => g.label)).toEqual([
             'Overview',
             'Workforce',
+            'Growth',
             'Finance & Assets',
             'System',
             'My Space',
@@ -109,12 +110,17 @@ describe('ready flag', () => {
             'Leave Types',
             'Holidays',
         ]);
-        expect(r[2].items.map((i) => i.title)).toEqual(['Payroll', 'Assets']);
-        expect(r[2].items[1].children?.map((c) => c.title)).toEqual([
+        expect(r[2].items.map((i) => i.title)).toEqual(['Performance']);
+        expect(r[2].items[0].children?.map((c) => c.title)).toEqual([
+            'KPIs',
+            'Reviews',
+        ]);
+        expect(r[3].items.map((i) => i.title)).toEqual(['Payroll', 'Assets']);
+        expect(r[3].items[1].children?.map((c) => c.title)).toEqual([
             'All Assets',
             'Assignments',
         ]);
-        expect(r[2].items[0].children?.map((c) => c.title)).toEqual([
+        expect(r[3].items[0].children?.map((c) => c.title)).toEqual([
             'Salary Profiles',
             'Payroll Runs',
             'Payslips',
@@ -122,17 +128,18 @@ describe('ready flag', () => {
             'Opening Figures',
             'Tax Report',
         ]);
-        expect(r[3].items.map((i) => i.title)).toEqual([
+        expect(r[4].items.map((i) => i.title)).toEqual([
             'Settings',
             'Users & Roles',
             'Audit Log',
         ]);
-        expect(r[4].items.map((i) => i.title)).toEqual([
+        expect(r[5].items.map((i) => i.title)).toEqual([
             'My Profile',
             'My Attendance',
             'My Leaves',
             'My Payslips',
             'My Assets',
+            'My Reviews',
         ]);
     });
 
@@ -182,7 +189,7 @@ describe('ready flag', () => {
 
     test('with includeUnready false, unready items are hidden even when a search matches them', () => {
         expect(
-            filterNavigation(navigation, allPermissions, 'my reviews', hide),
+            filterNavigation(navigation, allPermissions, 'resignations', hide),
         ).toEqual([]);
     });
 
@@ -268,11 +275,11 @@ describe('soon entries (default)', () => {
         r.map((g) => [g.label, g.items.map((i) => i.title)]);
 
     test('an unready entry the user may see comes back flagged soon', () => {
-        const r = filterNavigation(navigation, ['employees.view-all']);
-        const assets = r
+        const r = filterNavigation(navigation, ['exit.clearance']);
+        const exit = r
             .flatMap((g) => g.items)
-            .find((i) => i.title === 'My Reviews');
-        expect(assets?.soon).toBe(true);
+            .find((i) => i.title === 'Resignations & Clearance');
+        expect(exit?.soon).toBe(true);
     });
 
     test('the Calendar is ready for every signed-in user', () => {
@@ -333,7 +340,7 @@ describe('soon entries (default)', () => {
             false,
             false,
             false,
-            true,
+            false,
         ]);
     });
 
@@ -354,12 +361,20 @@ describe('soon entries (default)', () => {
     });
 
     test('a parent with only unready visible children is one soon row', () => {
-        const r = filterNavigation(navigation, ['performance.manage']);
-        const performance = r
-            .flatMap((g) => g.items)
-            .find((i) => i.title === 'Performance');
-        expect(performance?.soon).toBe(true);
-        expect(performance?.children).toBeUndefined();
+        const groups: NavGroup[] = [
+            {
+                label: 'G',
+                items: [
+                    {
+                        title: 'Parent',
+                        children: [{ title: 'A', href: '/a', ready: false }],
+                    },
+                ],
+            },
+        ];
+        const [parent] = filterNavigation(groups, [])[0].items;
+        expect(parent.soon).toBe(true);
+        expect(parent.children).toBeUndefined();
     });
 
     test('the three assets entries are ready for the right roles', () => {
@@ -481,8 +496,12 @@ describe('soon entries (default)', () => {
     });
 
     test('search matches a soon entry by title', () => {
-        const r = filterNavigation(navigation, [], 'my reviews');
-        expect(titlesOf(r)).toEqual([['My Space', ['My Reviews']]]);
+        const r = filterNavigation(
+            navigation,
+            ['exit.clearance'],
+            'resignations',
+        );
+        expect(titlesOf(r)).toEqual([['Exit', ['Resignations & Clearance']]]);
         expect(r[0].items[0].soon).toBe(true);
     });
 
@@ -530,6 +549,7 @@ describe('soon entries (default)', () => {
             'My Leaves',
             'My Payslips',
             'My Assets',
+            'My Reviews',
         ]);
     });
 
@@ -713,5 +733,56 @@ describe('my leaves', () => {
 
         expect(entry?.soon).toBe(false);
         expect(toUrl(entry?.href ?? '')).toBe('/my/leaves');
+    });
+});
+
+describe('performance', () => {
+    const performanceFor = (perms: string[]) =>
+        filterNavigation(navigation, perms)
+            .flatMap((g) => g.items)
+            .find((i) => i.title === 'Performance');
+
+    test('HR and Admin see KPIs and Reviews, both ready', () => {
+        const entry = performanceFor([
+            'performance.manage',
+            'performance.review-team',
+        ]);
+
+        expect(entry?.soon).toBe(false);
+        expect(entry?.children?.map((c) => [c.title, c.soon])).toEqual([
+            ['KPIs', false],
+            ['Reviews', false],
+        ]);
+        expect(entry?.children?.map((c) => toUrl(c.href ?? ''))).toEqual([
+            '/performance/kpis',
+            '/performance/reviews',
+        ]);
+    });
+
+    test('a manager sees Reviews but not KPIs', () => {
+        const entry = performanceFor(['performance.review-team']);
+
+        expect(entry?.soon).toBe(false);
+        expect(entry?.children?.map((c) => c.title)).toEqual(['Reviews']);
+    });
+
+    test('an employee has no Performance group but has My Reviews, ready', () => {
+        expect(performanceFor([])).toBeUndefined();
+
+        const mine = filterNavigation(navigation, [])
+            .flatMap((g) => g.items)
+            .find((i) => i.title === 'My Reviews');
+
+        expect(mine?.soon).toBe(false);
+        expect(toUrl(mine?.href ?? '')).toBe('/my/reviews');
+    });
+
+    test('activeHref picks the longest match for the performance and my reviews pages', () => {
+        expect(activeHref('/performance/kpis')).toBe('/performance/kpis');
+        expect(activeHref('/performance/reviews/12')).toBe(
+            '/performance/reviews',
+        );
+        expect(activeHref('/performance/cycles/3')).toBeUndefined();
+        expect(activeHref('/my/reviews')).toBe('/my/reviews');
     });
 });

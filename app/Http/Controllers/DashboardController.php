@@ -12,6 +12,7 @@ use App\Support\EmployeeFiles;
 use App\Support\Leave\DashboardLeave;
 use App\Support\Leave\LeaveBalances;
 use App\Support\Payroll\DashboardPayroll;
+use App\Support\Performance\ReviewsWaiting;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Date;
@@ -53,6 +54,10 @@ use Inertia\Response;
  *   myAssets       {count, names, more}  for everyone with an employee record: how many assets they hold, the names of the
  *                  first 5 and how many more there are (App\Support\Assets\DashboardAssets). No cost, no codes, nobody
  *                  else's assets; absent without an employee record.
+ *   waitingReviews {self, rate, close, items: [{id, label, url}]}  for everyone with an employee record
+ *                  (App\Support\Performance\ReviewsWaiting): their own review waiting for a self-review, reviews they rate,
+ *                  reviews ready to close (performance.manage only); up to five links. Counts only: no score, rating or
+ *                  comment. The card shows when a count is above zero. Absent without an employee record.
  */
 class DashboardController extends Controller
 {
@@ -116,6 +121,7 @@ class DashboardController extends Controller
 
         if ($user->employee_id !== null) {
             $props['myAssets'] = DashboardAssets::mine((int) $user->employee_id);
+            $props['waitingReviews'] = ReviewsWaiting::for($user);
         }
 
         return Inertia::render('dashboard', $props);

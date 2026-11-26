@@ -31,6 +31,8 @@ import {
     visibleTabs,
     wordFor,
 } from '@/lib/employee-profile';
+import { ReviewsPanel } from '@/components/performance/reviews-panel';
+import type { ProfileReviews } from '@/components/performance/reviews-panel';
 import type { ProfileTabKey } from '@/lib/employee-profile';
 import { formatDate } from '@/lib/format-date';
 import { formatMinutes } from '@/lib/minutes';
@@ -96,6 +98,8 @@ export type EmployeeProfile = {
     salary?: ProfileSalary;
     /** What the person holds and the last returned; cost only with assets.assign. */
     assets?: ProfileAssets;
+    /** The person's closed reviews, newest first. */
+    reviews?: ProfileReviews;
 };
 
 /** One salary profile on the Salary tab. Money in paisa. */
@@ -421,6 +425,7 @@ export function EmployeeProfileView({
         leave,
         salary,
         assets,
+        reviews,
     } = employee;
 
     const activeTab =
@@ -609,6 +614,7 @@ export function EmployeeProfileView({
             <SalaryPanel employeeId={employee.id} salary={salary} date={date} />
         ),
         assets: assets && <AssetsPanel assets={assets} date={date} />,
+        reviews: reviews && <ReviewsPanel reviews={reviews} date={date} />,
     };
 
     return (
