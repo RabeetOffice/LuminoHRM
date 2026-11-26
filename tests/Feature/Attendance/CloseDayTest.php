@@ -398,7 +398,8 @@ it('closes the later days when one day of the catch-up fails', function () {
     Log::shouldHaveReceived('error')->with('Attendance day close failed', ['exception' => RuntimeException::class, 'date' => '2026-11-19'])->once();
 });
 
-// Measured: 11 queries to close a day of 55 employees (10 before Phase 4; the leave days are one more read per batch),
+// Measured: 13 queries to close a day of 55 employees (10 before Phase 4; the leave days are one more read per batch;
+// Phase 5 adds two payroll lock reads: closeDay's own check of the date and the batch's locked months),
 // whether the close creates the rows or ingestion already made pending ones (the updates are one bulk upsert per 200
 // rows, not one UPDATE per row).
 it('closes a day whose rows ingestion already created with the same queries as one it creates', function () {
@@ -430,7 +431,7 @@ it('closes a day whose rows ingestion already created with the same queries as o
     }
     $existing = $queriesFor(fn () => $rebuilder->closeDay('2026-10-05'));
 
-    expect($existing)->toBe($created)->and($created)->toBeLessThanOrEqual(11)
+    expect($existing)->toBe($created)->and($created)->toBeLessThanOrEqual(13)
         ->and(Attendance::query()->where('date', '2026-10-05')->whereNull('status')->count())->toBe(0)
         ->and(Attendance::query()->where('date', '2026-10-05')->where('closed', true)->count())->toBe(55)
         ->and(Attendance::query()->where('date', '2026-10-05')->where('status', 'present')->count())->toBe(20);
@@ -608,7 +609,7 @@ it('stays idle and writes nothing while the start date is unset, within a fixed 
         ->and($few)->toBeLessThanOrEqual(7 * 6);
 });
 
-it('costs two extra queries when nothing older is missing', function () {
+it('costs three extra queries when nothing older is missing', function () {
     cdStaff(5);
     Settings::set('attendance', ['start_date' => '2026-11-17']); // no backfill range at all
     cdCountedClose();
@@ -620,6 +621,7 @@ it('costs two extra queries when nothing older is missing', function () {
     }
     $rows = Attendance::query()->count();
 
-    expect(cdCountedClose())->toBe($recentOnly + 2)
+    // The backfill's candidates, its grouped count and (Phase 5) the locked payroll months of the range.
+    expect(cdCountedClose())->toBe($recentOnly + 3)
         ->and(Attendance::query()->count())->toBe($rows);
 });

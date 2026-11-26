@@ -6,6 +6,7 @@ use App\Actions\Attendance\ApplyManualCorrection;
 use App\Models\Attendance;
 use App\Models\AttendanceCorrection;
 use App\Models\Employee;
+use App\Support\PayrollLock;
 use DateTimeImmutable;
 use DateTimeZone;
 
@@ -22,6 +23,8 @@ use DateTimeZone;
  *   - on or after settings('attendance.start_date'), when set;
  *   - accepted by ApplyManualCorrection::employmentRefusal() (e.g. a leaver needs a last working day), so a request
  *     is never accepted that approval would always refuse (the wording here is the requester's own);
+ *   - not in a locked payroll month (an approved or paid run; the reason is PayrollLock::message(), so My Attendance
+ *     hides the button and the store action refuses with that message);
  *   - not already corrected by hand (is_manual);
  *   - without another open (pending or manager-approved) request of this employee.
  * "Own record only" is the caller's job: the request is always made for the signed-in user's own employee record.
@@ -55,7 +58,8 @@ class CorrectionEligibility
     }
 
     /**
-     * reasonRefused() for every day from $from to $to (inclusive, "Y-m-d"), in two queries. The range may cover at
+     * reasonRefused() for every day from $from to $to (inclusive, "Y-m-d"), in three queries (manual days, open
+     * requests, locked payroll months). The range may cover at
      * most MAX_RANGE_DAYS days (a month view needs 31); a longer one throws rather than being cut short silently.
      *
      *
@@ -99,9 +103,16 @@ class CorrectionEligibility
             ->map(fn (mixed $d): string => self::dateString($d))
             ->flip();
 
+        // Months of an approved (or paid) payroll run: one query for the whole range (at most three months).
+        $locked = array_flip(PayrollLock::lockedMonths(array_values(array_unique(array_map(
+            fn (string $d): string => substr($d, 0, 7),
+            $days,
+        )))));
+
         $result = [];
         foreach ($days as $day) {
             $result[$day] = $this->staticReason($employee, $day)
+                ?? (isset($locked[substr($day, 0, 7)]) ? PayrollLock::message(substr($day, 0, 7)) : null)
                 ?? ($manual->has($day) ? 'This day has already been corrected by HR. Ask HR if it is still wrong.' : null)
                 ?? ($open->has($day) ? 'There is already an open correction request for this day.' : null);
         }

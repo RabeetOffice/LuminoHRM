@@ -5,13 +5,21 @@ namespace App\Support\Attendance;
 use App\Models\Attendance;
 use App\Models\Employee;
 use App\Models\Shift;
+use App\Support\PayrollLock;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Flags stored attendance days as needing a rebuild after a change to the rules they were worked out with (a shift, a
  * holiday, a person's employment window, or their approved leave). Only the needs_rebuild column is written (forLeaveDays
  * may also create bare pending rows); the scheduled rebuild does the work. A manual day is never flagged (a rebuild
  * would skip it anyway).
+ *
+ * Payroll lock: a row dated in a locked payroll month (an approved or paid run) is never flagged or created, so an
+ * approved month keeps exactly the days it was paid on. Each call reads the locked months once (PayrollLock::lockedMonths
+ * over the months the call could touch; inside a transaction that read takes the shared lock on payroll_runs before the
+ * UPDATE locks any attendance row) and excludes them with a month expression (substr(date, 1, 7), valid on SQLite and
+ * MariaDB). Never one lock query per row.
  */
 class RebuildMarks
 {
@@ -59,6 +67,10 @@ class RebuildMarks
      */
     public static function forDate(string $date): int
     {
+        if (PayrollLock::isLocked(substr($date, 0, 7))) {
+            return 0;
+        }
+
         return Attendance::query()
             ->where('date', $date)
             ->where('is_manual', false)
@@ -82,7 +94,7 @@ class RebuildMarks
         $leftWithoutDate = Leavers::withoutLastDay($employee);
         $today = app(AttendanceClock::class)->attendanceToday();
 
-        return Attendance::query()
+        return self::flagUnlocked(Attendance::query()
             ->where('employee_id', $employee->id)
             ->where('is_manual', false)
             ->where('needs_rebuild', false)
@@ -96,8 +108,7 @@ class RebuildMarks
                 if ($leftWithoutDate) {
                     $q->orWhere('date', '>=', $today);
                 }
-            })
-            ->update(['needs_rebuild' => true]);
+            }));
     }
 
     /**
@@ -137,7 +148,17 @@ class RebuildMarks
             return 0;
         }
 
-        $wanted = array_keys($wanted);
+        // Dates in a locked payroll month are left alone (the leave paths already skip them; defensive). One query.
+        $locked = array_flip(PayrollLock::lockedMonths(array_values(array_unique(array_map(
+            fn (string $d): string => substr($d, 0, 7),
+            array_keys($wanted),
+        )))));
+        $wanted = array_values(array_filter(array_keys($wanted), fn (string $d): bool => ! isset($locked[substr($d, 0, 7)])));
+
+        if ($wanted === []) {
+            return 0;
+        }
+
         sort($wanted);
 
         $existing = Attendance::query()->toBase()
@@ -174,12 +195,40 @@ class RebuildMarks
     /** @param  Builder<Employee>  $employees  a query selecting employee ids */
     private static function forEmployeesFromToday(Builder $employees): int
     {
-        return Attendance::query()
+        return self::flagUnlocked(Attendance::query()
             ->whereIn('employee_id', $employees)
             ->where('date', '>=', app(AttendanceClock::class)->attendanceToday())
             ->where('closed', false)
             ->where('is_manual', false)
-            ->where('needs_rebuild', false)
-            ->update(['needs_rebuild' => true]);
+            ->where('needs_rebuild', false));
+    }
+
+    /**
+     * Sets needs_rebuild on the rows $rows selects, except those dated in a locked payroll month. Reads the distinct
+     * months of those rows (one plain query), the locked ones among them (one query, none when there are no rows), then
+     * one UPDATE.
+     *
+     * @param  Builder<Attendance>  $rows
+     */
+    private static function flagUnlocked(Builder $rows): int
+    {
+        $months = (clone $rows)->toBase()
+            ->selectRaw('substr(date, 1, 7) as month')
+            ->distinct()
+            ->pluck('month')
+            ->map(fn (mixed $m): string => (string) $m)
+            ->all();
+
+        if ($months === []) {
+            return 0;
+        }
+
+        $locked = PayrollLock::lockedMonths($months);
+
+        if ($locked !== []) {
+            $rows->whereNotIn(DB::raw('substr(date, 1, 7)'), $locked);
+        }
+
+        return $rows->update(['needs_rebuild' => true]);
     }
 }

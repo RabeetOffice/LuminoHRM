@@ -12,6 +12,7 @@ use App\Support\Attendance\AttendanceRebuilder;
 use App\Support\Attendance\CorrectionEligibility;
 use App\Support\Attendance\CorrectionRouting;
 use App\Support\Audit\Audit;
+use App\Support\PayrollLock;
 use Illuminate\Contracts\Mail\Mailable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
@@ -27,6 +28,10 @@ use Throwable;
  *
  * Approval applies the requested times through ApplyManualCorrection (the same code path as a correction on the Daily
  * screen) with the note "Correction request #<id>", inside the same transaction as the status change.
+ *
+ * Payroll lock: a day in an approved (or paid) payroll month cannot be requested (CorrectionEligibility, at submit) and
+ * an open request for one cannot be applied by HR ([decision] PayrollLock::message; the request stays open and can be
+ * rejected). Manager decisions and rejections change no attendance and are not refused.
  */
 class CorrectionRequests
 {
@@ -189,6 +194,14 @@ class CorrectionRequests
             $applied = null;
 
             if ($approve) {
+                // A month whose payroll was approved after the request was made: refused like a stale decision, the
+                // request stays where it is (it can still be rejected). Shared lock on payroll_runs before the
+                // attendance row lock (lock order: request row, payroll run, attendance row).
+                $month = substr($date, 0, 7);
+                if (PayrollLock::isLocked($month)) {
+                    throw ValidationException::withMessages(['decision' => PayrollLock::message($month)]);
+                }
+
                 $row = Attendance::query()->where('employee_id', $locked->employee_id)->onDate($date)->lockForUpdate()->first();
 
                 // A day still pending calculation (status null: punches stored, times not worked out yet) is worked out

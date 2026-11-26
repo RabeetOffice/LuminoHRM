@@ -15,6 +15,7 @@ use App\Support\Audit\Audit;
 use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
 use App\Support\ListQuery;
+use App\Support\PayrollLock;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -41,8 +42,9 @@ use Symfony\Component\HttpFoundation\BinaryFileResponse;
  * allows a day only inside the employment window and not in the future. The window is exactly the span
  * ApplyManualCorrection::employmentRefusal accepts (from max(joining date, attendance start date) to the last working
  * day), except a leaver with no last working day, whom employmentRefusal refuses on every day: can_edit is false.
+ * A month whose payroll is approved (PayrollLock) is frozen: can_edit is false for everyone.
  * Reads per page: the people (their designations), for a non-Admin editor the privileged logins (one query), one
- * query for their attendance rows, one for holidays.
+ * query for their attendance rows, one for holidays, and for an editor the payroll lock (one query).
  */
 class MonthlyController extends Controller
 {
@@ -65,6 +67,8 @@ class MonthlyController extends Controller
         $perPage = $this->perPage($request);
 
         $mayEdit = $user->can('attendance.edit');
+        // A month whose payroll is approved is frozen: no row can be corrected (one query, editors only).
+        $locked = $mayEdit && PayrollLock::isLocked($grid->month);
 
         $paginator = $this->people($user, $grid, $search, $departmentId)
             ->with('designation:id,name')
@@ -100,6 +104,7 @@ class MonthlyController extends Controller
                     'designation' => $e->designation?->name,
                     'photo_url' => EmployeeFiles::photoUrl($e),
                     'can_edit' => $mayEdit
+                        && ! $locked
                         && ApplyManualCorrection::mayCorrect($user, $e, isset($privileged[$e->id]))
                         && $this->correctableWindow($e, $grid, $rows[$e->id]['window']),
                     ...$rows[$e->id],

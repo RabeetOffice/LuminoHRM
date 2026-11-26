@@ -326,10 +326,11 @@ it('refunds many people with a bounded number of queries per request', function 
     $eight = $run('2026-12-15', 8);
 
     // Each affected request costs its own save and audit entry (2 queries); the rest is a fixed number of statements
-    // (14 today: the payroll lock read, locking reads, employees, requests and their types, one delete, one rebuild
-    // flag, the hand-corrected rows on the date, what is left, plans).
+    // (15 today: the payroll lock read, the rebuild flag's own payroll lock read (Phase 5 Task 6), locking reads,
+    // employees, requests and their types, one delete, one rebuild flag, the hand-corrected rows on the date, what is
+    // left, plans).
     expect(($eight - $two) / 12)->toBeLessThanOrEqual(2.0)
-        ->and($two)->toBeLessThanOrEqual(14 + 4 * 2);
+        ->and($two)->toBeLessThanOrEqual(15 + 4 * 2);
 });
 
 it('says how many people and days went back, halves included', function () {

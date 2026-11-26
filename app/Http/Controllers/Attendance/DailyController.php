@@ -17,6 +17,7 @@ use App\Support\Attendance\Leavers;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
+use App\Support\PayrollLock;
 use DateTimeImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
@@ -47,7 +48,8 @@ use Throwable;
  * Who may correct whom (update, reset, and each row's can_edit): attendance.edit, the scope, ApplyManualCorrection::
  * mayCorrect (not your own record unless Admin; an Admin / HR login only by an Admin) and a day the person can be
  * corrected on (ApplyManualCorrection::employmentRefusal: not before max(joining date, attendance start date), not
- * after the last working day, not someone who left without a last working day).
+ * after the last working day, not someone who left without a last working day), not in a month whose payroll is
+ * approved (PayrollLock: can_edit false; update and reset refused with PayrollLock::message()).
  *
  * The page reads two queries for the people and their rows (plus the fixed lookups: departments, the default shift),
  * never one per row. The summary counts the whole day in scope; the filters only narrow the table.
@@ -125,6 +127,9 @@ class DailyController extends Controller
         // A day before the attendance start date can be listed (a punch day) but not corrected or reset.
         $beforeStart = $start !== null && $date < $start;
 
+        // A day in an approved payroll month is frozen: nobody can correct or reset it (one query, editors only).
+        $locked = $canEdit && PayrollLock::isLocked(substr($date, 0, 7));
+
         $list = $employees->map(fn (Employee $e) => $this->row(
             $e,
             $rows->get($e->id),
@@ -134,6 +139,7 @@ class DailyController extends Controller
             $defaultShift,
             $canEdit
                 && ! $beforeStart
+                && ! $locked
                 && ApplyManualCorrection::mayCorrect($user, $e, isset($privileged[$e->id]))
                 && $this->correct->employmentRefusal($e, $date) === null,
             $beforeStart,
@@ -200,6 +206,9 @@ class DailyController extends Controller
         // punch-based values), then audit the values before and the values that resulted. If the rebuild fails the
         // row stays marked needs_rebuild and the scheduled rebuild picks it up; the audit then shows that state.
         $reset = DB::transaction(function () use ($employee, $date, $user, $rebuilder): bool {
+            // An approved payroll month is frozen: refused before the row lock (shared lock on payroll_runs first).
+            ApplyManualCorrection::refuseLocked($date);
+
             $row = Attendance::query()->where('employee_id', $employee->id)->onDate($date)->lockForUpdate()->first();
 
             if ($row === null || ! $row->is_manual) {

@@ -16,6 +16,7 @@ use App\Support\EmployeeRoles;
 use App\Support\Leave\BalanceLine;
 use App\Support\Leave\LeaveBalances;
 use App\Support\Leave\LeaveDays;
+use App\Support\PayrollLock;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -30,6 +31,9 @@ use Spatie\Activitylog\Models\Activity;
  * Admin. An employee that has no account yet gets one, exactly like CreateEmployee.
  *
  * The caller authorises and validates; see EmployeeWriter for the shape of $data. Only keys present in $data change.
+ *
+ * Payroll lock: a joining date change whose old-to-new range touches a month with an approved or paid payroll run is
+ * refused ([joining_date] PayrollLock::message()); nothing is saved.
  */
 class UpdateEmployee
 {
@@ -97,6 +101,19 @@ class UpdateEmployee
             $current->disableLogging(); // one entry for the whole save, written below
             $before = clone $current; // the record as stored, for the allocation recalculation below
             $current->fill($attributes);
+
+            // A joining date moved across (or within) a month whose payroll is approved would change that month: refused.
+            // After the employee row lock (lock order: employee, then payroll_runs shared, then attendance and leave rows).
+            if ($current->isDirty('joining_date')) {
+                $locked = PayrollLock::rangeTouchesLocked(
+                    $before->joining_date->format('Y-m-d'),
+                    $current->joining_date->format('Y-m-d'),
+                );
+
+                if ($locked !== null) {
+                    throw ValidationException::withMessages(['joining_date' => PayrollLock::message($locked)]);
+                }
+            }
 
             $old = [];
             $new = [];

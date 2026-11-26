@@ -11,6 +11,7 @@ use App\Support\Attendance\DayResult;
 use App\Support\Attendance\Leavers;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeRoles;
+use App\Support\PayrollLock;
 use DateTimeImmutable;
 use DateTimeZone;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -27,6 +28,8 @@ use InvalidArgumentException;
  * Refused (ValidationException) before anything is written:
  *   - a future date, or a day the person cannot be corrected on (employmentRefusal: before max(joining date,
  *     attendance start date), after the last working day, or inactive / resigned / terminated with no last working day);
+ *   - a day in a locked payroll month (an approved or paid run: PayrollLock::message, key date), checked again as the
+ *     first statement of the transaction (shared lock on payroll_runs before the row lock);
  *   - no times and no status; times with the status absent; on the open day a clock-in or clock-out later than now;
  *   - a clock-in before the day cutoff (it belongs to the day before); a clock-out at or before the clock-in unless it
  *     is an after-midnight clock-out before the cutoff (stored on the next calendar day).
@@ -107,6 +110,9 @@ class ApplyManualCorrection
             throw ValidationException::withMessages(['date' => $refusal]);
         }
 
+        // Checked here for a clear first message, and again as the first statement of the write's transaction.
+        self::refuseLocked($date);
+
         if ($status !== null && ! in_array($status, self::OVERRIDE_STATUSES, true)) {
             throw ValidationException::withMessages(['status' => 'Choose a valid status.']);
         }
@@ -176,6 +182,24 @@ class ApplyManualCorrection
     }
 
     /**
+     * Refuses a day in a locked payroll month (approved or paid run): ValidationException [date] with
+     * PayrollLock::message(). One query; inside a transaction it takes the shared lock on payroll_runs, so call it
+     * before any row lock. Also used by the Daily screen's reset.
+     *
+     * @param  string  $date  "Y-m-d"
+     *
+     * @throws ValidationException
+     */
+    public static function refuseLocked(string $date): void
+    {
+        $month = substr($date, 0, 7);
+
+        if (PayrollLock::isLocked($month)) {
+            throw ValidationException::withMessages(['date' => PayrollLock::message($month)]);
+        }
+    }
+
+    /**
      * Whether $by may correct $employee's attendance at all (on top of attendance.edit and the scope): never their own
      * record unless they are an Admin, and a person whose login is Admin or HR only when EmployeeRoles::mayTouchAccount
      * allows it (an Admin). $privilegedLogin may be passed when already known (a list), to avoid a query per person.
@@ -238,6 +262,10 @@ class ApplyManualCorrection
         User $by,
         ?string $note,
     ): Attendance {
+        // Lock order: the payroll run (shared, PayrollLock) before the attendance row, so a racing approval either
+        // commits first (and this is refused) or waits for this save.
+        self::refuseLocked($date);
+
         $row = Attendance::query()->where('employee_id', $employee->id)->onDate($date)->lockForUpdate()->first();
 
         $old = $row === null ? null : $this->audited($row);

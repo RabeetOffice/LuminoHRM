@@ -11,6 +11,7 @@ use App\Support\Attendance\Leavers;
 use App\Support\Attendance\RebuildMarks;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeRoles;
+use App\Support\PayrollLock;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
@@ -26,6 +27,11 @@ use InvalidArgumentException;
  *
  * The date rules (not before the joining date, at most a year ahead) are checked by the request; this class only
  * insists that the day exists where it must.
+ *
+ * Payroll lock: a last working day change whose old-to-new range touches a month with an approved or paid payroll run
+ * is refused ([last_working_day] PayrollLock::message()); with no old day the new day's month is checked, when cleared
+ * the old day's month. A status change that keeps the day touches no locked month (an approved month has ended, and
+ * a leaver without a day loses only days from today on).
  */
 class ChangeEmployeeStatus
 {
@@ -90,6 +96,19 @@ class ChangeEmployeeStatus
             // Asking for what is already stored is a successful no-op: no write, no entry, the login is not touched.
             if ($current->status === $status && EmployeeWriter::auditValue($current->last_working_day) === $day) {
                 return $current;
+            }
+
+            // A last working day set, moved or cleared across a month whose payroll is approved would change that month:
+            // refused. Set from none: the new day's month; cleared: the old day's month; moved: every month between.
+            // After the employee row lock (lock order: employee, then payroll_runs shared, then attendance and leave).
+            $oldDay = EmployeeWriter::auditValue($current->last_working_day);
+
+            if ($oldDay !== $day) {
+                $locked = PayrollLock::rangeTouchesLocked((string) ($oldDay ?? $day), (string) ($day ?? $oldDay));
+
+                if ($locked !== null) {
+                    throw ValidationException::withMessages(['last_working_day' => PayrollLock::message($locked)]);
+                }
             }
 
             $wasActive = ! in_array($current->status, self::DISABLING, true);

@@ -14,12 +14,14 @@ use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\RebuildMarks;
 use App\Support\EmployeeAccess;
 use App\Support\Leave\LeaveDays;
+use App\Support\PayrollLock;
 use DateTimeImmutable;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 use Throwable;
@@ -35,6 +37,10 @@ use Throwable;
  * (HolidayLeaveRefund, in the same transaction; an open request whose every day became a holiday is cancelled) and
  * mails each employee after the commit. Removing a holiday adds nothing back; the list sends, per holiday, the people
  * with approved leave around its date (`affected_leave`, people this user may see) for the delete confirmation.
+ *
+ * Payroll lock: a holiday cannot be added on, moved into or out of, renamed on or deleted from a date in a month whose
+ * payroll is approved or paid ([date] PayrollLock::message()). The check is the first statement of each transaction
+ * (shared lock on payroll_runs before the holiday, attendance and leave row locks).
  */
 class HolidayController extends Controller
 {
@@ -89,6 +95,8 @@ class HolidayController extends Controller
         try {
             // Retries: the refund locks employee rows after leave rows, so it can deadlock with a leave approval.
             $changed = DB::transaction(function () use ($request, $refund, $date, $name): array {
+                self::refuseLocked([$date]);
+
                 Holiday::create(['name' => $name, 'date' => $date]);
                 RebuildMarks::forDate($date);
 
@@ -107,14 +115,23 @@ class HolidayController extends Controller
     {
         $newDate = (string) $request->validated('date');
         $name = (string) $request->validated('name');
+        $boundDate = $holiday->date->format('Y-m-d');
 
         try {
-            $changed = DB::transaction(function () use ($request, $holiday, $refund, $newDate, $name): array {
+            $changed = DB::transaction(function () use ($request, $holiday, $refund, $newDate, $name, $boundDate): array {
+                // The payroll lock first (both dates, one query), then the row.
+                self::refuseLocked([$boundDate, $newDate]);
+
                 // Read and lock the row inside the transaction: a deadlock retry runs this again from the stored row
                 // (the bound model may already hold the new values after a rolled-back attempt, so updating it would
                 // write nothing).
                 $current = Holiday::query()->whereKey($holiday->id)->lockForUpdate()->firstOrFail();
                 $oldDate = $current->date->format('Y-m-d');
+
+                // Moved by someone else since the page was read: its stored date is checked too.
+                if ($oldDate !== $boundDate && $oldDate !== $newDate) {
+                    self::refuseLocked([$oldDate]);
+                }
                 $current->update(['name' => $name, 'date' => $newDate]);
 
                 if ($oldDate === $newDate) {
@@ -141,11 +158,30 @@ class HolidayController extends Controller
         $date = $holiday->date->format('Y-m-d');
 
         DB::transaction(function () use ($holiday, $date): void {
+            self::refuseLocked([$date]);
+
             $holiday->delete();
             RebuildMarks::forDate($date);
         });
 
         return back()->with('success', 'Holiday deleted.');
+    }
+
+    /**
+     * Refuses when any of these dates ("Y-m-d") is in a locked payroll month: ValidationException [date] with
+     * PayrollLock::message(). One query.
+     *
+     * @param  list<string>  $dates
+     *
+     * @throws ValidationException
+     */
+    private static function refuseLocked(array $dates): void
+    {
+        $locked = PayrollLock::firstLocked($dates);
+
+        if ($locked !== null) {
+            throw ValidationException::withMessages(['date' => PayrollLock::message($locked)]);
+        }
     }
 
     /**

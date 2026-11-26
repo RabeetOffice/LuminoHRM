@@ -8,6 +8,7 @@ use App\Models\Employee;
 use App\Models\Holiday;
 use App\Models\LeaveDay;
 use App\Models\Shift;
+use App\Support\PayrollLock;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -66,14 +67,20 @@ use Throwable;
  *     the status is overridden (then leave_half is null). leave_half is written on every manual save, never left
  *     stale. The rebuild still never writes a manual row, so a leave change after a correction reaches that day only
  *     when it is corrected again or its manual flag is cleared.
+ *   - Payroll lock: a day in a locked payroll month (an approved or paid run, PayrollLock) is frozen. process() keeps
+ *     every decided column of its row, creates and deletes nothing there, and only sets needs_rebuild = false (so a
+ *     late punch, which is still stored in device_punches, or a mark never loops in the pending queue); closeDay() of
+ *     such a date does nothing; daysWithMissingRows() never lists one. The locked months of a batch are read once, as
+ *     the first statement of its transaction: lock order payroll_runs (shared) -> attendances (for update), the same
+ *     as every attendance write, so it cannot cycle with the payroll approval (run row for update, then loans).
  *   - One employee-day that cannot be decided (bad data) never blocks the others: it is logged (class and ids only),
  *     its row (if any) gets needs_attention = true and needs_rebuild = false inside the same locked transaction (so it
  *     cannot stay at the head of the pending queue, and a punch stored afterwards re-marks it), and the rest of the
  *     batch is written. A database error (QueryException / PDOException) is not bad data: the row gets
  *     needs_attention = true but keeps needs_rebuild = true, so the next minute retries it.
  *
- * Every batch reads its inputs with a fixed number of queries (rows, employees, default shift, stored shifts,
- * holidays, leave days, punches) and writes with a fixed number of statements per 200 rows (bulk insert, bulk upsert, one
+ * Every batch reads its inputs with a fixed number of queries (locked payroll months, rows, employees, default shift,
+ * stored shifts, holidays, leave days, punches) and writes with a fixed number of statements per 200 rows (bulk insert, bulk upsert, one
  * delete), inside one transaction that locks the existing rows first, so a punch stored meanwhile either is seen or
  * re-marks the row after this commit.
  */
@@ -213,7 +220,8 @@ class AttendanceRebuilder
      * or present when exempt; decided from their punches if they have any); every non-manual row still open or still
      * pending (status null) is decided again as a closed day (so a single punch is flagged); a manual row still open
      * (corrected while the day was open) is finalised (see finaliseManual); the day's decided non-manual rows are marked
-     * closed, then pending rows are rebuilt. Running it again changes nothing.
+     * closed, then pending rows are rebuilt. Running it again changes nothing. A date in a locked payroll month is left
+     * exactly as it is (returns 0 at once).
      *
      * @return int employee-days written or deleted for $date
      */
@@ -223,6 +231,11 @@ class AttendanceRebuilder
 
         if ($date >= $this->clock->attendanceToday()) {
             throw new InvalidArgumentException("Only a past day can be closed [{$date}].");
+        }
+
+        // A day in a locked payroll month stays exactly as it was approved: nothing is created, decided or closed.
+        if (PayrollLock::isLocked(substr($date, 0, 7))) {
+            return 0;
         }
 
         $start = $this->startDate();
@@ -288,9 +301,9 @@ class AttendanceRebuilder
      * none: the days the close still has to create rows for (CloseAttendanceDay's backfill). Expected on a day =
      * employed that day (joined, not past the last working day) and not a leaver without a last working day; every such
      * person gets a row on every day once attendance has started (absent, weekend, holiday, exempt present, or a
-     * decided punch day). Two queries whatever the range or the number of people: the candidates, and one grouped count
-     * of the rows inside each person's window per date. Nothing before the attendance start date is ever missing, and
-     * nothing at all while it is unset (no query then).
+     * decided punch day). Three queries whatever the range or the number of people: the candidates, one grouped count
+     * of the rows inside each person's window per date, and the locked payroll months (a day in one is never listed).
+     * Nothing before the attendance start date is ever missing, and nothing at all while it is unset (no query then).
      *
      * @return list<string>
      */
@@ -346,9 +359,16 @@ class AttendanceRebuilder
             ->mapWithKeys(fn (object $row) => [substr((string) $row->day, 0, 10) => (int) $row->aggregate])
             ->all();
 
+        // Query 3: a day in a locked payroll month is never closed again (closeDay does nothing there), so it is not
+        // listed, or the backfill would spend its turns on it every hour.
+        $locked = array_flip(PayrollLock::lockedMonths(array_values(array_unique(array_map(
+            fn (string $d): string => substr($d, 0, 7),
+            array_keys($expected),
+        )))));
+
         $days = [];
         foreach ($expected as $day => $count) {
-            if (($present[$day] ?? 0) < $count) {
+            if (($present[$day] ?? 0) < $count && ! isset($locked[substr($day, 0, 7)])) {
                 $days[] = $day;
             }
         }
@@ -577,6 +597,13 @@ class AttendanceRebuilder
             $unique, $employeeIds, $dates, $today, $start, $duplicateMinutes, $overtimeMin, $cutoff, $currentRules, $employees,
             $isolate, &$failed,
         ): int {
+            // Payroll months of these dates that are approved: their days are frozen. Read first, one query (the shared
+            // lock on payroll_runs comes before the attendance row locks: see the lock order in the class comment).
+            $locked = array_flip(PayrollLock::lockedMonths(array_values(array_unique(array_map(
+                fn (string $d): string => substr($d, 0, 7),
+                $dates,
+            )))));
+
             // Lock first, then read the punches: a punch committed meanwhile is either seen here or re-marks the row
             // (needs_rebuild) after this transaction commits.
             $rows = Attendance::query()
@@ -629,12 +656,27 @@ class AttendanceRebuilder
             $updates = [];
             $deletes = [];
             $failedRows = [];
+            $lockedRows = [];
 
             foreach ($unique as $key => [$id, $date]) {
                 $employee = $byId[$id] ?? null;
                 $row = $rows->get($key);
 
-                if ($employee === null || ($row !== null && $row->is_manual)) {
+                if ($row !== null && $row->is_manual) {
+                    continue;
+                }
+
+                // A locked payroll month: the row keeps every decided column and only leaves the pending queue; no row
+                // is created or deleted there.
+                if (isset($locked[substr($date, 0, 7)])) {
+                    if ($row !== null && $row->needs_rebuild) {
+                        $lockedRows[] = $row->id;
+                    }
+
+                    continue;
+                }
+
+                if ($employee === null) {
                     continue;
                 }
 
@@ -790,7 +832,12 @@ class AttendanceRebuilder
                     ->update(['needs_attention' => true, 'needs_rebuild' => false]);
             }
 
-            return count($inserts) + count($updates) + count($deletes);
+            // Rows of a locked month leave the pending queue unchanged otherwise, so they never loop.
+            foreach (array_chunk($lockedRows, self::CHUNK) as $chunk) {
+                Attendance::query()->whereIn('id', $chunk)->where('is_manual', false)->update(['needs_rebuild' => false]);
+            }
+
+            return count($inserts) + count($updates) + count($deletes) + count($lockedRows);
         });
 
         foreach ($failed as [$id, $date, $e]) {
