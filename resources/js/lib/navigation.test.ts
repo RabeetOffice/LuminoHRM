@@ -113,6 +113,8 @@ describe('ready flag', () => {
         expect(r[2].items[0].children?.map((c) => c.title)).toEqual([
             'Salary Profiles',
             'Payslips',
+            'Loans & Advances',
+            'Opening Figures',
             'Tax Report',
         ]);
         expect(r[3].items.map((i) => i.title)).toEqual([
@@ -365,6 +367,23 @@ describe('soon entries (default)', () => {
         expect(payroll?.soon).toBe(false);
         expect(profiles?.href).toBe('/payroll/salary-profiles');
         expect(profiles?.soon).toBe(false);
+    });
+
+    test('payroll.view opens Loans & Advances and Opening Figures', () => {
+        const r = filterNavigation(navigation, ['payroll.view']);
+        const payroll = r
+            .flatMap((g) => g.items)
+            .find((i) => i.title === 'Payroll');
+        const loans = payroll?.children?.find(
+            (c) => c.title === 'Loans & Advances',
+        );
+        const opening = payroll?.children?.find(
+            (c) => c.title === 'Opening Figures',
+        );
+        expect(loans?.href).toBe('/payroll/loans');
+        expect(loans?.soon).toBe(false);
+        expect(opening?.href).toBe('/payroll/opening');
+        expect(opening?.soon).toBe(false);
     });
 
     test('a parent with mixed children keeps them, each flagged', () => {

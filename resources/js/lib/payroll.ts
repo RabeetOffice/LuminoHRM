@@ -203,3 +203,42 @@ export function nextMonth(month: string): string {
         ? `${year + 1}-01`
         : `${year}-${String(index + 1).padStart(2, '0')}`;
 }
+
+// --- Loans, advances and opening figures (Task 5) ---------------------------
+
+export type LoanType = 'loan' | 'advance';
+export type LoanStatus = 'active' | 'cleared' | 'cancelled';
+
+/** "Loan" / "Advance". */
+export function loanTypeLabel(type: string): string {
+    return type === 'advance' ? 'Advance' : 'Loan';
+}
+
+/**
+ * How a loan's status reads and its pill colour: active (still recovering)
+ * green, cleared (nothing left) grey, cancelled (remainder written off) red.
+ */
+export function loanStatusPill(status: string): {
+    label: string;
+    tone: 'green' | 'grey' | 'red';
+} {
+    if (status === 'cancelled') {
+        return { label: 'Cancelled', tone: 'red' };
+    }
+
+    if (status === 'cleared') {
+        return { label: 'Cleared', tone: 'grey' };
+    }
+
+    return { label: 'Active', tone: 'green' };
+}
+
+/** A tax year named by its start year: 2026 -> "2026-27" (July to June). Matches TaxYear::label. */
+export function taxYearLabel(year: number): string {
+    return `${year}-${String((year + 1) % 100).padStart(2, '0')}`;
+}
+
+/** Whether text is a month written "YYYY-MM" (01..12). */
+export function isMonth(text: string): boolean {
+    return /^\d{4}-(0[1-9]|1[0-2])$/.test(text);
+}
