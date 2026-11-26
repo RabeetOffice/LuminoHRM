@@ -2,6 +2,7 @@
 
 use App\Actions\Assets\SaveAsset;
 use App\Models\Asset;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Spatie\Activitylog\Models\Activity;
 
@@ -83,6 +84,17 @@ it('refuses a purchase date in the future', function () {
         ->assertSessionHasErrors(['purchase_date' => 'The purchase date cannot be in the future.']);
 
     expect(Asset::count())->toBe(0);
+});
+
+it('accepts a purchase date that is today', function () {
+    $this->travelTo(CarbonImmutable::parse('2026-11-26 14:00:00', 'Asia/Karachi'));
+    $hr = userWithRole('hr');
+
+    $this->actingAs($hr)->post('/assets', saForm(['purchase_date' => '2026-11-26']))->assertSessionHasNoErrors();
+    $this->actingAs($hr)->post('/assets', saForm(['serial_number' => 'NEXT', 'purchase_date' => '2026-11-27']))
+        ->assertSessionHasErrors(['purchase_date' => 'The purchase date cannot be in the future.']);
+
+    expect(Asset::query()->where('serial_number', 'ABC123')->sole()->purchase_date->format('Y-m-d'))->toBe('2026-11-26');
 });
 
 it('refuses a missing or unknown category', function (mixed $category) {
@@ -172,6 +184,57 @@ it('writes no audit entry when nothing changes', function () {
     ]))->assertSessionHasNoErrors();
 
     expect(Activity::query()->where('description', 'Asset updated')->count())->toBe(0);
+});
+
+it('answers a same-instant duplicate serial on edit with the validation message, not a 500', function () {
+    $hr = userWithRole('hr');
+    assetRow(['asset_code' => 'AST-0001', 'serial_number' => 'TAKEN']);
+    $asset = assetRow(['asset_code' => 'AST-0002', 'serial_number' => 'MINE']);
+
+    // The check inside the transaction found nothing; the unique index then refuses the UPDATE (another save won the race).
+    Asset::updating(function (): void {
+        $driver = new PDOException('UNIQUE constraint failed: assets.serial_number');
+        $driver->errorInfo = ['23000', 19, 'UNIQUE constraint failed: assets.serial_number'];
+
+        throw new UniqueConstraintViolationException('sqlite', 'update assets set serial_number = ? where id = ?', [], $driver);
+    });
+
+    $this->actingAs($hr)->put("/assets/{$asset->id}", saForm(['serial_number' => 'TAKEN', 'asset_category_id' => $asset->asset_category_id]))
+        ->assertSessionHasErrors(['serial_number' => 'Another asset (AST-0001) already has this serial number.']);
+
+    expect($asset->fresh()->serial_number)->toBe('MINE')
+        ->and(Activity::query()->where('description', 'Asset updated')->count())->toBe(0);
+});
+
+it('rethrows a unique violation on edit that is not about the serial number', function () {
+    $asset = assetRow(['serial_number' => 'MINE']);
+
+    Asset::updating(function (): void {
+        // The statement quotes serial_number, the driver's message does not: only the driver's message counts.
+        $driver = new PDOException('UNIQUE constraint failed: assets.asset_code');
+        $driver->errorInfo = ['23000', 19, 'UNIQUE constraint failed: assets.asset_code'];
+
+        throw new UniqueConstraintViolationException('sqlite', 'update assets set serial_number = ? where id = ?', [], $driver);
+    });
+
+    expect(fn () => app(SaveAsset::class)->update(userWithRole('hr'), $asset, ['serial_number' => 'OTHER']))
+        ->toThrow(UniqueConstraintViolationException::class);
+});
+
+it('leaves the cost alone when the request does not send cost_rupees, and sets or clears it when it does', function () {
+    $hr = userWithRole('hr');
+    $asset = assetRow(['cost' => 123400]);
+    $form = saForm(['asset_category_id' => $asset->asset_category_id, 'serial_number' => null, 'purchase_date' => null]);
+    unset($form['cost_rupees']);
+
+    $this->actingAs($hr)->put("/assets/{$asset->id}", $form)->assertSessionHasNoErrors();
+    expect($asset->fresh()->cost)->toBe(123400);
+
+    $this->actingAs($hr)->put("/assets/{$asset->id}", $form + ['cost_rupees' => 50])->assertSessionHasNoErrors();
+    expect($asset->fresh()->cost)->toBe(5000);
+
+    $this->actingAs($hr)->put("/assets/{$asset->id}", $form + ['cost_rupees' => ''])->assertSessionHasNoErrors();
+    expect($asset->fresh()->cost)->toBeNull();
 });
 
 it('keeps Manager and Employee out of add and edit', function (string $role) {

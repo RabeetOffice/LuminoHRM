@@ -35,6 +35,9 @@ class AssetController extends Controller
     /** People the assign dialog lists up front; with more it searches as you type. */
     public const EMPLOYEE_LIST_MAX = 500;
 
+    /** Matches the picker's server search returns. */
+    public const SEARCH_MAX = 20;
+
     public function index(Request $request): Response|RedirectResponse
     {
         $user = $request->user();
@@ -106,12 +109,6 @@ class AssetController extends Controller
         ));
         $manage = $user->can('assets.manage');
 
-        $employees = Employee::query()
-            ->whereIn('status', ['active', 'probation'])
-            ->orderBy('first_name')->orderBy('last_name')->orderBy('id')
-            ->limit(self::EMPLOYEE_LIST_MAX + 1)
-            ->get(['id', 'employee_code', 'first_name', 'last_name']);
-
         return Inertia::render('assets/show', [
             'asset' => [
                 'id' => $asset->id,
@@ -154,25 +151,33 @@ class AssetController extends Controller
             ],
             'status_options' => $statusOptions,
             'categories' => $this->categories(),
-            'employees' => $employees->take(self::EMPLOYEE_LIST_MAX)->map(fn (Employee $e) => $this->person($e))->values()->all(),
-            'employees_truncated' => $employees->count() > self::EMPLOYEE_LIST_MAX,
             'today' => app(AttendanceClock::class)->attendanceToday(),
         ]);
     }
 
-    /** Search-as-you-type for the assign dialog when there are more people than it lists up front. */
+    /**
+     * The assign dialog's people, fetched when the dialog opens (the asset page itself loads none). Without `q`: the first
+     * EMPLOYEE_LIST_MAX active and probation people, and `truncated` = true when there are more (the dialog then searches
+     * on the server). With `q`: the best SEARCH_MAX matches (`truncated` is false).
+     */
     public function employeeOptions(Request $request): JsonResponse
     {
         abort_unless($request->user()->can('assets.assign'), 403);
 
+        $term = ListQuery::stringParam($request, 'q');
+        $max = $term === '' ? self::EMPLOYEE_LIST_MAX : self::SEARCH_MAX;
+
         $people = Employee::query()
             ->whereIn('status', ['active', 'probation'])
-            ->search(ListQuery::stringParam($request, 'q'))
+            ->search($term)
             ->orderBy('first_name')->orderBy('last_name')->orderBy('id')
-            ->limit(20)
+            ->limit($max + 1)
             ->get(['id', 'employee_code', 'first_name', 'last_name']);
 
-        return response()->json(['employees' => $people->map(fn (Employee $e) => $this->person($e))->values()->all()]);
+        return response()->json([
+            'employees' => $people->take($max)->map(fn (Employee $e) => $this->person($e))->values()->all(),
+            'truncated' => $term === '' && $people->count() > $max,
+        ]);
     }
 
     public function store(AssetRequest $request, SaveAsset $save): RedirectResponse

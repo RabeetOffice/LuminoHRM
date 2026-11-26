@@ -113,19 +113,38 @@ it('offers the status targets the viewer may choose', function (string $role, st
     'admin retired' => ['admin', 'retired', ['available']],
 ]);
 
+it('does not load any people on the asset page: the assign dialog fetches them when it opens', function () {
+    Employee::factory()->count(3)->create(['status' => 'active']);
+    $asset = assetRow();
+
+    $this->actingAs(userWithRole('hr'))->get("/assets/{$asset->id}")->assertInertia(fn (Assert $page) => $page
+        ->missing('employees')->missing('employees_truncated')->where('can.assign', true)->has('categories'));
+});
+
 it('lists active and probation people for the assign dialog, not the others, and says when it is cut', function () {
     Employee::factory()->create(['first_name' => 'Active', 'last_name' => 'One', 'status' => 'active']);
     Employee::factory()->create(['first_name' => 'Probie', 'last_name' => 'Two', 'status' => 'probation']);
     Employee::factory()->create(['first_name' => 'Gone', 'last_name' => 'Three', 'status' => 'resigned']);
     Employee::factory()->create(['first_name' => 'Idle', 'last_name' => 'Four', 'status' => 'inactive']);
-    $asset = assetRow();
 
-    $this->actingAs(userWithRole('hr'))->get("/assets/{$asset->id}")->assertInertia(fn (Assert $page) => $page
-        ->has('employees', 2)
-        ->where('employees.0.name', 'Active One')
-        ->where('employees.1.name', 'Probie Two')
-        ->where('employees_truncated', false)
-        ->has('categories'));
+    $this->actingAs(userWithRole('hr'))->getJson('/assets/employee-options')->assertOk()
+        ->assertJsonCount(2, 'employees')
+        ->assertJsonPath('employees.0.name', 'Active One')
+        ->assertJsonPath('employees.1.name', 'Probie Two')
+        ->assertJsonPath('truncated', false);
+});
+
+it('sends the first 500 people and flags the list as cut when there are more', function () {
+    Employee::factory()->count(501)->create(['status' => 'active']);
+    $hr = userWithRole('hr');
+
+    $this->actingAs($hr)->getJson('/assets/employee-options')->assertOk()
+        ->assertJsonCount(500, 'employees')->assertJsonPath('truncated', true);
+
+    // Exactly 500 is not cut.
+    Employee::query()->orderByDesc('id')->first()->delete();
+    $this->actingAs($hr)->getJson('/assets/employee-options')->assertOk()
+        ->assertJsonCount(500, 'employees')->assertJsonPath('truncated', false);
 });
 
 it('searches people as you type for the assign dialog, active and probation only, at most 20', function () {
@@ -141,6 +160,21 @@ it('searches people as you type for the assign dialog, active and probation only
     $this->actingAs($hr)->getJson('/assets/employee-options?q=tariq')->assertOk()->assertJsonCount(20, 'employees');
     $this->actingAs(userWithRole('manager'))->getJson('/assets/employee-options?q=sara')->assertForbidden();
 });
+
+it('redirects a guest on every asset write and picker route', function (string $method, string $path) {
+    $this->call($method, $path)->assertRedirect('/login');
+})->with([
+    'picker' => ['GET', '/assets/employee-options'],
+    'edit' => ['PUT', '/assets/1'],
+    'status' => ['POST', '/assets/1/status'],
+    'delete' => ['DELETE', '/assets/1'],
+    'return' => ['POST', '/assets/assignments/1/return'],
+    'note' => ['PATCH', '/assets/assignments/1/note'],
+    'assignments list' => ['GET', '/assets/assignments'],
+    'import preview' => ['POST', '/assets/import/preview'],
+    'import run' => ['POST', '/assets/import/run'],
+    'import template' => ['GET', '/assets/import/template'],
+]);
 
 it('redirects to the list after the Admin deletes an asset', function () {
     $asset = assetRow();

@@ -15,12 +15,12 @@ import {
     SelectTrigger,
     SelectValue,
 } from '@/components/ui/select';
-import { assetConditionLabel } from '@/lib/assets';
+import { assetConditionLabel, personLabel } from '@/lib/assets';
 import { formatDate } from '@/lib/format-date';
 import { nextTableUrl } from '@/lib/table-query';
 import { statusPanelId, statusTabId } from '@/lib/tabs';
+import { index as assetsIndex, show } from '@/routes/assets';
 import { index as assignmentsIndex } from '@/routes/assets/assignments';
-import { show } from '@/routes/assets';
 
 type AssignmentRow = {
     id: number;
@@ -127,12 +127,29 @@ export default function Assignments({
                             {row.asset.category}
                         </span>
                     )}
+                    {/* The columns hidden on narrow screens, stacked under the asset. */}
+                    <span className="text-xs text-muted-foreground md:hidden">
+                        {personLabel(row.employee)}
+                    </span>
+                    <span className="text-xs text-muted-foreground sm:hidden">
+                        Given {formatDate(row.assigned_on, dateFormat)}
+                        {row.returned_on
+                            ? ` · Returned ${formatDate(row.returned_on, dateFormat)}`
+                            : ' · Still out'}
+                    </span>
+                    <span className="text-xs text-muted-foreground lg:hidden">
+                        Held {dayCount(row.days_held)} · Out:{' '}
+                        {assetConditionLabel(row.condition_out)}
+                        {row.return_condition &&
+                            ` · Back: ${assetConditionLabel(row.return_condition)}`}
+                    </span>
                 </div>
             ),
         },
         {
             key: 'employee',
             header: 'Employee',
+            className: 'hidden md:table-cell',
             cell: (row) => (
                 <div className="grid gap-0.5">
                     <span className="font-medium">{row.employee.name}</span>
@@ -147,13 +164,13 @@ export default function Assignments({
         {
             key: 'given',
             header: 'Given',
-            className: 'whitespace-nowrap',
+            className: 'hidden whitespace-nowrap sm:table-cell',
             cell: (row) => formatDate(row.assigned_on, dateFormat),
         },
         {
             key: 'returned',
             header: 'Returned',
-            className: 'whitespace-nowrap',
+            className: 'hidden whitespace-nowrap sm:table-cell',
             cell: (row) =>
                 row.returned_on ? (
                     formatDate(row.returned_on, dateFormat)
@@ -164,12 +181,13 @@ export default function Assignments({
         {
             key: 'held',
             header: 'Held',
-            className: 'whitespace-nowrap',
+            className: 'hidden whitespace-nowrap lg:table-cell',
             cell: (row) => dayCount(row.days_held),
         },
         {
             key: 'condition',
             header: 'Condition',
+            className: 'hidden lg:table-cell',
             cell: (row) => (
                 <div className="flex flex-wrap items-center gap-1.5">
                     <StatusPill tone="grey">
@@ -193,7 +211,14 @@ export default function Assignments({
             cell: (row) =>
                 row.returned_on === null ? (
                     <Button variant="outline" size="sm" asChild>
-                        <Link href={show.url(row.asset.id)}>Return</Link>
+                        {/* The asset page opens its Return dialog for this hand-over. */}
+                        <Link
+                            href={show.url(row.asset.id, {
+                                query: { return: row.id },
+                            })}
+                        >
+                            Return
+                        </Link>
                     </Button>
                 ) : null,
         });
@@ -335,7 +360,7 @@ export default function Assignments({
 
 Assignments.layout = {
     breadcrumbs: [
-        { title: 'Assets', href: '/assets' },
+        { title: 'Assets', href: assetsIndex() },
         { title: 'Assignments', href: assignmentsIndex() },
     ],
 };

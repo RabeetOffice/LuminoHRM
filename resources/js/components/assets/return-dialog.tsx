@@ -30,10 +30,16 @@ import {
 import type { AssetPerson } from '@/lib/assets';
 import { formatDate } from '@/lib/format-date';
 
+/** The open hand-over the dialog was opened for: a copy taken at that moment, never the live page prop. */
+export type ReturnTarget = AssetPerson & {
+    assignment_id: number;
+    assigned_on: string;
+};
+
 type Props = {
     asset: { asset_code: string; name: string; condition: string };
-    /** Who has it and since when. */
-    holder: AssetPerson & { assignment_id: number; assigned_on: string };
+    /** Who has it and since when, as it was when the dialog opened (it does not follow the page afterwards). */
+    holder: ReturnTarget;
     /** The attendance day "Y-m-d": the default return date and the latest the server accepts. */
     today: string;
     /** Retiring an asset is an Admin action. */
@@ -42,7 +48,8 @@ type Props = {
 };
 
 /**
- * Take the asset back (assets.assignments.return). Mount it only while open. The server's refusals show in the dialog:
+ * Take the asset back (assets.assignments.return). Mount it only while open, from a snapshot of the hand-over (the page's
+ * own holder can change under it: someone else returns the asset first). The server's refusals show in the dialog:
  * "already returned" (key `assignment`), the date rules (`returned_on`), the next status (`next_status`) and the note
  * (`return_note`).
  */

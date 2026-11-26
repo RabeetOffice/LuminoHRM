@@ -22,10 +22,6 @@ import { cn } from '@/lib/utils';
 
 type Props = {
     asset: { id: number; asset_code: string; name: string };
-    /** Active and probation people (the first 500). */
-    employees: AssetPerson[];
-    /** True when there are more people than `employees` holds: the picker then searches on the server. */
-    truncated: boolean;
     /** The attendance day "Y-m-d": the default hand-over date and the latest one the server accepts. */
     today: string;
     onClose: () => void;
@@ -33,18 +29,30 @@ type Props = {
 
 const SEARCH_DELAY_MS = 250;
 
+/** GET a JSON answer; a non-2xx answer is an error. */
+async function fetchJson<T>(url: string, signal: AbortSignal): Promise<T> {
+    const response = await fetch(url, {
+        headers: { Accept: 'application/json' },
+        signal,
+    });
+
+    if (!response.ok) {
+        throw new Error(`Request failed (${response.status})`);
+    }
+
+    return (await response.json()) as T;
+}
+
+type PickerList = { employees: AssetPerson[]; truncated: boolean };
+
 /**
- * Hand the asset to someone (assets.assign). Mount it only while open. The server's refusals show in the dialog: why
- * the asset cannot be assigned (key `asset`), why this person cannot get it (`employee_id`) and the date rules
- * (`assigned_on`).
+ * Hand the asset to someone (assets.assign). Mount it only while open. The people are fetched when it opens (the first
+ * 500 active and probation people; with more than that the picker searches on the server as you type). A failed load or
+ * search shows an error line with a retry, never old results or "No one matches". The server's refusals show in the
+ * dialog: why the asset cannot be assigned (key `asset`), why this person cannot get it (`employee_id`) and the date
+ * rules (`assigned_on`).
  */
-export function AssignDialog({
-    asset,
-    employees,
-    truncated,
-    today,
-    onClose,
-}: Props) {
+export function AssignDialog({ asset, today, onClose }: Props) {
     const form = useForm({ employee_id: '', assigned_on: today, note: '' });
     const { data, errors } = form;
     // Refusals for the whole action have no field of their own.
@@ -52,42 +60,86 @@ export function AssignDialog({
         'asset',
     ]);
     const [term, setTerm] = useState('');
-    const [found, setFound] = useState<AssetPerson[] | null>(null);
     const [picked, setPicked] = useState<AssetPerson | null>(null);
+    // The up-front list, and whether loading it failed (retry bumps `loadTry`).
+    const [list, setList] = useState<PickerList | null>(null);
+    const [loadFailed, setLoadFailed] = useState(false);
+    const [loadTry, setLoadTry] = useState(0);
+    // Server search results are kept with the term they answer, so a result for an old term is never shown for a new one.
+    const [found, setFound] = useState<{
+        term: string;
+        people: AssetPerson[];
+    } | null>(null);
+    const [failedFor, setFailedFor] = useState<string | null>(null);
+    const [searchTry, setSearchTry] = useState(0);
+    const needle = term.trim();
+
+    useEffect(() => {
+        const controller = new AbortController();
+
+        fetchJson<PickerList>(
+            AssetController.employeeOptions().url,
+            controller.signal,
+        )
+            .then((json) => setList(json))
+            .catch(() => {
+                if (!controller.signal.aborted) {
+                    setLoadFailed(true);
+                }
+            });
+
+        return () => controller.abort();
+    }, [loadTry]);
 
     // With a cut-short list the server does the searching, a moment after typing stops.
+    const serverSearch = list?.truncated === true && needle !== '';
+
     useEffect(() => {
-        if (!truncated || term.trim() === '') {
+        if (!serverSearch) {
             return;
         }
 
         const controller = new AbortController();
         const timer = window.setTimeout(() => {
-            fetch(
-                AssetController.employeeOptions({ query: { q: term.trim() } })
-                    .url,
-                {
-                    headers: { Accept: 'application/json' },
-                    signal: controller.signal,
-                },
+            fetchJson<PickerList>(
+                AssetController.employeeOptions({ query: { q: needle } }).url,
+                controller.signal,
             )
-                .then((response) => (response.ok ? response.json() : null))
-                .then((json: { employees: AssetPerson[] } | null) => {
-                    setFound(json?.employees ?? []);
-                })
-                .catch(() => undefined);
+                .then((json) =>
+                    setFound({ term: needle, people: json.employees }),
+                )
+                .catch(() => {
+                    if (!controller.signal.aborted) {
+                        setFailedFor(needle);
+                    }
+                });
         }, SEARCH_DELAY_MS);
 
         return () => {
             window.clearTimeout(timer);
             controller.abort();
         };
-    }, [term, truncated]);
+    }, [serverSearch, needle, searchTry]);
 
-    const shown =
-        truncated && term.trim() !== ''
-            ? (found ?? [])
-            : filterPeople(employees, term).slice(0, 50);
+    const searchFailed = serverSearch && failedFor === needle;
+    const searching = serverSearch && !searchFailed && found?.term !== needle;
+    const shown = !list
+        ? []
+        : serverSearch
+          ? found?.term === needle
+              ? found.people
+              : []
+          : filterPeople(list.employees, term).slice(0, 50);
+
+    const retryLoad = () => {
+        setLoadFailed(false);
+        setLoadTry((n) => n + 1);
+    };
+
+    const retrySearch = () => {
+        setFailedFor(null);
+        setSearchTry((n) => n + 1);
+    };
 
     const choose = (person: AssetPerson) => {
         setPicked(person);
@@ -145,7 +197,34 @@ export function AssignDialog({
                             aria-label="Employees"
                             className="max-h-44 divide-y overflow-y-auto rounded-lg border"
                         >
-                            {shown.length === 0 ? (
+                            {loadFailed || searchFailed ? (
+                                <li
+                                    role="alert"
+                                    className="flex items-center justify-between gap-3 px-3 py-2 text-sm text-destructive"
+                                >
+                                    <span>
+                                        {loadFailed
+                                            ? 'The list of people could not be loaded.'
+                                            : 'The search failed.'}
+                                    </span>
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={
+                                            loadFailed ? retryLoad : retrySearch
+                                        }
+                                    >
+                                        Try again
+                                    </Button>
+                                </li>
+                            ) : list === null || searching ? (
+                                <li className="px-3 py-2 text-sm text-muted-foreground">
+                                    {list === null
+                                        ? 'Loading people…'
+                                        : 'Searching…'}
+                                </li>
+                            ) : shown.length === 0 ? (
                                 <li className="px-3 py-2 text-sm text-muted-foreground">
                                     No one matches.
                                 </li>

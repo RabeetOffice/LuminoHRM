@@ -62,10 +62,7 @@ class AssignmentController extends Controller
             'employee.department:id,name',
         ]);
 
-        if (! $all) {
-            $people = (new EmployeeAccess($user))->scope(Employee::query())->select('employees.id');
-            $query->whereIn('asset_assignments.employee_id', $people);
-        }
+        AssetScope::assignments($user, $query);
 
         match ($status) {
             'open' => $query->open()->orderBy('asset_assignments.assigned_on')->orderBy('asset_assignments.id'),
@@ -135,6 +132,8 @@ class AssignmentController extends Controller
         /** @var User $user */
         $user = $request->user();
 
+        $this->mustSee($user, $assignment);
+
         $action->handle(
             $user,
             $assignment,
@@ -154,6 +153,8 @@ class AssignmentController extends Controller
         /** @var User $user */
         $user = $request->user();
 
+        $this->mustSee($user, $assignment);
+
         // A key the request did not send leaves that note as it is; a key sent empty clears it.
         $action->handle(
             $user,
@@ -165,6 +166,14 @@ class AssignmentController extends Controller
         );
 
         return back()->with('success', $action->changed() ? 'Note saved.' : 'Nothing changed.');
+    }
+
+    /** Defence in depth: the holder must be someone the user's EmployeeAccess lets them see (403 otherwise). */
+    private function mustSee(User $user, AssetAssignment $assignment): void
+    {
+        $holder = Employee::query()->find($assignment->employee_id);
+
+        abort_unless($holder !== null && (new EmployeeAccess($user))->canView($holder), 403);
     }
 
     /**

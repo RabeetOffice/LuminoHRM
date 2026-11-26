@@ -3,6 +3,7 @@ import { ArrowRight } from 'lucide-react';
 import { StatusPill } from '@/components/hrm/status-pill';
 import { assetConditionLabel } from '@/lib/assets';
 import { formatMoney } from '@/lib/payroll';
+import { index as assetsIndex, show } from '@/routes/assets';
 import { assets as myAssets } from '@/routes/my';
 
 /** The "My Assets" page (every signed-in user). */
@@ -24,7 +25,7 @@ export type ProfileAsset = {
     return_condition?: string | null;
 };
 
-/** The profile's Assets tab data: what the person holds and the last 20 returned. */
+/** The profile's Assets tab data: what the person holds and the assets given back (the latest 20). */
 export type ProfileAssets = {
     holding: ProfileAsset[];
     history: ProfileAsset[];
@@ -51,7 +52,7 @@ function AssetRow({
                 <div className="flex flex-wrap items-center gap-x-2 text-sm font-medium">
                     {canOpen ? (
                         <Link
-                            href={`/assets/${asset.asset_id}`}
+                            href={show(asset.asset_id)}
                             className="truncate hover:underline"
                         >
                             {asset.name}
@@ -129,7 +130,7 @@ export function AssetsPanel({
                     {assets.history.length > 0 && (
                         <section className="grid gap-3">
                             <h3 className="text-sm font-semibold">
-                                Returned (last {assets.history.length})
+                                Earlier assets
                             </h3>
                             <ul
                                 role="list"
@@ -151,7 +152,7 @@ export function AssetsPanel({
 
             {assets.can_assign && (
                 <div>
-                    <Link href="/assets" className={linkClass}>
+                    <Link href={assetsIndex()} className={linkClass}>
                         Assign an asset
                         <ArrowRight aria-hidden="true" className="size-3.5" />
                     </Link>

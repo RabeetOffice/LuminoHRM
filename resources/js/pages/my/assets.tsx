@@ -62,24 +62,43 @@ export default function MyAssets({ employee, holding, history }: Props) {
                             {row.category}
                         </span>
                     )}
+                    {/* The columns hidden on narrow screens, stacked under the asset. */}
+                    <span className="text-xs text-muted-foreground sm:hidden">
+                        Given {formatDate(row.assigned_on, dateFormat)} ·
+                        Returned {formatDate(row.returned_on, dateFormat)}
+                    </span>
+                    <span className="text-xs text-muted-foreground md:hidden">
+                        Out: {assetConditionLabel(row.condition_out)}
+                        {row.return_condition &&
+                            ` · Back: ${assetConditionLabel(row.return_condition)}`}
+                    </span>
+                    {(row.note || row.return_note) && (
+                        <span className="grid gap-0.5 text-xs break-words text-muted-foreground lg:hidden">
+                            {row.note && <span>Out: {row.note}</span>}
+                            {row.return_note && (
+                                <span>Back: {row.return_note}</span>
+                            )}
+                        </span>
+                    )}
                 </div>
             ),
         },
         {
             key: 'given',
             header: 'Given',
-            className: 'whitespace-nowrap',
+            className: 'hidden whitespace-nowrap sm:table-cell',
             cell: (row) => formatDate(row.assigned_on, dateFormat),
         },
         {
             key: 'returned',
             header: 'Returned',
-            className: 'whitespace-nowrap',
+            className: 'hidden whitespace-nowrap sm:table-cell',
             cell: (row) => formatDate(row.returned_on, dateFormat),
         },
         {
             key: 'condition',
             header: 'Condition',
+            className: 'hidden md:table-cell',
             cell: (row) => (
                 <div className="flex flex-wrap items-center gap-1.5">
                     <StatusPill tone="grey">
@@ -96,6 +115,7 @@ export default function MyAssets({ employee, holding, history }: Props) {
         {
             key: 'notes',
             header: 'Notes',
+            className: 'hidden lg:table-cell',
             cell: (row) => {
                 const notes = [row.note, row.return_note].filter(Boolean);
 

@@ -17,7 +17,11 @@ import {
     SelectTrigger,
     SelectValue,
 } from '@/components/ui/select';
-import { assetConditionLabel, assetStatusLabel } from '@/lib/assets';
+import {
+    assetConditionLabel,
+    assetStatusLabel,
+    personLabel,
+} from '@/lib/assets';
 import type { AssetPerson } from '@/lib/assets';
 import { formatDate } from '@/lib/format-date';
 import { formatMoney } from '@/lib/payroll';
@@ -109,15 +113,19 @@ export default function Assets({
         {
             key: 'code',
             header: 'Asset ID',
-            className: 'whitespace-nowrap',
+            className: 'hidden whitespace-nowrap sm:table-cell',
             cell: (row) => <CodeBadge code={row.asset_code} />,
         },
         {
             key: 'name',
             header: 'Name',
-            className: 'min-w-44 font-medium',
+            className: 'font-medium sm:min-w-44',
             cell: (row) => (
                 <div className="grid gap-0.5">
+                    {/* The ID column is hidden on a phone: the badge moves under the name. */}
+                    <span className="sm:hidden">
+                        <CodeBadge code={row.asset_code} />
+                    </span>
                     {team ? (
                         <span>{row.name}</span>
                     ) : (
@@ -134,6 +142,11 @@ export default function Assets({
                             .filter(Boolean)
                             .join(' · ')}
                     </span>
+                    {row.holder && (
+                        <span className="text-xs font-normal text-muted-foreground md:hidden">
+                            Held by {personLabel(row.holder)}
+                        </span>
+                    )}
                 </div>
             ),
         },
@@ -163,7 +176,7 @@ export default function Assets({
         {
             key: 'holder',
             header: 'Held by',
-            className: 'min-w-36',
+            className: 'hidden min-w-36 md:table-cell',
             cell: (row) =>
                 row.holder ? (
                     <div className="grid gap-0.5">

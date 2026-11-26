@@ -56,9 +56,13 @@ class AssetRequest extends FormRequest
     public function assetData(): array
     {
         $v = $this->validated();
-        $rupees = $v['cost_rupees'] ?? null;
+        // A request without `cost_rupees` leaves the stored cost alone; one that sends it (even empty) sets or clears it.
+        if ($this->has('cost_rupees')) {
+            $rupees = $v['cost_rupees'] ?? null;
+            $v['cost'] = $rupees === null ? null : Money::rupees((int) $rupees);
+        }
+
         unset($v['cost_rupees']);
-        $v['cost'] = $rupees === null ? null : Money::rupees((int) $rupees);
 
         return $v;
     }

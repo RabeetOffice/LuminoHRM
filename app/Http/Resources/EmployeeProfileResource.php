@@ -56,8 +56,9 @@ use Illuminate\Http\Resources\Json\JsonResource;
  *
  *   assets     {holding: the open assignments [{id, asset_id, code, name, category, assigned_on, condition_out, cost?}],
  *              history: the last 20 returned [same + returned_on, return_condition], can_assign} for whoever may open the
- *              profile (the person, employees.view-all, a manager for a direct report). `cost` and `can_assign` come
- *              only with assets.assign: the key is absent, not null, for everyone else.
+ *              profile (the person, employees.view-all, a manager for a direct report). `cost` comes only with
+ *              assets.assign (the key is absent, not null, for everyone else); `can_assign` is always sent: true with
+ *              assets.assign, false for everyone else.
  *
  * Never add a field to a group without asking whether the roles that see that group may see it, and never return
  * the model or a relation as it is.

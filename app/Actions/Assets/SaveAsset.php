@@ -60,11 +60,22 @@ class SaveAsset
     /** @param  array<string, mixed>  $data */
     public function update(User $by, Asset $asset, array $data): Asset
     {
-        return DB::transaction(function () use ($by, $asset, $data): Asset {
-            $locked = Asset::query()->whereKey($asset->getKey())->lockForUpdate()->firstOrFail();
+        try {
+            return DB::transaction(function () use ($by, $asset, $data): Asset {
+                $locked = Asset::query()->whereKey($asset->getKey())->lockForUpdate()->firstOrFail();
 
-            return $this->within($by, $locked, $data);
-        });
+                return $this->within($by, $locked, $data);
+            });
+        } catch (UniqueConstraintViolationException $e) {
+            // A same-instant duplicate serial that the check inside the transaction could not see: the validation message,
+            // not a 500. Judged on the driver's own message (errorInfo), as AssignAsset does: getMessage() quotes the whole
+            // UPDATE, whose column list always names serial_number.
+            if (! $this->isSerialConflict($e)) {
+                throw $e;
+            }
+
+            throw $this->serialConflict($data) ?? $e;
+        }
     }
 
     /**
@@ -271,6 +282,17 @@ class SaveAsset
         $other = Asset::query()->where('serial_number', $serial)->first(['asset_code']);
 
         return ValidationException::withMessages(['serial_number' => self::serialTakenMessage($other->asset_code ?? 'another asset')]);
+    }
+
+    /**
+     * True when the unique violation is on the serial number. The driver's message: "UNIQUE constraint failed:
+     * assets.serial_number" on SQLite, "Duplicate entry 'x' for key 'assets_serial_number_unique'" on MariaDB.
+     */
+    private function isSerialConflict(UniqueConstraintViolationException $e): bool
+    {
+        $driverMessage = (string) ($e->errorInfo[2] ?? $e->getPrevious()?->getMessage() ?? '');
+
+        return str_contains($driverMessage, 'assets.serial_number') || str_contains($driverMessage, 'assets_serial_number_unique');
     }
 
     private function dateText(Asset $asset): ?string

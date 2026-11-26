@@ -52,6 +52,28 @@ class AssetScope
     }
 
     /**
+     * The hand-overs a user may see: all of them for HR and Admin; for a Manager only those of people EmployeeAccess lets
+     * them see (their reports and themself); none for anyone else.
+     *
+     * @param  Builder<AssetAssignment>  $query
+     * @return Builder<AssetAssignment>
+     */
+    public static function assignments(User $user, Builder $query): Builder
+    {
+        if (self::seesAll($user)) {
+            return $query;
+        }
+
+        if (! $user->can('assets.view-team')) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        $people = (new EmployeeAccess($user))->scope(Employee::query())->select('employees.id');
+
+        return $query->whereIn('asset_assignments.employee_id', $people);
+    }
+
+    /**
      * Narrows to assets whose code, name or serial contains $term, or whose current holder's name or code does
      * (wildcards in the term are literal).
      *

@@ -7,8 +7,7 @@ import {
     Undo2,
     Wrench,
 } from 'lucide-react';
-import { useState } from 'react';
-import { toast } from 'sonner';
+import { useEffect, useState } from 'react';
 import AssetController from '@/actions/App/Http/Controllers/Assets/AssetController';
 import { AssetFormDialog } from '@/components/assets/asset-form-dialog';
 import type { AssetFormValues } from '@/components/assets/asset-form-dialog';
@@ -16,13 +15,14 @@ import { AssetStatusPill } from '@/components/assets/asset-status-pill';
 import { AssignDialog } from '@/components/assets/assign-dialog';
 import { HistoryTable } from '@/components/assets/history-table';
 import type { AssetHistoryRow } from '@/components/assets/history-table';
+import { NoteDialog } from '@/components/assets/note-dialog';
 import { ReturnDialog } from '@/components/assets/return-dialog';
+import type { ReturnTarget } from '@/components/assets/return-dialog';
 import { StatusDialog } from '@/components/assets/status-dialog';
 import { ConfirmDialog } from '@/components/hrm/confirm-dialog';
 import { PageHeader } from '@/components/hrm/page-header';
 import { Button } from '@/components/ui/button';
 import { assetConditionLabel, firstError, personLabel } from '@/lib/assets';
-import type { AssetPerson } from '@/lib/assets';
 import { formatDate } from '@/lib/format-date';
 import { index, show } from '@/routes/assets';
 
@@ -33,9 +33,7 @@ type Props = {
         cost_formatted: string | null;
         status: string;
     };
-    holder:
-        | (AssetPerson & { assignment_id: number; assigned_on: string })
-        | null;
+    holder: ReturnTarget | null;
     history: AssetHistoryRow[];
     can: {
         edit: boolean;
@@ -47,13 +45,18 @@ type Props = {
     };
     status_options: string[];
     categories: { id: number; name: string }[];
-    employees: AssetPerson[];
-    employees_truncated: boolean;
     /** The attendance day "Y-m-d". */
     today: string;
 };
 
-type Dialog = 'edit' | 'assign' | 'return' | 'status' | null;
+type Dialog = 'edit' | 'assign' | 'status' | null;
+
+/** The assignment id in `?return=`, or null when it is absent or not a whole number. */
+function returnParam(url: string): number | null {
+    const value = new URLSearchParams(url.split('?')[1] ?? '').get('return');
+
+    return value !== null && /^\d+$/.test(value) ? Number(value) : null;
+}
 
 function Detail({
     label,
@@ -79,30 +82,59 @@ export default function AssetPage({
     can,
     status_options,
     categories,
-    employees,
-    employees_truncated,
     today,
 }: Props) {
-    const dateFormat = usePage().props.app.dateFormat;
+    const { url, props } = usePage();
+    const dateFormat = props.app.dateFormat;
     const [dialog, setDialog] = useState<Dialog>(null);
+    // The Return dialog works from a copy of the open hand-over taken when it opens: the live `holder` changes under it
+    // when someone else returns or re-assigns the asset, and the dialog must neither vanish nor retarget. `?return={id}`
+    // (the Assignments list's Return button) opens it for that assignment while it is still open.
+    const [returning, setReturning] = useState<ReturnTarget | null>(() =>
+        holder !== null && returnParam(url) === holder.assignment_id
+            ? { ...holder }
+            : null,
+    );
+    const [noteRow, setNoteRow] = useState<AssetHistoryRow | null>(null);
     const [confirmOpen, setConfirmOpen] = useState(false);
+    const [deleteError, setDeleteError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const close = () => setDialog(null);
 
+    // The parameter has done its job: drop it so a reload does not reopen the dialog.
+    const hadReturnParam = returnParam(url) !== null;
+    useEffect(() => {
+        if (hadReturnParam) {
+            router.replace({
+                url: show.url(asset.id),
+                preserveState: true,
+                preserveScroll: true,
+            });
+        }
+    }, [hadReturnParam, asset.id]);
+
+    const closeConfirm = (open: boolean) => {
+        setConfirmOpen(open);
+
+        if (!open) {
+            setDeleteError(null);
+        }
+    };
+
+    // The dialog stays open when the delete is refused (the asset was handed out since this page loaded, key `asset`)
+    // and says why; on success the server redirects to the list.
     const remove = () =>
         router.delete(AssetController.destroy(asset.id).url, {
-            onStart: () => setBusy(true),
-            // A late refusal (the asset was handed out since this page loaded) comes back on the key `asset`.
-            onError: (errors) => {
-                toast.error(
+            onStart: () => {
+                setBusy(true);
+                setDeleteError(null);
+            },
+            onError: (errors) =>
+                setDeleteError(
                     firstError(errors, ['asset']) ??
                         'The asset could not be deleted.',
-                );
-            },
-            onFinish: () => {
-                setBusy(false);
-                setConfirmOpen(false);
-            },
+                ),
+            onFinish: () => setBusy(false),
         });
 
     return (
@@ -138,7 +170,11 @@ export default function AssetPage({
                                 </Button>
                             )}
                             {can.return && (
-                                <Button onClick={() => setDialog('return')}>
+                                <Button
+                                    onClick={() =>
+                                        holder && setReturning({ ...holder })
+                                    }
+                                >
                                     <Undo2 />
                                     Return
                                 </Button>
@@ -219,7 +255,7 @@ export default function AssetPage({
                     >
                         History
                     </h2>
-                    <HistoryTable rows={history} />
+                    <HistoryTable rows={history} onEditNotes={setNoteRow} />
                 </section>
             </div>
 
@@ -232,21 +268,23 @@ export default function AssetPage({
                 />
             )}
             {dialog === 'assign' && (
-                <AssignDialog
-                    asset={asset}
-                    employees={employees}
-                    truncated={employees_truncated}
-                    today={today}
-                    onClose={close}
-                />
+                <AssignDialog asset={asset} today={today} onClose={close} />
             )}
-            {dialog === 'return' && holder && (
+            {returning && (
                 <ReturnDialog
+                    key={returning.assignment_id}
                     asset={asset}
-                    holder={holder}
+                    holder={returning}
                     today={today}
                     canRetire={can.retire}
-                    onClose={close}
+                    onClose={() => setReturning(null)}
+                />
+            )}
+            {noteRow && (
+                <NoteDialog
+                    key={noteRow.id}
+                    assignment={noteRow}
+                    onClose={() => setNoteRow(null)}
                 />
             )}
             {dialog === 'status' && (
@@ -259,9 +297,21 @@ export default function AssetPage({
 
             <ConfirmDialog
                 open={confirmOpen}
-                onOpenChange={setConfirmOpen}
+                onOpenChange={closeConfirm}
                 title="Delete asset?"
-                description={`${asset.asset_code} "${asset.name}" will be deleted. It has never been handed out. This cannot be undone.`}
+                description={
+                    <>
+                        {`${asset.asset_code} "${asset.name}" will be deleted. It has never been handed out. This cannot be undone.`}
+                        {deleteError && (
+                            <span
+                                role="alert"
+                                className="mt-3 block rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                            >
+                                {deleteError}
+                            </span>
+                        )}
+                    </>
+                }
                 processing={busy}
                 onConfirm={remove}
             />
