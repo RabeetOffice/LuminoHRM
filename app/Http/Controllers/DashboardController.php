@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Employee;
+use App\Support\Assets\DashboardAssets;
 use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\DashboardAttendance;
 use App\Support\Attendance\MonthGrid;
@@ -49,6 +50,9 @@ use Inertia\Response;
  *                  attendance month (paid in the first days of this month). No salary figure reaches anyone else.
  *   latestPayslip  {month, label, net (paisa), download_url}  for everyone with an employee record: their OWN latest
  *                  line of an approved or paid run (never a draft); absent when there is none.
+ *   myAssets       {count, names, more}  for everyone with an employee record: how many assets they hold, the names of the
+ *                  first 5 and how many more there are (App\Support\Assets\DashboardAssets). No cost, no codes, nobody
+ *                  else's assets; absent without an employee record.
  */
 class DashboardController extends Controller
 {
@@ -108,6 +112,10 @@ class DashboardController extends Controller
             if ($payslip !== null) {
                 $props['latestPayslip'] = $payslip;
             }
+        }
+
+        if ($user->employee_id !== null) {
+            $props['myAssets'] = DashboardAssets::mine((int) $user->employee_id);
         }
 
         return Inertia::render('dashboard', $props);

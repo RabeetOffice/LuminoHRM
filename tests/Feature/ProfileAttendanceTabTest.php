@@ -55,7 +55,7 @@ it('gives a manager the tab for a direct report, and their own record links to M
     $onReport = patProps($this->actingAs($managerUser)->get("/employees/{$report->id}")->assertOk());
     $onSelf = patProps($this->actingAs($managerUser)->get("/employees/{$manager->id}")->assertOk());
 
-    expect($onReport['tabs'])->toBe(['basic', 'employment', 'attendance', 'leave'])
+    expect($onReport['tabs'])->toBe(['basic', 'employment', 'attendance', 'leave', 'assets'])
         ->and($onReport['employee']['attendance']['own'])->toBeFalse()
         ->and($onSelf['employee']['attendance']['own'])->toBeTrue();
 });

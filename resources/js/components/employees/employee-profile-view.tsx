@@ -11,6 +11,8 @@ import {
 } from 'lucide-react';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
+import { AssetsPanel } from '@/components/assets/assets-panel';
+import type { ProfileAssets } from '@/components/assets/assets-panel';
 import { DocumentsPanel } from '@/components/employees/documents-panel';
 import type { EmployeeDocumentItem } from '@/components/employees/documents-panel';
 import { LeavePanel } from '@/components/employees/leave-panel';
@@ -92,6 +94,8 @@ export type EmployeeProfile = {
     leave?: ProfileLeave;
     /** Only for payroll.view viewers (Admin, HR); never a Manager or an Employee, not even on their own record. */
     salary?: ProfileSalary;
+    /** What the person holds and the last returned; cost only with assets.assign. */
+    assets?: ProfileAssets;
 };
 
 /** One salary profile on the Salary tab. Money in paisa. */
@@ -416,6 +420,7 @@ export function EmployeeProfileView({
         attendance,
         leave,
         salary,
+        assets,
     } = employee;
 
     const activeTab =
@@ -603,6 +608,7 @@ export function EmployeeProfileView({
         salary: salary && (
             <SalaryPanel employeeId={employee.id} salary={salary} date={date} />
         ),
+        assets: assets && <AssetsPanel assets={assets} date={date} />,
     };
 
     return (

@@ -4,6 +4,7 @@ namespace App\Http\Resources;
 
 use App\Http\Controllers\Payroll\SalaryProfileController;
 use App\Mail\LeaveRequestSubmitted;
+use App\Models\AssetAssignment;
 use App\Models\Employee;
 use App\Models\LeaveRequest;
 use App\Models\Loan;
@@ -12,6 +13,7 @@ use App\Models\PayrollRun;
 use App\Models\SalaryProfile;
 use App\Models\Shift;
 use App\Models\User;
+use App\Support\Assets\AssetHoldings;
 use App\Support\Attendance\AttendanceClock;
 use App\Support\Attendance\MonthGrid;
 use App\Support\EmployeeAccess;
@@ -52,6 +54,11 @@ use Illuminate\Http\Resources\Json\JsonResource;
  *              maySeeSalary). Never for a Manager or an Employee, not even on their own record or My Profile: absent
  *              (key and tab), and nothing about salary is even read.
  *
+ *   assets     {holding: the open assignments [{id, asset_id, code, name, category, assigned_on, condition_out, cost?}],
+ *              history: the last 20 returned [same + returned_on, return_condition], can_assign} for whoever may open the
+ *              profile (the person, employees.view-all, a manager for a direct report). `cost` and `can_assign` come
+ *              only with assets.assign: the key is absent, not null, for everyone else.
+ *
  * Never add a field to a group without asking whether the roles that see that group may see it, and never return
  * the model or a relation as it is.
  *
@@ -69,6 +76,7 @@ class EmployeeProfileResource extends JsonResource
         'attendance' => 'attendance',
         'leave' => 'leave',
         'salary' => 'salary',
+        'assets' => 'assets',
     ];
 
     /** @var list<string> */
@@ -79,6 +87,8 @@ class EmployeeProfileResource extends JsonResource
     private readonly bool $manage;
 
     private readonly bool $own;
+
+    private readonly bool $assign;
 
     public function __construct(Employee $resource, private readonly EmployeeAccess $access, User $viewer)
     {
@@ -98,6 +108,9 @@ class EmployeeProfileResource extends JsonResource
         if (self::maySeeSalary($viewer, $resource)) {
             $this->groups[] = 'salary';
         }
+        // Whoever may open the profile may see what the person holds; the cost is for assets.assign only.
+        $this->groups[] = 'assets';
+        $this->assign = $viewer->can('assets.assign');
         $this->viewAll = $viewer->can('employees.view-all');
         $this->manage = $access->canManage();
     }
@@ -181,6 +194,10 @@ class EmployeeProfileResource extends JsonResource
 
         if ($this->allows('salary')) {
             $data['salary'] = $this->salary();
+        }
+
+        if ($this->allows('assets')) {
+            $data['assets'] = $this->assets();
         }
 
         return $data;
@@ -366,6 +383,54 @@ class EmployeeProfileResource extends JsonResource
                     'partly_cancelled' => $r->status === 'approved' && $r->cancelled_from !== null,
                 ];
             })->all()),
+        ];
+    }
+
+    /**
+     * The Assets tab: what the person holds now and the last 20 returned (newest return first). `cost` (paisa) and the
+     * link to the asset page and the assign action only with assets.assign.
+     *
+     * @return array{holding: list<array<string, mixed>>, history: list<array<string, mixed>>, can_assign: bool}
+     */
+    private function assets(): array
+    {
+        $employee = $this->resource;
+
+        $row = function (AssetAssignment $a): array {
+            $data = [
+                'id' => $a->id,
+                'asset_id' => $a->asset_id,
+                'code' => $a->asset->asset_code,
+                'name' => $a->asset->name,
+                'category' => $a->asset->category->name,
+                'assigned_on' => $a->assigned_on->format('Y-m-d'),
+                'condition_out' => $a->condition_out,
+            ];
+
+            if ($this->assign) {
+                $data['cost'] = $a->asset->cost === null ? null : (int) $a->asset->cost;
+            }
+
+            return $data;
+        };
+
+        $returned = AssetAssignment::query()
+            ->where('employee_id', $employee->getKey())
+            ->whereNotNull('returned_on')
+            ->with('asset.category')
+            ->orderByDesc('returned_on')
+            ->orderByDesc('id')
+            ->limit(20)
+            ->get();
+
+        return [
+            'holding' => array_values(AssetHoldings::openFor($employee)->map($row)->all()),
+            'history' => array_values($returned->map(fn (AssetAssignment $a) => [
+                ...$row($a),
+                'returned_on' => $a->returned_on->format('Y-m-d'),
+                'return_condition' => $a->return_condition,
+            ])->all()),
+            'can_assign' => $this->assign,
         ];
     }
 

@@ -31,8 +31,8 @@ const MP_OWN_ACCOUNT = 'PK11OWNB0000111122223333';
 const MP_OWN_DOC = 'My Signed Contract';
 const MP_PDF = "%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n";
 
-const MP_ALL_TABS = ['basic', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave'];
-const MP_ALL_KEYS = ['id', 'code', 'name', 'photo_url', 'basic', 'identity', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave'];
+const MP_ALL_TABS = ['basic', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave', 'assets'];
+const MP_ALL_KEYS = ['id', 'code', 'name', 'photo_url', 'basic', 'identity', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave', 'assets'];
 
 beforeEach(function () {
     Notification::fake();
@@ -133,8 +133,8 @@ it('shows every role only their own record with all six groups, read-only', func
         ->assertInertia(fn ($p) => $p->component('my/profile'));
     $props = mpProps($response);
 
-    expect($props['tabs'])->toBe(in_array($role, ['admin', 'hr'], true) ? [...MP_ALL_TABS, 'salary'] : MP_ALL_TABS)
-        ->and(array_keys($props['employee']))->toBe(in_array($role, ['admin', 'hr'], true) ? [...MP_ALL_KEYS, 'salary'] : MP_ALL_KEYS)
+    expect($props['tabs'])->toBe(in_array($role, ['admin', 'hr'], true) ? [...array_slice(MP_ALL_TABS, 0, -1), 'salary', 'assets'] : MP_ALL_TABS)
+        ->and(array_keys($props['employee']))->toBe(in_array($role, ['admin', 'hr'], true) ? [...array_slice(MP_ALL_KEYS, 0, -1), 'salary', 'assets'] : MP_ALL_KEYS)
         ->and($props['employee']['id'])->toBe($own->id)
         ->and($props['employee']['identity'])->toBe(['cnic' => '35202-1234567-1', 'dob' => MP_OWN_DOB])
         ->and($props['employee']['contact']['address'])->toBe(MP_OWN_ADDRESS)

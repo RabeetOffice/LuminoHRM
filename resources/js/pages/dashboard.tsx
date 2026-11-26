@@ -1,6 +1,8 @@
 import { Head, Link, usePage } from '@inertiajs/react';
 import { ArrowRight } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { MyAssetsCard } from '@/components/assets/assets-panel';
+import type { MyAssets } from '@/components/assets/assets-panel';
 import { Avatar } from '@/components/hrm/avatar';
 import { PageHeader } from '@/components/hrm/page-header';
 import {
@@ -118,6 +120,8 @@ type Props = {
     payrollThisMonth?: PayrollThisMonth;
     /** The viewer's own latest payslip of an approved or paid month (absent when there is none). */
     latestPayslip?: LatestPayslip;
+    /** The viewer's own assets (everyone with an employee record). */
+    myAssets?: MyAssets;
 };
 
 const SERIES_META: Record<TrendSeriesKey, { label: string; bar: string }> = {
@@ -143,6 +147,7 @@ export default function Dashboard({
     hasEmployee,
     payrollThisMonth,
     latestPayslip,
+    myAssets,
 }: Props) {
     const { auth, app } = usePage().props;
     const can = useCan();
@@ -342,6 +347,7 @@ export default function Dashboard({
                     ) : hasEmployee ? (
                         <LatestPayslipCard payslip={null} />
                     ) : null}
+                    {myAssets && <MyAssetsCard mine={myAssets} />}
                     {birthdays && <BirthdaysCard people={birthdays} />}
                 </section>
             </div>

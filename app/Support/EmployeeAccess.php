@@ -36,6 +36,8 @@ class EmployeeAccess
 
     public const PAYROLL_MESSAGE = 'This employee has payroll history. Set the status to Inactive, Resigned or Terminated instead.';
 
+    public const ASSETS_MESSAGE = 'This employee has asset history. Set the status to Inactive, Resigned or Terminated instead.';
+
     private ?int $ownId = null;
 
     private bool $ownLoaded = false;
@@ -128,6 +130,11 @@ class EmployeeAccess
         if ($employee->salaryProfiles()->exists() || $employee->loans()->exists()
             || $employee->openingBalances()->exists() || $employee->payrollItems()->exists()) {
             $blockers[] = self::PAYROLL_MESSAGE;
+        }
+
+        // Assignment rows restrict the delete at the database; who held what is history to keep.
+        if ($employee->assetAssignments()->exists()) {
+            $blockers[] = self::ASSETS_MESSAGE;
         }
 
         return $blockers;

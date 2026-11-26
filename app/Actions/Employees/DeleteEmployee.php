@@ -22,7 +22,7 @@ use Spatie\Activitylog\Models\Activity;
  *
  * The caller has checked employees.delete and EmployeeAccess::deleteBlockers(); this class re-checks the account rule
  * that no one can end up without an active Admin, the two leave blockers (leave requests, hand-entered balance
- * figures) and the payroll blocker (salary profiles, loans, payroll lines, opening balances) under the row lock. The employee's plain leave balance rows are deleted with the record.
+ * figures) and the payroll blocker (salary profiles, loans, payroll lines, opening balances) and the asset blocker (any assignment row) under the row lock. The employee's plain leave balance rows are deleted with the record.
  */
 class DeleteEmployee
 {
@@ -49,6 +49,11 @@ class DeleteEmployee
             if ($current->salaryProfiles()->exists() || $current->loans()->exists()
                 || $current->payrollItems()->exists() || $current->openingBalances()->exists()) {
                 throw new AccountRuleViolation(EmployeeAccess::PAYROLL_MESSAGE);
+            }
+
+            // Asset assignments restrict the delete at the database too; who held what is history. Re-checked under the lock.
+            if ($current->assetAssignments()->exists()) {
+                throw new AccountRuleViolation(EmployeeAccess::ASSETS_MESSAGE);
             }
 
             Audit::record(
