@@ -72,7 +72,7 @@ it('gives a manager the tab for a direct report, and their own record is marked 
     $onReport = $this->actingAs($managerUser)->get("/employees/{$report->id}")->assertOk()->inertiaProps();
     $onSelf = $this->actingAs($managerUser)->get("/employees/{$manager->id}")->assertOk()->inertiaProps();
 
-    expect($onReport['tabs'])->toBe(['basic', 'employment', 'attendance', 'leave'])
+    expect($onReport['tabs'])->toBe(['basic', 'employment', 'attendance', 'leave', 'assets'])
         ->and($onReport['employee']['leave']['own'])->toBeFalse()
         ->and($onSelf['tabs'])->toContain('leave')
         ->and($onSelf['employee']['leave']['own'])->toBeTrue();
