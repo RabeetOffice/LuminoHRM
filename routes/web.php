@@ -282,6 +282,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::put('{employee}/{taxYear}', [\App\Http\Controllers\Payroll\OpeningFiguresController::class, 'update'])
                 ->whereNumber('employee')->where('taxYear', '\d{4}')->name('update');
         });
+    });
 
     // Payroll downloads and the yearly tax report (Admin / HR only). The bank sheet is for approved / paid runs (a draft
     // is 404 in the controller); the summary is for any run.
