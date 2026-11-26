@@ -109,7 +109,11 @@ describe('ready flag', () => {
             'Leave Types',
             'Holidays',
         ]);
-        expect(r[2].items.map((i) => i.title)).toEqual(['Payroll']);
+        expect(r[2].items.map((i) => i.title)).toEqual(['Payroll', 'Assets']);
+        expect(r[2].items[1].children?.map((c) => c.title)).toEqual([
+            'All Assets',
+            'Assignments',
+        ]);
         expect(r[2].items[0].children?.map((c) => c.title)).toEqual([
             'Salary Profiles',
             'Payroll Runs',
@@ -128,6 +132,7 @@ describe('ready flag', () => {
             'My Attendance',
             'My Leaves',
             'My Payslips',
+            'My Assets',
         ]);
     });
 
@@ -266,7 +271,7 @@ describe('soon entries (default)', () => {
         const r = filterNavigation(navigation, ['employees.view-all']);
         const assets = r
             .flatMap((g) => g.items)
-            .find((i) => i.title === 'My Assets');
+            .find((i) => i.title === 'My Reviews');
         expect(assets?.soon).toBe(true);
     });
 
@@ -327,7 +332,7 @@ describe('soon entries (default)', () => {
             false,
             false,
             false,
-            true,
+            false,
             true,
         ]);
     });
@@ -349,12 +354,47 @@ describe('soon entries (default)', () => {
     });
 
     test('a parent with only unready visible children is one soon row', () => {
-        const r = filterNavigation(navigation, ['assets.assign']);
-        const assets = r
+        const r = filterNavigation(navigation, ['performance.manage']);
+        const performance = r
             .flatMap((g) => g.items)
-            .find((i) => i.title === 'Assets');
-        expect(assets?.soon).toBe(true);
-        expect(assets?.children).toBeUndefined();
+            .find((i) => i.title === 'Performance');
+        expect(performance?.soon).toBe(true);
+        expect(performance?.children).toBeUndefined();
+    });
+
+    test('the three assets entries are ready for the right roles', () => {
+        const assetsFor = (perms: string[]) => {
+            const items = filterNavigation(navigation, perms).flatMap(
+                (g) => g.items,
+            );
+
+            return {
+                parent: items.find((i) => i.title === 'Assets'),
+                mine: items.find((i) => i.title === 'My Assets'),
+            };
+        };
+
+        for (const perm of ['assets.assign', 'assets.view-team']) {
+            const { parent, mine } = assetsFor([perm]);
+            expect(parent?.soon).toBe(false);
+            expect(
+                parent?.children?.map((c) => [
+                    c.title,
+                    toUrl(c.href ?? ''),
+                    c.soon,
+                ]),
+            ).toEqual([
+                ['All Assets', '/assets', false],
+                ['Assignments', '/assets/assignments', false],
+            ]);
+            expect(mine?.soon).toBe(false);
+            expect(toUrl(mine?.href ?? '')).toBe('/my/assets');
+        }
+
+        // An employee has no Assets group, only My Assets.
+        const { parent, mine } = assetsFor([]);
+        expect(parent).toBeUndefined();
+        expect(mine?.soon).toBe(false);
     });
 
     test('payroll.view opens Payroll with Salary Profiles ready', () => {
@@ -441,8 +481,8 @@ describe('soon entries (default)', () => {
     });
 
     test('search matches a soon entry by title', () => {
-        const r = filterNavigation(navigation, [], 'my assets');
-        expect(titlesOf(r)).toEqual([['My Space', ['My Assets']]]);
+        const r = filterNavigation(navigation, [], 'my reviews');
+        expect(titlesOf(r)).toEqual([['My Space', ['My Reviews']]]);
         expect(r[0].items[0].soon).toBe(true);
     });
 
@@ -471,7 +511,7 @@ describe('soon entries (default)', () => {
         expect(entry?.permission).toBeUndefined();
     });
 
-    test('the ready entries today are exactly the ten built pages', () => {
+    test('the ready entries today are exactly the built pages', () => {
         const ready = navigation
             .flatMap((g) => g.items)
             .filter((i) => i.children === undefined && i.ready !== false)
@@ -489,6 +529,7 @@ describe('soon entries (default)', () => {
             'My Attendance',
             'My Leaves',
             'My Payslips',
+            'My Assets',
         ]);
     });
 

@@ -44,6 +44,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // My Leaves: the signed-in person's own balances and requests (no person in the URL; an empty state when not linked).
     Route::get('my/leaves', [\App\Http\Controllers\Leave\MyLeaveController::class, 'show'])->name('my.leaves');
 
+    // My Assets: the signed-in person's own assets (every role; the account's own employee record only).
+    Route::get('my/assets', [\App\Http\Controllers\Assets\MyAssetController::class, 'show'])->name('my.assets');
+
     // My Payslips: the signed-in person's own payslips of approved / paid runs (any other item id = 403).
     Route::get('my/payslips', [\App\Http\Controllers\MyPayslipController::class, 'index'])->name('my.payslips');
     Route::get('my/payslips/{item}', [\App\Http\Controllers\MyPayslipController::class, 'download'])->whereNumber('item')->name('my.payslips.download');
@@ -178,6 +181,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // the asset page (Admin, HR). Static `assets/...` paths come before `assets/{asset}`.
     Route::get('assets', [\App\Http\Controllers\Assets\AssetController::class, 'index'])->name('assets.index');
     Route::get('assets/employee-options', [\App\Http\Controllers\Assets\AssetController::class, 'employeeOptions'])->middleware('can:assets.assign')->name('assets.employee-options');
+    // The Assignments list (Admin, HR: all; Manager: their team, read-only; checked in the controller).
+    Route::get('assets/assignments', [\App\Http\Controllers\Assets\AssignmentController::class, 'index'])->name('assets.assignments.index');
     Route::get('assets/{asset}', [\App\Http\Controllers\Assets\AssetController::class, 'show'])->middleware('can:assets.assign')->whereNumber('asset')->name('assets.show');
 
     // Attendance > Raw Punches: every punch the machines sent (Admin, HR). Giving an unknown machine user ID to an

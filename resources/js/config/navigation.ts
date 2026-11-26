@@ -34,7 +34,12 @@ import { index as hrmSettingsIndex } from '@/routes/hrm-settings';
 import { index as leaveBalancesIndex } from '@/routes/leave/balances';
 import { index as leaveRequestsIndex } from '@/routes/leave/requests';
 import { index as leaveTypesIndex } from '@/routes/leave/types';
-import { attendance as myAttendance, leaves as myLeaves } from '@/routes/my';
+import { index as assignmentsIndex } from '@/routes/assets/assignments';
+import {
+    assets as myAssets,
+    attendance as myAttendance,
+    leaves as myLeaves,
+} from '@/routes/my';
 import { index as organizationIndex } from '@/routes/organization';
 import { index as usersIndex } from '@/routes/users';
 
@@ -214,12 +219,8 @@ export const navigation: NavGroup[] = [
                 icon: Laptop,
                 permission: ['assets.assign', 'assets.view-team'],
                 children: [
-                    { title: 'All Assets', href: '/assets', ...unready },
-                    {
-                        title: 'Assignments',
-                        href: '/assets/assignments',
-                        ...unready,
-                    },
+                    { title: 'All Assets', href: '/assets' },
+                    { title: 'Assignments', href: assignmentsIndex() },
                 ],
             },
         ],
@@ -284,9 +285,8 @@ export const navigation: NavGroup[] = [
             },
             {
                 title: 'My Assets',
-                href: '/my/assets',
+                href: myAssets(),
                 icon: Package,
-                ...unready,
             },
             {
                 title: 'My Reviews',

@@ -3,9 +3,10 @@ import { ArrowRight } from 'lucide-react';
 import { StatusPill } from '@/components/hrm/status-pill';
 import { assetConditionLabel } from '@/lib/assets';
 import { formatMoney } from '@/lib/payroll';
+import { assets as myAssets } from '@/routes/my';
 
 /** The "My Assets" page (every signed-in user). */
-export const MY_ASSETS_HREF = '/my/assets';
+export const MY_ASSETS_HREF = myAssets.url();
 
 /** One asset on the profile's Assets tab. `cost` (paisa) is only sent with assets.assign. */
 export type ProfileAsset = {
