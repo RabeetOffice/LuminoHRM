@@ -35,7 +35,7 @@ describe('visibleTabs', () => {
     });
 
     it('ignores keys it does not know and returns nothing for an empty list', () => {
-        expect(visibleTabs(['salary', 'basic']).map((t) => t.key)).toEqual([
+        expect(visibleTabs(['payslips', 'basic']).map((t) => t.key)).toEqual([
             'basic',
         ]);
         expect(visibleTabs([])).toEqual([]);
@@ -50,6 +50,7 @@ describe('visibleTabs', () => {
             'Documents',
             'Attendance',
             'Leave',
+            'Salary',
         ]);
         expect(PROFILE_TABS[0].title).toBe('Basic Information');
     });

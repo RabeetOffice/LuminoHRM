@@ -32,10 +32,12 @@ import {
 import type { ProfileTabKey } from '@/lib/employee-profile';
 import { formatDate } from '@/lib/format-date';
 import { formatMinutes } from '@/lib/minutes';
+import { formatMoney, monthLabel } from '@/lib/payroll';
 import { statusPanelId, statusTabId } from '@/lib/tabs';
 import { monthly } from '@/routes/attendance';
 import { show } from '@/routes/employees';
 import { attendance as myAttendance } from '@/routes/my';
+import { show as salaryShow } from '@/routes/payroll/salary-profiles';
 
 type Person = { id: number; name: string; code: string; designation: string };
 
@@ -88,6 +90,38 @@ export type EmployeeProfile = {
     attendance?: ProfileAttendance;
     /** Only for the person, leave.approve-all, and leave.approve-team for a direct report. */
     leave?: ProfileLeave;
+    /** Only for payroll.view viewers (Admin, HR); never a Manager or an Employee, not even on their own record. */
+    salary?: ProfileSalary;
+};
+
+/** One salary profile on the Salary tab. Money in paisa. */
+export type ProfileSalaryProfile = {
+    id: number;
+    effective_from: string;
+    basic: number;
+    gross: number;
+    taxable_gross: number;
+    deductions: number;
+    /** "5% of gross taxable", "Rs 2,000 fixed", "None". */
+    tax: string;
+    note: string | null;
+    upcoming?: boolean;
+};
+
+/** The Salary tab (Admin and HR only). Money in paisa. */
+export type ProfileSalary = {
+    code: string;
+    current: ProfileSalaryProfile | null;
+    history: ProfileSalaryProfile[];
+    loans: {
+        id: number;
+        type: string;
+        amount: number;
+        installment: number;
+        start_month: string;
+        remaining: number;
+    }[];
+    payslips: { id: number; month: string; label: string; net: number }[];
 };
 
 /** The current month's attendance summary (MonthGrid totals; pending days never counted, half day = 0.5). */
@@ -207,6 +241,142 @@ function AttendancePanel({ attendance }: { attendance: ProfileAttendance }) {
     );
 }
 
+/** A small list of label / value lines in a bordered box. */
+function LineList({ lines }: { lines: [number, ReactNode, ReactNode][] }) {
+    return (
+        <ul role="list" className="divide-y rounded-lg border">
+            {lines.map(([key, label, value]) => (
+                <li
+                    key={key}
+                    className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 px-3 py-2 text-sm"
+                >
+                    <span>{label}</span>
+                    <span className="text-muted-foreground tabular-nums">
+                        {value}
+                    </span>
+                </li>
+            ))}
+        </ul>
+    );
+}
+
+/** The Salary tab (Admin and HR only): current salary, recent history, open loans and the last payslips. */
+function SalaryPanel({
+    employeeId,
+    salary,
+    date,
+}: {
+    employeeId: number;
+    salary: ProfileSalary;
+    date: (value: string) => string | null;
+}) {
+    const { current } = salary;
+    const linkClass =
+        'inline-flex items-center gap-1 text-sm font-medium text-brand-ink hover:underline';
+    const figures: [string, number][] = current
+        ? [
+              ['Basic', current.basic],
+              ['Gross', current.gross],
+              ['Taxable', current.taxable_gross],
+              ['Fixed deductions', current.deductions],
+          ]
+        : [];
+
+    return (
+        <div className="grid gap-6">
+            {current === null ? (
+                <p className="text-sm text-muted-foreground">
+                    No salary yet, so payroll cannot pay this person.
+                </p>
+            ) : (
+                <div className="grid gap-3">
+                    <p className="text-sm text-muted-foreground">
+                        {current.upcoming ? 'Starts' : 'In force since'}{' '}
+                        {date(current.effective_from)} · Tax: {current.tax}
+                    </p>
+                    <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                        {figures.map(([label, value]) => (
+                            <div key={label} className="rounded-lg border p-3">
+                                <dt className="text-xs text-muted-foreground">
+                                    {label}
+                                </dt>
+                                <dd className="mt-0.5 font-semibold tabular-nums">
+                                    {formatMoney(value)}
+                                </dd>
+                            </div>
+                        ))}
+                    </dl>
+                </div>
+            )}
+
+            {salary.history.length > 1 && (
+                <div>
+                    <h3 className="mb-2 text-sm font-semibold">
+                        Salary history
+                    </h3>
+                    <LineList
+                        lines={salary.history.map((row) => [
+                            row.id,
+                            `From ${date(row.effective_from)}`,
+                            `Gross ${formatMoney(row.gross)}`,
+                        ])}
+                    />
+                </div>
+            )}
+
+            <div>
+                <h3 className="mb-2 text-sm font-semibold">
+                    Loans and advances
+                </h3>
+                {salary.loans.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                        Nothing outstanding.
+                    </p>
+                ) : (
+                    <LineList
+                        lines={salary.loans.map((loan) => [
+                            loan.id,
+                            `${loan.type === 'advance' ? 'Advance' : 'Loan'} of ${formatMoney(loan.amount)} from ${monthLabel(loan.start_month)}`,
+                            `${formatMoney(loan.remaining)} left · ${formatMoney(loan.installment)} a month`,
+                        ])}
+                    />
+                )}
+            </div>
+
+            <div>
+                <h3 className="mb-2 text-sm font-semibold">Recent payslips</h3>
+                {salary.payslips.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                        No approved payroll yet.
+                    </p>
+                ) : (
+                    <LineList
+                        lines={salary.payslips.map((slip) => [
+                            slip.id,
+                            slip.label,
+                            `Net ${formatMoney(slip.net)}`,
+                        ])}
+                    />
+                )}
+            </div>
+
+            <div className="flex flex-wrap gap-x-6 gap-y-2">
+                <Link href={salaryShow(employeeId)} className={linkClass}>
+                    Open salary profiles
+                    <ArrowRight aria-hidden="true" className="size-3.5" />
+                </Link>
+                <Link
+                    href={`/payroll/loans?search=${encodeURIComponent(salary.code)}`}
+                    className={linkClass}
+                >
+                    Open loans and advances
+                    <ArrowRight aria-hidden="true" className="size-3.5" />
+                </Link>
+            </div>
+        </div>
+    );
+}
+
 function Card({ title, children }: { title: string; children: ReactNode }) {
     return (
         <section className="rounded-xl border bg-card p-4 shadow-xs sm:p-6">
@@ -245,6 +415,7 @@ export function EmployeeProfileView({
         documents,
         attendance,
         leave,
+        salary,
     } = employee;
 
     const activeTab =
@@ -429,6 +600,9 @@ export function EmployeeProfileView({
         ),
         attendance: attendance && <AttendancePanel attendance={attendance} />,
         leave: leave && <LeavePanel leave={leave} />,
+        salary: salary && (
+            <SalaryPanel employeeId={employee.id} salary={salary} date={date} />
+        ),
     };
 
     return (

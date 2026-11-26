@@ -217,6 +217,23 @@ Route::middleware(['auth', 'verified'])->group(function () {
         });
     });
 
+    // Payroll > Salary Profiles: salary figures are Admin / HR only (payroll.view to read, payroll.run to write; who may
+    // edit whose salary is PayrollAccess::mayEditSalary in SaveSalaryProfile, 403). A profile of someone else is 404.
+    Route::prefix('payroll/salary-profiles')->name('payroll.salary-profiles.')->group(function () {
+        Route::middleware('can:payroll.view')->group(function () {
+            Route::get('/', [\App\Http\Controllers\Payroll\SalaryProfileController::class, 'index'])->name('index');
+            Route::get('{employee}', [\App\Http\Controllers\Payroll\SalaryProfileController::class, 'show'])->whereNumber('employee')->name('show');
+        });
+
+        Route::middleware('can:payroll.run')->group(function () {
+            Route::post('{employee}', [\App\Http\Controllers\Payroll\SalaryProfileController::class, 'store'])->whereNumber('employee')->name('store');
+            Route::put('{employee}/{profile}', [\App\Http\Controllers\Payroll\SalaryProfileController::class, 'update'])
+                ->whereNumber(['employee', 'profile'])->name('update');
+            Route::delete('{employee}/{profile}', [\App\Http\Controllers\Payroll\SalaryProfileController::class, 'destroy'])
+                ->whereNumber(['employee', 'profile'])->name('destroy');
+        });
+    });
+
     // Users and roles. No delete route: accounts are disabled, never removed.
     Route::middleware('can:users.manage')->prefix('users')->name('users.')->group(function () {
         Route::get('/', [UserController::class, 'index'])->name('index');

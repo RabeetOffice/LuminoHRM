@@ -133,8 +133,8 @@ it('shows every role only their own record with all six groups, read-only', func
         ->assertInertia(fn ($p) => $p->component('my/profile'));
     $props = mpProps($response);
 
-    expect($props['tabs'])->toBe(MP_ALL_TABS)
-        ->and(array_keys($props['employee']))->toBe(MP_ALL_KEYS)
+    expect($props['tabs'])->toBe(in_array($role, ['admin', 'hr'], true) ? [...MP_ALL_TABS, 'salary'] : MP_ALL_TABS)
+        ->and(array_keys($props['employee']))->toBe(in_array($role, ['admin', 'hr'], true) ? [...MP_ALL_KEYS, 'salary'] : MP_ALL_KEYS)
         ->and($props['employee']['id'])->toBe($own->id)
         ->and($props['employee']['identity'])->toBe(['cnic' => '35202-1234567-1', 'dob' => MP_OWN_DOB])
         ->and($props['employee']['contact']['address'])->toBe(MP_OWN_ADDRESS)

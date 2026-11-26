@@ -185,7 +185,6 @@ export const navigation: NavGroup[] = [
                     {
                         title: 'Salary Profiles',
                         href: '/payroll/salary-profiles',
-                        ...unready,
                     },
                     {
                         title: 'Payroll Runs',

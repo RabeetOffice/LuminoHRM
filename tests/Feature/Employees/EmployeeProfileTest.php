@@ -25,6 +25,7 @@ const EPR_DEVICE = 'MCH-88123-ZQ';
 const EPR_DOC_TITLE = 'Secret Contract Scan';
 
 const EPR_ALL_TABS = ['basic', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave'];
+const EPR_PAYROLL_TABS = [...EPR_ALL_TABS, 'salary'];
 
 /** A fully filled employee: every group has data, and the restricted data is distinctive. */
 function eprRecord(array $attrs = [], ?User $user = null): Employee
@@ -132,8 +133,8 @@ it('shows an admin any record with all six groups and every tab', function () {
 
     $props = eprProps($this->actingAs($admin)->get("/employees/{$e->id}")->assertOk());
 
-    expect($props['tabs'])->toBe(EPR_ALL_TABS)
-        ->and(array_keys($props['employee']))->toBe(['id', 'code', 'name', 'photo_url', 'basic', 'identity', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave'])
+    expect($props['tabs'])->toBe(EPR_PAYROLL_TABS)
+        ->and(array_keys($props['employee']))->toBe(['id', 'code', 'name', 'photo_url', 'basic', 'identity', 'employment', 'contact', 'banking', 'documents', 'attendance', 'leave', 'salary'])
         ->and($props['employee']['name'])->toBe('Ayesha Khan')
         ->and($props['employee']['code'])->toBe($e->employee_code)
         ->and($props['employee']['basic'])->toBe([
@@ -155,9 +156,9 @@ it('shows HR any record, including an Admin record, with every tab but no edit r
     $onAdmin = eprProps($this->actingAs($hr)->get("/employees/{$adminEmployee->id}")->assertOk());
     $onPlain = eprProps($this->actingAs($hr)->get("/employees/{$plain->id}")->assertOk());
 
-    expect($onAdmin['tabs'])->toBe(EPR_ALL_TABS)
+    expect($onAdmin['tabs'])->toBe(EPR_PAYROLL_TABS)
         ->and($onAdmin['can'])->toBe(['edit' => false, 'changeStatus' => false, 'delete' => false])
-        ->and($onPlain['tabs'])->toBe(EPR_ALL_TABS)
+        ->and($onPlain['tabs'])->toBe(EPR_PAYROLL_TABS)
         ->and($onPlain['can'])->toBe(['edit' => true, 'changeStatus' => true, 'delete' => false]);
 });
 

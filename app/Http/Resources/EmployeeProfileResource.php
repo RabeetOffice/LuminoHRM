@@ -2,9 +2,14 @@
 
 namespace App\Http\Resources;
 
+use App\Http\Controllers\Payroll\SalaryProfileController;
 use App\Mail\LeaveRequestSubmitted;
 use App\Models\Employee;
 use App\Models\LeaveRequest;
+use App\Models\Loan;
+use App\Models\PayrollItem;
+use App\Models\PayrollRun;
+use App\Models\SalaryProfile;
 use App\Models\Shift;
 use App\Models\User;
 use App\Support\Attendance\AttendanceClock;
@@ -41,6 +46,11 @@ use Illuminate\Http\Resources\Json\JsonResource;
  *              [{id, type, colour, from_date, to_date, half, dates, days, status, partly_cancelled}]} for the person
  *              themself, leave.approve-all, or leave.approve-team for their own direct reports (maySeeLeave). Never a
  *              reason or an attachment. Absent (key and tab) for everyone else.
+ *   salary     {code, current: profile|null (in force today, else the first upcoming one), history: the last 5 profiles
+ *              (newest first), loans: active loans and advances with something remaining, payslips: the last 6 lines of
+ *              approved or paid runs (not excluded) [{id, month, label, net}]} for payroll.view viewers ONLY (Admin, HR:
+ *              maySeeSalary). Never for a Manager or an Employee, not even on their own record or My Profile: absent
+ *              (key and tab), and nothing about salary is even read.
  *
  * Never add a field to a group without asking whether the roles that see that group may see it, and never return
  * the model or a relation as it is.
@@ -58,6 +68,7 @@ class EmployeeProfileResource extends JsonResource
         'documents' => 'documents',
         'attendance' => 'attendance',
         'leave' => 'leave',
+        'salary' => 'salary',
     ];
 
     /** @var list<string> */
@@ -82,6 +93,10 @@ class EmployeeProfileResource extends JsonResource
 
         if ($this->own || self::maySeeLeave($viewer, $resource)) {
             $this->groups[] = 'leave';
+        }
+
+        if (self::maySeeSalary($viewer, $resource)) {
+            $this->groups[] = 'salary';
         }
         $this->viewAll = $viewer->can('employees.view-all');
         $this->manage = $access->canManage();
@@ -162,6 +177,10 @@ class EmployeeProfileResource extends JsonResource
 
         if ($this->allows('leave')) {
             $data['leave'] = $this->leave();
+        }
+
+        if ($this->allows('salary')) {
+            $data['salary'] = $this->salary();
         }
 
         return $data;
@@ -347,6 +366,77 @@ class EmployeeProfileResource extends JsonResource
                     'partly_cancelled' => $r->status === 'approved' && $r->cancelled_from !== null,
                 ];
             })->all()),
+        ];
+    }
+
+    /**
+     * Whether the viewer may see this person's salary: payroll.view (Admin, HR). Never a Manager or an Employee, not
+     * even for their own record (their own payslips live in My Payslips).
+     */
+    public static function maySeeSalary(User $viewer, Employee $employee): bool
+    {
+        return $viewer->can('payroll.view');
+    }
+
+    /**
+     * The Salary tab: the current profile, the last 5 profiles, active loans with what remains, and the last 6
+     * approved payslip lines. Money in paisa.
+     *
+     * @return array{code: string, current: array<string, mixed>|null, history: list<array<string, mixed>>, loans: list<array<string, mixed>>, payslips: list<array{id: int, month: string, label: string, net: int}>}
+     */
+    private function salary(): array
+    {
+        $employee = $this->resource;
+        $today = app(AttendanceClock::class)->attendanceToday();
+
+        $profiles = SalaryProfile::query()
+            ->where('employee_id', $employee->id)
+            ->with('components')
+            ->orderByDesc('effective_from')
+            ->orderByDesc('id')
+            ->get();
+
+        $current = SalaryProfileController::currentOf(array_reverse($profiles->all()), $today);
+
+        $loans = Loan::query()
+            ->where('employee_id', $employee->id)
+            ->where('status', 'active')
+            ->withRemaining()
+            ->orderBy('start_month')
+            ->orderBy('id')
+            ->get()
+            ->filter(fn (Loan $loan) => $loan->remaining() > 0);
+
+        $payslips = PayrollItem::query()
+            ->join('payroll_runs', 'payroll_runs.id', '=', 'payroll_items.payroll_run_id')
+            ->where('payroll_items.employee_id', $employee->id)
+            ->where('payroll_items.excluded', false)
+            ->whereIn('payroll_runs.status', (array) config('hrm.payroll.locked_statuses'))
+            ->orderByDesc('payroll_runs.month')
+            ->limit(6)
+            ->get(['payroll_items.id', 'payroll_items.net', 'payroll_runs.month']);
+
+        return [
+            'code' => $employee->employee_code,
+            'current' => $current === null ? null : [
+                ...SalaryProfileController::profileRow($current),
+                'upcoming' => $current->effective_from->toDateString() > $today,
+            ],
+            'history' => array_values($profiles->take(5)->map(fn (SalaryProfile $p) => SalaryProfileController::profileRow($p))->all()),
+            'loans' => array_values($loans->map(fn (Loan $loan) => [
+                'id' => $loan->id,
+                'type' => $loan->type,
+                'amount' => (int) $loan->amount,
+                'installment' => (int) $loan->installment,
+                'start_month' => (string) $loan->start_month,
+                'remaining' => $loan->remaining(),
+            ])->all()),
+            'payslips' => array_values($payslips->map(fn (PayrollItem $item) => [
+                'id' => (int) $item->id,
+                'month' => (string) $item->getAttribute('month'),
+                'label' => PayrollRun::monthLabel((string) $item->getAttribute('month')),
+                'net' => (int) $item->net,
+            ])->all()),
         ];
     }
 

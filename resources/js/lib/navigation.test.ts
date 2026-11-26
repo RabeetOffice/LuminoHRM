@@ -81,6 +81,7 @@ describe('ready flag', () => {
         expect(r.map((g) => g.label)).toEqual([
             'Overview',
             'Workforce',
+            'Finance & Assets',
             'System',
             'My Space',
         ]);
@@ -108,12 +109,16 @@ describe('ready flag', () => {
             'Leave Types',
             'Holidays',
         ]);
-        expect(r[2].items.map((i) => i.title)).toEqual([
+        expect(r[2].items.map((i) => i.title)).toEqual(['Payroll']);
+        expect(r[2].items[0].children?.map((c) => c.title)).toEqual([
+            'Salary Profiles',
+        ]);
+        expect(r[3].items.map((i) => i.title)).toEqual([
             'Settings',
             'Users & Roles',
             'Audit Log',
         ]);
-        expect(r[3].items.map((i) => i.title)).toEqual([
+        expect(r[4].items.map((i) => i.title)).toEqual([
             'My Profile',
             'My Attendance',
             'My Leaves',
@@ -338,12 +343,25 @@ describe('soon entries (default)', () => {
     });
 
     test('a parent with only unready visible children is one soon row', () => {
+        const r = filterNavigation(navigation, ['assets.assign']);
+        const assets = r
+            .flatMap((g) => g.items)
+            .find((i) => i.title === 'Assets');
+        expect(assets?.soon).toBe(true);
+        expect(assets?.children).toBeUndefined();
+    });
+
+    test('payroll.view opens Payroll with Salary Profiles ready', () => {
         const r = filterNavigation(navigation, ['payroll.view']);
         const payroll = r
             .flatMap((g) => g.items)
             .find((i) => i.title === 'Payroll');
-        expect(payroll?.soon).toBe(true);
-        expect(payroll?.children).toBeUndefined();
+        const profiles = payroll?.children?.find(
+            (c) => c.title === 'Salary Profiles',
+        );
+        expect(payroll?.soon).toBe(false);
+        expect(profiles?.href).toBe('/payroll/salary-profiles');
+        expect(profiles?.soon).toBe(false);
     });
 
     test('a parent with mixed children keeps them, each flagged', () => {
