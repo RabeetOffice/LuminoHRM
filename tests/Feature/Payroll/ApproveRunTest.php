@@ -286,7 +286,7 @@ it('refuses a leave approval in November once the run is approved, after one app
 
     $this->actingAs($hr)->from('/leave/requests')
         ->put("/leave/requests/{$request->id}/final-decide", ['decision' => 'approve', 'note' => null])
-        ->assertSessionHas('error', 'Payroll for November 2026 is locked; leave in it cannot be approved.');
+        ->assertSessionHas('error', PayrollLock::message('2026-11'));
     expect(LeaveDay::query()->where('leave_request_id', $request->id)->exists())->toBeFalse();
 });
 
@@ -348,6 +348,196 @@ it('retries the approval after a deadlock and ends with one approval, one repaym
             ->and(Activity::where('description', 'Payroll approved')->count())->toBe(1)
             ->and(prItem($run, $e)->account_number)->toBe('0123456789012345');
         Event::assertDispatchedTimes(PayrollRunApproved::class, 1);
+    } finally {
+        ActivityEntry::flushEventListeners();
+        $connection->setPdo($shared);
+        (fn () => $this->transactions = 1)->call($connection); // the RefreshDatabase transaction, rolled back after the test
+        app(PermissionRegistrar::class)->forgetCachedPermissions();
+    }
+});
+
+it('locks the run, its lines, the loans and the other months before any plain read', function () {
+    [, $run] = arSetUp();
+    payrollRun('2026-10', 'approved');
+    $fingerprint = $run->fresh()->fingerprint();
+
+    $sql = [];
+    DB::listen(function ($query) use (&$sql) {
+        $sql[] = $query->sql;
+    });
+
+    expect(app(ApprovePayrollRun::class)->approve($this->admin, $run, $fingerprint))->toBe('approved');
+
+    // SQLite ignores FOR UPDATE / LOCK IN SHARE MODE, so the order of the statements is what is pinned here.
+    expect($sql[0])->toStartWith('select * from "payroll_runs" where "payroll_runs"."id" = ?')
+        ->and($sql[1])->toStartWith('select "employee_id" from "payroll_items" where "payroll_run_id" = ?')
+        ->and($sql[2])->toStartWith('select "id" from "loans" where "employee_id" in')
+        ->and($sql[3])->toStartWith('select "status", "month" from "payroll_runs" where "month" < ?')
+        ->and($sql[4])->toStartWith('select "status", "month" from "payroll_runs" where "month" > ?');
+});
+
+it('recalculates without the deduction of a loan cancelled before the approval and never repays it', function () {
+    [$e, $run] = arSetUp();
+    $reviewed = $run->fresh()->fingerprint();
+    $loan = Loan::query()->sole();
+    $loan->forceFill(['status' => 'cancelled', 'cancelled_at' => now(), 'cancel_reason' => 'Written off by the owner.'])->save();
+
+    $approve = app(ApprovePayrollRun::class);
+    expect($approve->approve($this->admin, $run, $reviewed))->toBe('changed')
+        ->and($approve->changedLines)->toBe(1)
+        ->and(prItem($run, $e)->loan_deduction)->toBe(0)
+        ->and(prItem($run, $e)->net)->toBe(prRs(64930 + 5000))
+        ->and(LoanRepayment::count())->toBe(0);
+
+    expect(arApprove($this->admin, $run))->toBe('approved')
+        ->and(LoanRepayment::count())->toBe(0)
+        ->and($run->fresh()->net)->toBe(prRs(69930));
+});
+
+it('recalculates a loan reduced below its installment and repays only what is left', function () {
+    [$e, $run] = arSetUp();
+    $reviewed = $run->fresh()->fingerprint();
+    $loan = Loan::query()->sole();
+    $loan->forceFill(['amount' => prRs(3000)])->save();
+
+    expect(arApprove($this->admin, $run, $reviewed))->toBe('changed')
+        ->and(prItem($run, $e)->loan_deduction)->toBe(prRs(3000))
+        ->and(prItem($run, $e)->net)->toBe(prRs(64930 + 2000));
+
+    expect(arApprove($this->admin, $run))->toBe('approved')
+        ->and(LoanRepayment::query()->sole()->amount)->toBe(prRs(3000))
+        ->and($loan->fresh()->remaining())->toBe(0);
+});
+
+it('rolls the approval back rather than repay less than the line deducts', function () {
+    [$e, $run] = arSetUp();
+    $loan = Loan::query()->sole();
+
+    // Simulates a loan that moved under the line between the calculation and the repayment (which the loan locks rule
+    // out): saving the line's bank details pays off all but 1,000 of the loan behind the action's back.
+    $active = true;
+    PayrollItem::saving(function (PayrollItem $item) use ($loan, &$active) {
+        if ($active && $item->isDirty('account_number') && $item->account_number !== null) {
+            DB::table('loans')->where('id', $loan->id)->update(['opening_repaid' => prRs(11000)]);
+        }
+    });
+
+    try {
+        expect(fn () => arApprove($this->admin, $run))->toThrow(LogicException::class);
+    } finally {
+        $active = false;
+    }
+
+    expect($run->fresh()->status)->toBe('draft')
+        ->and(LoanRepayment::count())->toBe(0)
+        ->and(prItem($run, $e)->account_number)->toBeNull()
+        ->and($loan->fresh()->opening_repaid)->toBe(0)
+        ->and(Activity::where('description', 'Payroll approved')->count())->toBe(0);
+    Event::assertNotDispatched(PayrollRunApproved::class);
+});
+
+it('returns changed when a line was excluded or included between the review and the approval', function () {
+    [, $run] = arSetUp();
+    $noProfile = prEmployee();
+    app(GeneratePayrollRun::class)->recalculate($this->hr, $run);
+    $inputs = app(PayrollLineInputs::class);
+    $approve = app(ApprovePayrollRun::class);
+
+    // Excluding the no-profile line changes no money figure (it paid 0), only the excluded flag.
+    $reviewed = $run->fresh()->fingerprint();
+    $inputs->exclude($this->admin, prItem($run, $noProfile), 'Joins the payroll next month.');
+    expect($approve->approve($this->admin, $run, $reviewed))->toBe('changed')
+        ->and($approve->changedLines)->toBe(0)
+        ->and($run->fresh()->status)->toBe('draft');
+
+    $reviewed = $run->fresh()->fingerprint();
+    $inputs->include($this->admin, prItem($run, $noProfile));
+    expect($approve->approve($this->admin, $run, $reviewed))->toBe('changed')
+        ->and($run->fresh()->status)->toBe('draft')
+        ->and(LoanRepayment::count())->toBe(0);
+});
+
+it('covers excluded, days paid and every deduction column in the fingerprint', function () {
+    [$e, $run] = arSetUp();
+    $before = $run->fresh()->fingerprint();
+
+    foreach (['excluded' => true, 'days_paid' => 29, 'attendance_deduction' => 1, 'fixed_deductions' => 1, 'other_deductions' => 1] as $column => $value) {
+        $old = DB::table('payroll_items')->where('employee_id', $e->id)->value($column);
+        DB::table('payroll_items')->where('employee_id', $e->id)->update([$column => $value]);
+        expect($run->fresh()->fingerprint())->not->toBe($before, $column);
+        DB::table('payroll_items')->where('employee_id', $e->id)->update([$column => $old]);
+    }
+
+    expect($run->fresh()->fingerprint())->toBe($before);
+});
+
+it('refuses a run with nobody in it', function () {
+    $run = prGenerate($this->hr);
+
+    expect($run->items()->count())->toBe(0)
+        ->and(arErrors(fn () => arApprove($this->admin, $run)))->toBe(['run' => [ApprovePayrollRun::NOBODY_MESSAGE]])
+        ->and($run->fresh()->status)->toBe('draft');
+    Event::assertNotDispatched(PayrollRunApproved::class);
+});
+
+it('reads the bank accounts without a query per person', function () {
+    [, $run] = arSetUp();
+    foreach (range(1, 3) as $i) {
+        $other = prEmployee();
+        salaryProfile($other);
+        prBank($other, "99990000111{$i}");
+        prFill($other);
+    }
+    app(GeneratePayrollRun::class)->recalculate($this->hr, $run);
+
+    $bankQueries = 0;
+    DB::listen(function ($query) use (&$bankQueries) {
+        $bankQueries += str_contains($query->sql, '"employee_bank_accounts"') ? 1 : 0;
+    });
+
+    expect(arApprove($this->admin, $run))->toBe('approved')
+        ->and($bankQueries)->toBeLessThanOrEqual(2)
+        ->and(PayrollItem::query()->whereNotNull('account_number')->count())->toBe(4);
+});
+
+it('retries the changed outcome after a deadlock and records it once', function () {
+    // As the approval deadlock test: a fresh in-memory database so that Laravel's top-level retry runs.
+    $connection = DB::connection();
+    $shared = $connection->getPdo();
+    $connection->setPdo(app('db.factory')->make(config('database.connections.sqlite'), 'sqlite-deadlock')->getPdo());
+    app(PermissionRegistrar::class)->forgetCachedPermissions();
+
+    try {
+        Artisan::call('migrate', ['--force' => true]);
+        Settings::set('attendance', ['start_date' => '2026-11-01', 'late_rule_count' => 3]);
+        $hr = userWithRole('hr');
+        $admin = userWithRole('admin');
+        $e = prEmployee();
+        prExample1($e);
+        prBank($e);
+        $run = prGenerate($hr);
+        $reviewed = $run->fresh()->fingerprint();
+        approvedLeave($e, '2026-11-19', null, null, 'Unpaid');
+
+        $thrown = 0;
+        ActivityEntry::creating(function (ActivityEntry $entry) use (&$thrown) {
+            if ($entry->description === 'Payroll recalculated at approval' && $thrown++ === 0) {
+                throw new QueryException('sqlite', 'insert into "activity_log"', [],
+                    new PDOException('SQLSTATE[40001]: Serialization failure: 1213 Deadlock found when trying to get lock; try restarting transaction'));
+            }
+        });
+
+        $approve = app(ApprovePayrollRun::class);
+        expect($approve->approve($admin, $run, $reviewed))->toBe('changed')
+            ->and($approve->changedLines)->toBe(1)
+            ->and($thrown)->toBe(2)
+            ->and($run->fresh()->status)->toBe('draft')
+            ->and($run->fresh()->net)->toBe(prRs(62070))
+            ->and(prItem($run, $e)->attendance_deduction)->toBe(prRs(16500))
+            ->and(LoanRepayment::count())->toBe(0)
+            ->and(Activity::where('description', 'Payroll recalculated at approval')->count())->toBe(1)
+            ->and(Activity::where('description', 'Payroll recalculated at approval')->sole()->properties['changed'])->toBe(1);
+        Event::assertNotDispatched(PayrollRunApproved::class);
     } finally {
         ActivityEntry::flushEventListeners();
         $connection->setPdo($shared);

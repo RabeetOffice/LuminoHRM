@@ -11,6 +11,7 @@ use App\Models\PayrollRun;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Spatie\Activitylog\Models\Activity;
 
@@ -299,4 +300,58 @@ it('keeps attendance rows untouched', function () {
     prGenerate($this->hr);
 
     expect(Attendance::query()->orderBy('id')->get()->toArray())->toBe($before);
+});
+
+it('locks an existing draft without inserting and inserts a month that has no run, the later months share-locked after', function () {
+    $e = prEmployee();
+    salaryProfile($e);
+    payrollRun('2026-12');
+
+    $sql = [];
+    DB::listen(function ($query) use (&$sql) {
+        $sql[] = $query->sql;
+    });
+
+    // The transaction's statements: from the employee share lock on (the permission and pre-checks come before it).
+    $inTransaction = fn (array $sql): array => array_values(array_slice($sql, (int) collect($sql)
+        ->search(fn (string $q): bool => str_starts_with($q, 'select "id" from "employees"'))));
+
+    // First generation of November: no row yet, so it is inserted and then locked.
+    $run = prGenerate($this->hr);
+    $first = $inTransaction($sql);
+    expect($first[0])->toStartWith('select "id" from "employees"')
+        ->and($first[1])->toStartWith('select * from "payroll_runs" where "month" = ?')
+        ->and($first[2])->toStartWith('insert or ignore into "payroll_runs"')
+        ->and($first[3])->toStartWith('select * from "payroll_runs" where "month" = ?')
+        ->and($first[4])->toStartWith('select "status", "month" from "payroll_runs" where "month" > ?');
+
+    // Generating it again: the existing row is locked straight away, no INSERT IGNORE on a duplicate.
+    $sql = [];
+    $again = prGenerate($this->hr);
+    $sql = $inTransaction($sql);
+    expect($sql[0])->toStartWith('select "id" from "employees"')
+        ->and($sql[1])->toStartWith('select * from "payroll_runs" where "month" = ?')
+        ->and($sql[2])->toStartWith('select "status", "month" from "payroll_runs" where "month" > ?')
+        ->and(collect($sql)->filter(fn (string $q): bool => str_starts_with($q, 'insert or ignore'))->all())->toBe([])
+        ->and($again->id)->toBe($run->id)
+        ->and(PayrollRun::query()->where('month', '2026-11')->count())->toBe(1)
+        ->and(Activity::where('description', 'Payroll generated')->count())->toBe(1)
+        ->and(Activity::where('description', 'Payroll recalculated')->count())->toBe(1);
+});
+
+it('writes nothing when one person who is not in the roster and has no line is recalculated', function () {
+    $e = prEmployee();
+    salaryProfile($e);
+    $gone = prEmployee(['last_working_day' => '2026-10-20', 'status' => 'resigned']);
+    $run = prGenerate($this->hr);
+    $calculatedAt = $run->fresh()->calculated_at?->toDateTimeString();
+    $entries = Activity::count();
+
+    $this->travel(5)->minutes();
+    $result = app(GeneratePayrollRun::class)->recalculate($this->hr, $run, $gone->id);
+
+    expect($result->id)->toBe($run->id)
+        ->and(Activity::count())->toBe($entries)
+        ->and($run->fresh()->calculated_at?->toDateTimeString())->toBe($calculatedAt)
+        ->and($run->items()->count())->toBe(1);
 });

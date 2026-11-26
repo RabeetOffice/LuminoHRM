@@ -236,3 +236,23 @@ it('picks up a loan skip on the line\'s recalculation', function () {
 
     expect($item->loan_deduction)->toBe(0)->and($run->net)->toBe(prRs(82800));
 });
+
+it('refuses an input on a person who has left the roster since the last calculation and keeps the line', function () {
+    $this->e->forceFill(['last_working_day' => '2026-11-20', 'status' => 'resigned'])->save();
+
+    foreach ([
+        fn () => $this->inputs->addAdjustment($this->admin, $this->item, 'Bonus', 'addition', 500, true),
+        fn () => $this->inputs->overrideTax($this->admin, $this->item, 0, 'Exemption certificate.'),
+        fn () => $this->inputs->exclude($this->admin, $this->item, 'Leaving this month.'),
+    ] as $input) {
+        expect(liError($input))->toBe(['run' => [PayrollLineInputs::NOT_IN_ROSTER_MESSAGE]]);
+    }
+
+    [, $item] = liFresh();
+    expect($item)->not->toBeNull()
+        ->and($item->id)->toBe($this->item->id)
+        ->and($item->excluded)->toBeFalse()
+        ->and($item->tax_overridden)->toBeFalse()
+        ->and(PayrollAdjustment::count())->toBe(0)
+        ->and(PayrollLineInputs::NOT_IN_ROSTER_MESSAGE)->toBe('This person is no longer in this payroll — recalculate first.');
+});

@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Support\Audit\Audit;
 use App\Support\Payroll\Money;
 use App\Support\Payroll\PayrollAccess;
+use App\Support\Payroll\PayrollRoster;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
@@ -29,6 +30,8 @@ use Illuminate\Validation\ValidationException;
  * Labels 2-100 characters, reasons 5-255 (trimmed). Each input: one transaction (3 tries) whose first statement locks
  * the run row FOR UPDATE (a line input updates the line in place, never inserts one, so it takes no employee lock);
  * a run that is not a draft → [run] "This payroll is approved and cannot change."; a line no longer in the run → [run];
+ * a person no longer in the month's roster (PayrollRoster) → [run] "This person is no longer in this payroll —
+ * recalculate first." (the line is not deleted here);
  * not PayrollAccess::mayEditSalary for the line's person → AuthorizationException (403: HR never edits their own line or
  * an Admin's / HR person's); then the change, the line recalculated (GeneratePayrollRun::recalculateLocked, which keeps
  * the run's headcount and totals current) and the audit entry, in the same transaction.
@@ -40,6 +43,8 @@ use Illuminate\Validation\ValidationException;
 class PayrollLineInputs
 {
     public const MAX_RUPEES = 99_999_999;
+
+    public const NOT_IN_ROSTER_MESSAGE = 'This person is no longer in this payroll — recalculate first.';
 
     public function __construct(private readonly GeneratePayrollRun $generator) {}
 
@@ -232,6 +237,12 @@ class PayrollLineInputs
 
         if (! PayrollAccess::mayEditSalary($by, $line->employee)) {
             throw new AuthorizationException;
+        }
+
+        // Someone who has left the roster since the last calculation (a last working day set, say): the line would
+        // be deleted by the recalculation below, so the input is refused instead and recalculating is left to HR.
+        if (! PayrollRoster::forMonth($run->month)->included->contains('id', (int) $line->employee_id)) {
+            throw ValidationException::withMessages(['run' => self::NOT_IN_ROSTER_MESSAGE]);
         }
 
         return [$run, $line];

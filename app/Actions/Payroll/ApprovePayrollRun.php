@@ -17,6 +17,7 @@ use App\Support\Payroll\PayrollRoster;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use LogicException;
 
 /**
  * Approving a draft payroll run (design 5.6 "Approve"): the run becomes approved, which locks the month
@@ -25,14 +26,21 @@ use Illuminate\Validation\ValidationException;
  *   $outcome = $approve->approve($admin, $run, $fingerprintTheAdminReviewed);   // 'approved' | 'changed'
  *   $approve->changedLines;                                                     // with 'changed': how many people
  *
- * One transaction (3 tries; every captured value reset at the top of an attempt). Lock order (plan ruling): the run
- * row FOR UPDATE is the FIRST statement (approval never inserts or deletes a line, so it takes no employee lock), then
- * the loans of the run's people FOR UPDATE in ascending id. Then, reading only after the locks:
+ * One transaction (3 tries; every captured value reset at the top of an attempt). Lock order (plan ruling; approval
+ * never inserts or deletes a line, so it takes no employee lock), every step a locking read so that no plain read fixes
+ * the REPEATABLE READ snapshot before the locks are held:
+ *   a. the run row FOR UPDATE (the FIRST statement);
+ *   b. the run's employee ids from its lines, LOCK IN SHARE MODE;
+ *   c. those people's active loans FOR UPDATE in ascending id (the loan figures and the repayments below are read
+ *      after this lock, so a loan cancelled or reduced before the approval is calculated as it now is);
+ *   d. the earlier and the later months' runs LOCK IN SHARE MODE (month order: selected by month only).
+ * Only then the plain reads:
  *
  * 1. PayrollAccess::mayApprove (Admin; a run with the approver's own line only as the sole active Admin) else 403;
  *    a run that is not a draft, or a later month already approved → [run].
  * 2. Every line is calculated again from fresh inputs. The people must still be exactly the run's lines; otherwise
- *    [run] "recalculate first" (nothing written: adding or removing a line is recalculate()'s job).
+ *    [run] "recalculate first" (nothing written: adding or removing a line is recalculate()'s job). A run with no
+ *    line at all → [run] "There is nobody to pay in this run."
  * 3. Figures (days paid, the money columns, blocking keys) that differ from the stored lines are written in place
  *    with the run totals, audited "Payroll recalculated at approval", and the outcome is 'changed' (committed, not
  *    approved). The outcome is also 'changed' when the stored figures no longer match the fingerprint the approver
@@ -40,15 +48,18 @@ use Illuminate\Validation\ValidationException;
  *    written silently and the approval goes on.
  * 4. PayrollChecks::blocking non-empty → [run] with every blocking message; nothing written.
  * 5. Each non-excluded line gets its bank details copied (before the status changes: PayrollItem freezes the lines of
- *    an approved run); one loan repayment per loan line with an amount (capped at Loan::remaining() under the loan
- *    lock); summary.company = {name, address, logo_path, footer} and summary.checks = the warnings; status approved,
- *    approved_by / approved_at; audited "Payroll approved" (totals, own_payslip).
+ *    an approved run); one loan repayment per loan line with an amount. The line was calculated under the loan
+ *    locks, so it never deducts more than Loan::remaining() of an active loan; if it ever did, a LogicException rolls
+ *    the approval back (a repayment is never silently recorded below the line's deduction); summary.company =
+ *    {name, address, logo_path, footer} and summary.checks = the warnings; status approved, approved_by / approved_at; audited "Payroll approved" (totals, own_payslip).
  *
  * After the commit: event(new PayrollRunApproved($runId)) once (payslips, Task 9).
  */
 class ApprovePayrollRun
 {
     public const ROSTER_CHANGED_MESSAGE = 'The people in this payroll changed since the last calculation. Recalculate it first.';
+
+    public const NOBODY_MESSAGE = 'There is nobody to pay in this run.';
 
     /** With the 'changed' outcome: the number of lines whose figures changed (0 when only the fingerprint was stale). */
     public int $changedLines = 0;
@@ -61,7 +72,29 @@ class ApprovePayrollRun
             $outcome = 'changed';
             $this->changedLines = 0;
 
+            // Locks first, every one a locking read, so no plain read fixes the REPEATABLE READ snapshot before them.
             $locked = PayrollRun::query()->whereKey($run->id)->lockForUpdate()->firstOrFail();
+
+            $employeeIds = array_map('intval', PayrollItem::query()
+                ->where('payroll_run_id', $locked->id)
+                ->orderBy('employee_id')
+                ->sharedLock()
+                ->pluck('employee_id')
+                ->all());
+
+            if ($employeeIds !== []) {
+                Loan::query()
+                    ->whereIn('employee_id', $employeeIds)
+                    ->where('status', 'active')
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->get(['id']);
+            }
+
+            // Months are approved in order: the other runs are read with a shared lock (selected by month only, so a
+            // draft is locked too) and cannot be approved, generated or deleted under this approval.
+            PayrollRun::query()->where('month', '<', $locked->month)->orderBy('month')->sharedLock()->pluck('status', 'month');
+            $later = PayrollRun::query()->where('month', '>', $locked->month)->orderBy('month')->sharedLock()->pluck('status', 'month');
 
             if (! PayrollAccess::mayApprove($by, $locked)) {
                 throw new AuthorizationException;
@@ -71,13 +104,10 @@ class ApprovePayrollRun
                 throw ValidationException::withMessages(['run' => 'This payroll is already approved.']);
             }
 
-            $later = PayrollRun::query()
-                ->where('month', '>', $locked->month)
-                ->whereIn('status', (array) config('hrm.payroll.locked_statuses'))
-                ->orderBy('month')
-                ->value('month');
-            if ($later !== null) {
-                throw ValidationException::withMessages(['run' => 'Payroll for '.PayrollRun::monthLabel((string) $later)
+            $lockedStatuses = (array) config('hrm.payroll.locked_statuses');
+            $laterLocked = $later->filter(fn ($status): bool => in_array($status, $lockedStatuses, true))->keys()->first();
+            if ($laterLocked !== null) {
+                throw ValidationException::withMessages(['run' => 'Payroll for '.PayrollRun::monthLabel((string) $laterLocked)
                     .' is already approved, so an earlier month cannot be approved.']);
             }
 
@@ -87,9 +117,6 @@ class ApprovePayrollRun
                 ->orderBy('employee_id')
                 ->get()
                 ->keyBy('employee_id');
-            $employeeIds = array_map('intval', $items->keys()->all());
-
-            Loan::query()->whereIn('employee_id', $employeeIds)->orderBy('id')->lockForUpdate()->get(['id']);
 
             $roster = PayrollRoster::forMonth($locked->month);
             $rosterIds = array_map('intval', $roster->included->pluck('id')->all());
@@ -98,7 +125,11 @@ class ApprovePayrollRun
                 throw ValidationException::withMessages(['run' => self::ROSTER_CHANGED_MESSAGE]);
             }
 
-            $lines = $roster->included->isEmpty() ? [] : GeneratePayrollRun::calculateLines($locked->month, $roster->included, $items);
+            if ($employeeIds === []) {
+                throw ValidationException::withMessages(['run' => self::NOBODY_MESSAGE]);
+            }
+
+            $lines = GeneratePayrollRun::calculateLines($locked->month, $roster->included, $items);
 
             $changed = [];
             foreach ($lines as $employeeId => $line) {
@@ -177,11 +208,14 @@ class ApprovePayrollRun
             $repaid = [];
             $repaymentTotal = 0;
             foreach ($loanLines as [$item, $loanId, $amount]) {
+                // The line was calculated just now from the loans locked above, so it never asks for more than is left
+                // on an active loan. If it ever did, recording less than the line deducts would pay the person short
+                // without a trace: roll the approval back instead.
                 $loan = $loans->get($loanId);
-                $amount = $loan === null ? 0 : min($amount, $loan->remaining() - ($repaid[$loanId] ?? 0));
-
-                if ($amount <= 0) {
-                    continue;
+                $left = $loan === null || ! $loan->isActive() ? 0 : $loan->remaining() - ($repaid[$loanId] ?? 0);
+                if ($amount > $left) {
+                    throw new LogicException("Payroll line {$item->id} deducts {$amount} paisa for loan {$loanId}, "
+                        ."which has {$left} paisa left to recover. The approval was rolled back.");
                 }
 
                 LoanRepayment::query()->create([

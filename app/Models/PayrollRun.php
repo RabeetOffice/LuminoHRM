@@ -137,18 +137,28 @@ class PayrollRun extends Model
     }
 
     /**
-     * A digest of the figures someone reviewed (sha256 of "employee_id:net:tax:gross:loan_deduction" per line, in
-     * employee id order). The run page sends it back on approve; ApprovePayrollRun compares it after recalculating.
-     * One query.
+     * A digest of the figures someone reviewed: sha256 of one line per payroll line, in employee id order,
+     * "employee_id:excluded:days_paid:gross:attendance_deduction:fixed_deductions:other_deductions:loan_deduction:tax:net".
+     * The run page sends it back on approve; ApprovePayrollRun compares it after recalculating. One query.
      */
     public function fingerprint(): string
     {
         $lines = $this->items()
             ->orderBy('employee_id')
             ->toBase()
-            ->get(['employee_id', 'net', 'tax', 'gross', 'loan_deduction'])
+            ->get(['employee_id', 'excluded', 'days_paid', 'gross', 'attendance_deduction', 'fixed_deductions',
+                'other_deductions', 'loan_deduction', 'tax', 'net'])
             ->map(fn (object $i): string => implode(':', [
-                (int) $i->employee_id, (int) $i->net, (int) $i->tax, (int) $i->gross, (int) $i->loan_deduction,
+                (int) $i->employee_id,
+                (int) (bool) $i->excluded,
+                (int) $i->days_paid,
+                (int) $i->gross,
+                (int) $i->attendance_deduction,
+                (int) $i->fixed_deductions,
+                (int) $i->other_deductions,
+                (int) $i->loan_deduction,
+                (int) $i->tax,
+                (int) $i->net,
             ]))
             ->all();
 

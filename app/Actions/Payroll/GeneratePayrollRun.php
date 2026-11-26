@@ -31,7 +31,10 @@ use Illuminate\Validation\ValidationException;
  * Lock order (plan, "Payroll lock order — run-level writes"): these writes insert and delete lines, and the foreign key
  * takes shared locks on the employee rows, so each transaction FIRST share-locks the employees the run can hold (every
  * employee joined by the month end, or the one employee, in id order: locking reads, which fix no read snapshot), THEN
- * locks the run row FOR UPDATE. No plain read happens before the run lock. DB::transaction(..., 3).
+ * locks the run row FOR UPDATE (generate: the existing row; only a month with no run inserts it first, so INSERT
+ * IGNORE never meets a duplicate and upgrades a shared lock), THEN reads the later months' runs LOCK IN SHARE MODE
+ * (month order). No plain read happens before these locks. DB::transaction(..., 3). A one-person recalculation for
+ * someone who is not in the roster and has no line writes nothing (no totals, no audit entry).
  *
  * A line is updated in place (same item id): HR's inputs (excluded + reason, tax override, one-off adjustments) are
  * kept and fed back into the calculation. An excluded line stores the calculation's breakdown and warnings but pays
@@ -59,26 +62,31 @@ class GeneratePayrollRun
             [, $last] = PayrollRoster::bounds($month);
             self::lockEmployees($last, null);
 
-            $now = now();
-            PayrollRun::query()->insertOrIgnore([
-                'month' => $month,
-                'status' => 'draft',
-                'headcount' => 0,
-                'gross' => 0,
-                'deductions' => 0,
-                'tax' => 0,
-                'net' => 0,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ]);
+            // The existing run row FOR UPDATE; only a month with no run yet inserts it (INSERT IGNORE on a duplicate
+            // would take a shared lock first and then upgrade it to exclusive: a deadlock between two generators).
+            $run = PayrollRun::query()->where('month', $month)->lockForUpdate()->first();
+            if ($run === null) {
+                $now = now();
+                PayrollRun::query()->insertOrIgnore([
+                    'month' => $month,
+                    'status' => 'draft',
+                    'headcount' => 0,
+                    'gross' => 0,
+                    'deductions' => 0,
+                    'tax' => 0,
+                    'net' => 0,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
 
-            $run = PayrollRun::query()->where('month', $month)->lockForUpdate()->firstOrFail();
+                $run = PayrollRun::query()->where('month', $month)->lockForUpdate()->firstOrFail();
+            }
 
             if ($run->isLocked()) {
                 throw ValidationException::withMessages(['month' => "Payroll for {$run->label()} is already approved."]);
             }
 
-            if (($later = self::laterLocked($month)) !== null) {
+            if (($later = self::laterLocked($month, true)) !== null) {
                 throw ValidationException::withMessages(['month' => 'Payroll for '.PayrollRun::monthLabel($later).' is already approved.']);
             }
 
@@ -105,6 +113,11 @@ class GeneratePayrollRun
             $locked = self::lockDraft($run->id);
 
             $stats = $this->apply($locked, $employeeId);
+
+            // One person who is not in the roster and has no line: nothing changed, nothing to record.
+            if ($employeeId !== null && $stats['lines'] === 0 && $stats['removed'] === []) {
+                return $locked;
+            }
 
             Audit::record('payroll', 'Payroll recalculated', $locked, [
                 ...self::auditProperties($locked, $stats),
@@ -260,6 +273,10 @@ class GeneratePayrollRun
             : ($items->has($employeeId) ? [$employeeId] : []);
         $removeIds = array_values(array_diff($candidates, $targetIds));
 
+        if ($employeeId !== null && $targetIds === [] && $removeIds === []) {
+            return ['lines' => 0, 'added' => 0, 'changed' => 0, 'removed' => []];
+        }
+
         $lines = $targets->isEmpty() ? [] : self::calculateLines($run->month, $targets, $items);
 
         $added = 0;
@@ -334,12 +351,28 @@ class GeneratePayrollRun
         $query->get(['id']);
     }
 
-    /** The latest approved / paid month on or after $month, or null (a plain read: no shared lock on other runs). */
-    private static function laterLocked(string $month): ?string
+    /**
+     * The latest approved / paid month on or after $month, or null. Before the transaction a plain read (a check before
+     * the real one). With $locking (under the run row lock): the LATER months' run rows only (the run's own row is
+     * already locked for update and checked), selected by month only and read LOCK IN SHARE MODE, so an approval of a
+     * later month cannot commit unseen while this generation runs.
+     */
+    private static function laterLocked(string $month, bool $locking = false): ?string
     {
+        $statuses = (array) config('hrm.payroll.locked_statuses');
+
+        if ($locking) {
+            $later = PayrollRun::query()->where('month', '>', $month)->orderByDesc('month')->sharedLock()->pluck('status', 'month')
+                ->filter(fn ($status): bool => in_array($status, $statuses, true))
+                ->keys()
+                ->first();
+
+            return $later === null ? null : (string) $later;
+        }
+
         $later = PayrollRun::query()
             ->where('month', '>=', $month)
-            ->whereIn('status', (array) config('hrm.payroll.locked_statuses'))
+            ->whereIn('status', $statuses)
             ->orderByDesc('month')
             ->value('month');
 

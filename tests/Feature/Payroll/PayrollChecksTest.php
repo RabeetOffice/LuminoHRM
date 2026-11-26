@@ -258,3 +258,37 @@ it('runs the same number of queries for 2 people as for 6', function () {
 
     expect($six)->toBe($two);
 });
+
+it('counts missing days only inside a mid-month joiner\'s window and not for a leaver settled separately', function () {
+    $joiner = prEmployee(['joining_date' => '2026-11-16']);
+    salaryProfile($joiner, from: '2026-11-16');
+    prBank($joiner);
+    prFill($joiner, '2026-11-16');
+    $leaver = prEmployee(['last_working_day' => '2026-11-20', 'status' => 'resigned']);
+    salaryProfile($leaver);
+    prFill($leaver, '2026-11-01', '2026-11-10');
+    $run = prGenerate($this->hr);
+
+    // Nothing before the joining date counts, and the leaver (no line: settled separately) is not checked.
+    expect(PayrollChecks::blocking($run))->toBe([])
+        ->and(prItem($run, $leaver))->toBeNull();
+
+    Attendance::query()->where('employee_id', $joiner->id)->onDate('2026-11-20')->delete();
+    $c = ckChecks($run);
+    expect($c['missing_days']['message'])->toBe('1 past day has no attendance record. Close those days or correct them.')
+        ->and($c['missing_days']['people'])->toBe([['id' => $joiner->id, 'name' => $joiner->full_name]]);
+});
+
+it('does not block on open leave entirely outside the month or of an excluded person', function () {
+    $e = ckClean();
+    $excluded = ckClean();
+    leaveRequest($e, ['from_date' => '2026-10-26', 'to_date' => '2026-10-31', 'days' => 5]);
+    leaveRequest($e, ['from_date' => '2026-12-01', 'to_date' => '2026-12-03', 'days' => 3]);
+    leaveRequest($excluded, ['from_date' => '2026-11-10', 'to_date' => '2026-11-10']);
+    $run = prGenerate($this->hr);
+
+    expect(PayrollChecks::blocking($run))->toBe(['open_leave']);
+
+    app(PayrollLineInputs::class)->exclude($this->admin, prItem($run, $excluded), 'Paid by the sister company.');
+    expect(PayrollChecks::blocking($run))->toBe([]);
+});
