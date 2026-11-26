@@ -57,6 +57,11 @@ class ReviewScore extends Model
                 throw new LogicException('The KPI copy on a review cannot be changed.');
             }
         });
+
+        // Reviews are never deleted, so neither are their KPI lines.
+        static::deleting(function (): void {
+            throw new LogicException('A review KPI line is never deleted.');
+        });
     }
 
     /** @return BelongsTo<Review, $this> */

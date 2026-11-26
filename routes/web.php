@@ -170,6 +170,22 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::delete('{kpi}', 'destroy')->whereNumber('kpi')->name('destroy');
     });
 
+    // Performance > a review's workflow (signed in only: ReviewAccess decides, 403 otherwise; each action re-checks the actor
+    // under its locks). Static performance/reviews/... routes go above these.
+    Route::prefix('performance/reviews/{review}')->name('performance.reviews.')->controller(\App\Http\Controllers\Performance\ReviewController::class)->group(function () {
+        Route::put('self', 'selfDraft')->whereNumber('review')->name('self-draft');
+        Route::post('self/submit', 'selfSubmit')->whereNumber('review')->name('self-submit');
+        Route::post('waive', 'waive')->whereNumber('review')->name('waive');
+        Route::put('manager', 'managerDraft')->whereNumber('review')->name('manager-draft');
+        Route::post('manager/submit', 'managerSubmit')->whereNumber('review')->name('manager-submit');
+        Route::post('send-back', 'sendBack')->whereNumber('review')->name('send-back');
+        Route::post('close', 'close')->whereNumber('review')->name('close');
+        Route::post('reopen', 'reopen')->whereNumber('review')->name('reopen');
+        Route::post('skip', 'skip')->whereNumber('review')->name('skip');
+        Route::post('restore', 'restore')->whereNumber('review')->name('restore');
+        Route::put('reviewer', 'reviewer')->whereNumber('review')->name('reviewer');
+    });
+
     // Performance > review cycles (Admin, HR): open, add people, change the due date, close. Task 4 adds the pages.
     Route::middleware('can:performance.manage')->prefix('performance/cycles')->name('performance.cycles.')->controller(\App\Http\Controllers\Performance\CycleController::class)->group(function () {
         Route::post('/', 'store')->name('store');
