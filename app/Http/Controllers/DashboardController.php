@@ -10,6 +10,7 @@ use App\Support\EmployeeAccess;
 use App\Support\EmployeeFiles;
 use App\Support\Leave\DashboardLeave;
 use App\Support\Leave\LeaveBalances;
+use App\Support\Payroll\DashboardPayroll;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Date;
@@ -43,6 +44,11 @@ use Inertia\Response;
  *   myLeave        {year, lines, total_available}  for everyone with an employee record who lacks payroll.view (the
  *                  "Leave Balance" tile replaces "Payroll This Month"): their own balance lines for the current leave
  *                  year; total_available sums the paid lines only.
+ *   payrollThisMonth {month, label, status: none|draft|approved|paid, headcount, net (paisa), run_id, url}  for
+ *                  payroll.view only (App\Support\Payroll\DashboardPayroll): the run of the month before the current
+ *                  attendance month (paid in the first days of this month). No salary figure reaches anyone else.
+ *   latestPayslip  {month, label, net (paisa), download_url}  for everyone with an employee record: their OWN latest
+ *                  line of an approved or paid run (never a draft); absent when there is none.
  */
 class DashboardController extends Controller
 {
@@ -89,6 +95,18 @@ class DashboardController extends Controller
 
             if ($mine !== null) {
                 $props['myLeave'] = $mine;
+            }
+        }
+
+        if ($user->can('payroll.view')) {
+            $props['payrollThisMonth'] = DashboardPayroll::thisMonth($clock);
+        }
+
+        if ($user->employee_id !== null) {
+            $payslip = DashboardPayroll::latestPayslip((int) $user->employee_id);
+
+            if ($payslip !== null) {
+                $props['latestPayslip'] = $payslip;
             }
         }
 

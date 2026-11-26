@@ -159,6 +159,78 @@ it('validates payroll rules', function () {
     expect(settings('payroll.payslip_footer'))->toBe('');
 });
 
+it('validates and saves the tax year start month, default July, Admin only', function () {
+    expect(settings('payroll.tax_year_start_month'))->toBe(7);
+    $admin = userWithRole('admin');
+
+    $this->actingAs($admin)->put('/hrm-settings/payroll', ['tax_year_start_month' => '1'])->assertSessionHasNoErrors();
+    expect(settings('payroll.tax_year_start_month'))->toBe(1)
+        // A card saves only its own fields: the rest of the group keeps its stored values.
+        ->and(settings('payroll.day_pay_basis'))->toBe('calendar_days');
+
+    foreach ([0, 13, 'july', 6.5, null] as $bad) {
+        $this->actingAs($admin)->put('/hrm-settings/payroll', ['tax_year_start_month' => $bad])->assertSessionHasErrors('tax_year_start_month');
+    }
+    expect(settings('payroll.tax_year_start_month'))->toBe(1);
+
+    $this->actingAs(userWithRole('hr'))->put('/hrm-settings/payroll', ['tax_year_start_month' => 3])->assertForbidden();
+    expect(settings('payroll.tax_year_start_month'))->toBe(1);
+    $this->actingAs($admin)->get('/hrm-settings?group=payroll')->assertInertia(fn ($p) => $p->where('values.payroll.tax_year_start_month', 1));
+});
+
+it('keeps overtime pay off by default with the default rate settings', function () {
+    expect(settings('attendance.overtime_enabled'))->toBeFalse()
+        ->and(settings('attendance.overtime_rate_mode'))->toBe('multiple')
+        ->and(settings('attendance.overtime_multiplier_percent'))->toBe(150)
+        ->and(settings('attendance.overtime_fixed_rate'))->toBe(0)
+        ->and(settings('attendance.overtime_hours_per_day'))->toBe(8);
+    $this->actingAs(userWithRole('hr'))->get('/hrm-settings?group=attendance')
+        ->assertInertia(fn ($p) => $p->where('values.attendance.overtime_rate_mode', 'multiple')->where('values.attendance.overtime_hours_per_day', 8));
+});
+
+it('lets HR save the overtime card on its own, with whole-number types', function () {
+    $hr = userWithRole('hr');
+    $this->actingAs($hr)->put('/hrm-settings/attendance', [
+        'overtime_enabled' => true,
+        'overtime_min_minutes' => 45,
+        'overtime_rate_mode' => 'fixed',
+        'overtime_multiplier_percent' => '200',
+        'overtime_fixed_rate' => '350',
+        'overtime_hours_per_day' => '9',
+    ])->assertSessionHasNoErrors();
+
+    expect(settings('attendance.overtime_enabled'))->toBeTrue()
+        ->and(settings('attendance.overtime_rate_mode'))->toBe('fixed')
+        ->and(settings('attendance.overtime_multiplier_percent'))->toBe(200)
+        ->and(settings('attendance.overtime_fixed_rate'))->toBe(350)
+        ->and(settings('attendance.overtime_hours_per_day'))->toBe(9)
+        // Other cards of the group are untouched.
+        ->and(settings('attendance.late_rule_count'))->toBe(3)
+        ->and(settings('attendance.day_cutoff_time'))->toBe('04:00');
+
+    // Saving another card leaves the overtime settings alone.
+    $this->actingAs($hr)->put('/hrm-settings/attendance', ['late_rule_count' => 4])->assertSessionHasNoErrors();
+    expect(settings('attendance.overtime_rate_mode'))->toBe('fixed')->and(settings('attendance.overtime_fixed_rate'))->toBe(350);
+});
+
+it('enforces the overtime rate ranges', function (string $field, mixed $bad, mixed $good) {
+    $admin = userWithRole('admin');
+    $this->actingAs($admin)->put('/hrm-settings/attendance', [$field => $bad])->assertSessionHasErrors($field);
+    $this->actingAs($admin)->put('/hrm-settings/attendance', [$field => $good])->assertSessionHasNoErrors();
+    expect(settings("attendance.$field"))->toBe($good);
+})->with([
+    'mode unknown' => ['overtime_rate_mode', 'double', 'fixed'],
+    'mode array' => ['overtime_rate_mode', ['fixed'], 'multiple'],
+    'multiplier low' => ['overtime_multiplier_percent', 99, 100],
+    'multiplier high' => ['overtime_multiplier_percent', 301, 300],
+    'multiplier fraction' => ['overtime_multiplier_percent', 150.5, 175],
+    'fixed negative' => ['overtime_fixed_rate', -1, 0],
+    'fixed high' => ['overtime_fixed_rate', 100001, 100000],
+    'fixed paisa' => ['overtime_fixed_rate', '12.50', 12],
+    'hours zero' => ['overtime_hours_per_day', 0, 1],
+    'hours high' => ['overtime_hours_per_day', 25, 24],
+]);
+
 it('saves the experience letter template', function () {
     $admin = userWithRole('admin');
     $this->actingAs($admin)->put('/hrm-settings/letters', ['experience_template' => 'This is to certify {employee_name}.'])->assertSessionHasNoErrors();

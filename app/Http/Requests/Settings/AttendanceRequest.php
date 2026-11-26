@@ -26,6 +26,11 @@ class AttendanceRequest extends SettingsGroupRequest
             'half_day_hours' => ['bail', 'required', 'integer', 'between:1,12'],
             'overtime_enabled' => ['required', 'boolean'],
             'overtime_min_minutes' => ['bail', 'required', 'integer', 'between:0,480'],
+            // Overtime pay (used by payroll only while overtime_enabled): a multiple of hourly pay, or a fixed rate.
+            'overtime_rate_mode' => ['bail', 'required', 'string', Rule::in(['multiple', 'fixed'])],
+            'overtime_multiplier_percent' => ['bail', 'required', 'integer', 'between:100,300'],
+            'overtime_fixed_rate' => ['bail', 'required', 'integer', 'between:0,100000'], // whole rupees an hour
+            'overtime_hours_per_day' => ['bail', 'required', 'integer', 'between:1,24'],
             // Null: attendance has not started, no absent / weekend / holiday day is recorded yet.
             'start_date' => ['bail', 'nullable', 'string', 'date_format:Y-m-d'],
             // A punch less than this many minutes after the previous punch is a double tap (0 = off).

@@ -361,7 +361,8 @@ it('reads a fixed number of queries for the leave figures whatever the number of
     $count(); // the seeder behind userWithRole() resets the permission cache: warm it again
     $large = $count();
 
-    // Measured with leave data present (approved + pending requests, a leave day today): admin 21, hr 21, manager 23,
-    // employee 10 queries for the whole dashboard.
+    // Measured with leave data present (approved + pending requests, a leave day today): admin 22, hr 22, manager 24,
+    // employee 11 queries for the whole dashboard (Phase 5 added one payroll query each: the "Payroll This Month" run
+    // for admin / hr, the own latest payslip for viewers with an employee record). Bound unchanged.
     expect($large)->toBe($small)->and($large)->toBeLessThanOrEqual(25);
 })->with(['admin', 'hr', 'manager', 'employee']);

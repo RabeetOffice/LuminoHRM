@@ -23,6 +23,21 @@ const DAY_PAY_BASES = [
     { value: 'working_days', label: 'Working days in the month' },
 ];
 
+const MONTHS = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+];
+
 const TAX_MODES = [
     { value: 'none', label: 'No tax' },
     { value: 'fixed', label: 'Fixed amount each month' },
@@ -97,6 +112,49 @@ export function PayrollPanel({ values }: { values: PayrollValues }) {
                                 {TAX_MODES.map((o) => (
                                     <SelectItem key={o.value} value={o.value}>
                                         {o.label}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    </Field>
+                </div>
+            </SettingsCard>
+
+            <SettingsCard
+                title="Tax year"
+                description="Tax figures to date and the yearly tax report run over the tax year."
+                {...card(['tax_year_start_month'])}
+            >
+                <div className="grid gap-5 sm:grid-cols-2">
+                    <Field
+                        id="pay-tax-year"
+                        label="Tax year starts in"
+                        hint="July means a tax year runs from July to June and is named by its first year, for example 2026-27."
+                        error={errors.tax_year_start_month}
+                    >
+                        <Select
+                            value={String(data.tax_year_start_month)}
+                            onValueChange={(v) =>
+                                setData('tax_year_start_month', Number(v))
+                            }
+                        >
+                            <SelectTrigger
+                                {...fieldAria(
+                                    'pay-tax-year',
+                                    errors.tax_year_start_month,
+                                    true,
+                                )}
+                                className="w-full"
+                            >
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {MONTHS.map((name, i) => (
+                                    <SelectItem
+                                        key={name}
+                                        value={String(i + 1)}
+                                    >
+                                        {name}
                                     </SelectItem>
                                 ))}
                             </SelectContent>

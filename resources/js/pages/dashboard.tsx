@@ -8,6 +8,7 @@ import {
     MyLeaveCard,
     OnLeaveTodayCard,
 } from '@/components/dashboard/leave-cards';
+import { LatestPayslipCard } from '@/components/dashboard/payroll-cards';
 import { AttendanceStatusPill } from '@/components/attendance/status-symbol';
 import type { AttendanceStatusValue } from '@/components/attendance/status-symbol';
 import {
@@ -30,6 +31,7 @@ import {
     hasTrendData,
     hourIn,
     leaveBalanceTile,
+    payrollTile,
     pendingLeavesTile,
     personalAttendanceTiles,
     probationNote,
@@ -44,10 +46,12 @@ import type {
     AttendanceTileKey,
     AttendanceToday,
     DashboardTileKey,
+    LatestPayslip,
     LeaveByStatus,
     MyLeave,
     MyMonthAttendance,
     OnLeavePerson,
+    PayrollThisMonth,
     PendingLeaves,
     TileFigure,
     TrendDay,
@@ -110,6 +114,10 @@ type Props = {
     myLeave?: MyLeave;
     /** The account is linked to an employee record. */
     hasEmployee?: boolean;
+    /** The pay month's run (payroll.view only). */
+    payrollThisMonth?: PayrollThisMonth;
+    /** The viewer's own latest payslip of an approved or paid month (absent when there is none). */
+    latestPayslip?: LatestPayslip;
 };
 
 const SERIES_META: Record<TrendSeriesKey, { label: string; bar: string }> = {
@@ -133,6 +141,8 @@ export default function Dashboard({
     leaveByStatus,
     myLeave,
     hasEmployee,
+    payrollThisMonth,
+    latestPayslip,
 }: Props) {
     const { auth, app } = usePage().props;
     const can = useCan();
@@ -163,6 +173,10 @@ export default function Dashboard({
 
     if (myLeave) {
         leaveFigures['leave-balance'] = leaveBalanceTile(myLeave);
+    }
+
+    if (payrollThisMonth) {
+        leaveFigures.payroll = payrollTile(payrollThisMonth);
     }
 
     // After midnight and before the day cutoff the figures are still the previous attendance day's: say so.
@@ -251,7 +265,12 @@ export default function Dashboard({
                                     <>
                                         <p className="mt-1 text-2xl font-semibold tabular-nums">
                                             {figure.value === '–' ? (
-                                                <span aria-label="Not known yet">
+                                                <span
+                                                    aria-label={
+                                                        figure.valueLabel ??
+                                                        'Not known yet'
+                                                    }
+                                                >
                                                     –
                                                 </span>
                                             ) : (
@@ -314,6 +333,11 @@ export default function Dashboard({
                             day={attendanceDay}
                         />
                     )}
+                    {latestPayslip ? (
+                        <LatestPayslipCard payslip={latestPayslip} />
+                    ) : hasEmployee && !can('payroll.view') ? (
+                        <LatestPayslipCard payslip={null} />
+                    ) : null}
                     {birthdays && <BirthdaysCard people={birthdays} />}
                 </section>
             </div>

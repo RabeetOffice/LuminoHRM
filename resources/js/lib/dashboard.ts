@@ -441,6 +441,8 @@ export type TileFigure = {
     label?: string;
     /** The big number, or "–" when it cannot be known yet. */
     value: string;
+    /** What a screen reader hears for a "–" value (default "Not known yet"). */
+    valueLabel?: string;
     /** A small word after the number ("days left"). */
     unit?: string;
     note: string;
@@ -787,4 +789,80 @@ export function pendingLeavesTile(
     }
 
     return null;
+}
+
+// ---------------------------------------------------------------- payroll (Phase 5)
+
+export type PayrollStatus = 'none' | 'draft' | 'approved' | 'paid';
+
+/** The run of the pay month (the month before the current one), payroll.view only. Money in paisa. */
+export type PayrollThisMonth = {
+    /** "Y-m". */
+    month: string;
+    /** "November 2026". */
+    label: string;
+    status: PayrollStatus;
+    headcount: number;
+    net: number;
+    run_id: number | null;
+    /** The run, or Payroll Runs when there is none; null while those screens are not available. */
+    url: string | null;
+};
+
+/** The viewer's own latest payslip (an approved or paid run only, never a draft). Money in paisa. */
+export type LatestPayslip = {
+    month: string;
+    label: string;
+    net: number;
+    /** The PDF; null while the download is not available. */
+    download_url: string | null;
+};
+
+export const PAYROLL_STATUS_LABEL: Record<PayrollStatus, string> = {
+    none: 'Not generated',
+    draft: 'Draft',
+    approved: 'Approved',
+    paid: 'Paid',
+};
+
+/**
+ * Paisa as rupees, exactly like the server's Money::format: "Rs 2,450,000", "Rs 64,930.50", "-Rs 500". Western
+ * grouping in threes (never a South Asian locale), worked out with integers so no float rounding can creep in.
+ */
+export function formatRupees(paisa: number): string {
+    const sign = paisa < 0 ? '-' : '';
+    const abs = Math.abs(Math.trunc(paisa));
+    const rupees = Math.floor(abs / 100);
+    const cents = abs % 100;
+    const grouped = String(rupees).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+    return `${sign}Rs ${grouped}${cents === 0 ? '' : `.${String(cents).padStart(2, '0')}`}`;
+}
+
+/** "1 person", "52 people". */
+export function peopleLabel(count: number): string {
+    return count === 1 ? '1 person' : `${count} people`;
+}
+
+/**
+ * The "Payroll This Month" tile: the pay month's net total, its status and people ("November 2026 · Approved · 52
+ * people"), or "Not generated yet" for the month. Links to the run (or Payroll Runs) when the server sent a link.
+ */
+export function payrollTile(payroll: PayrollThisMonth): TileFigure {
+    const href = payroll.url ?? undefined;
+
+    if (payroll.status === 'none') {
+        return {
+            value: '–',
+            valueLabel: 'Not generated yet',
+            note: `${payroll.label} · Not generated yet`,
+            href,
+        };
+    }
+
+    return {
+        value: formatRupees(payroll.net),
+        note: `${payroll.label} · ${PAYROLL_STATUS_LABEL[payroll.status]} · ${peopleLabel(payroll.headcount)}`,
+        href,
+    };
 }

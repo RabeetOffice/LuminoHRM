@@ -7,9 +7,12 @@ import {
     dashboardTiles,
     formatDays,
     formatLongDate,
+    formatRupees,
     greetingFor,
     hasTrendData,
     hourIn,
+    payrollTile,
+    peopleLabel,
     personalAttendanceTiles,
     probationNote,
     shortDay,
@@ -23,6 +26,7 @@ import type {
     AttendanceDay,
     AttendanceToday,
     MyMonthAttendance,
+    PayrollThisMonth,
 } from '@/lib/dashboard';
 
 describe('greetingFor', () => {
@@ -476,5 +480,78 @@ describe('formatDays', () => {
         [3.5, '3.5'],
     ])('%d', (value, expected) => {
         expect(formatDays(value)).toBe(expected);
+    });
+});
+
+describe('formatRupees', () => {
+    test.each([
+        [0, 'Rs 0'],
+        [100, 'Rs 1'],
+        [6493000, 'Rs 64,930'],
+        [6493050, 'Rs 64,930.50'],
+        [6493005, 'Rs 64,930.05'],
+        [245000000, 'Rs 2,450,000'],
+        [100000000000, 'Rs 1,000,000,000'],
+        [-50000, '-Rs 500'],
+        [99999, 'Rs 999.99'],
+    ])('%i paisa', (paisa, expected) => {
+        expect(formatRupees(paisa)).toBe(expected);
+    });
+});
+
+describe('payrollTile', () => {
+    const base: PayrollThisMonth = {
+        month: '2026-11',
+        label: 'November 2026',
+        status: 'approved',
+        headcount: 52,
+        net: 245000000,
+        run_id: 7,
+        url: '/payroll/runs/7',
+    };
+
+    test('a generated month: net total, status and people, linking to the run', () => {
+        expect(payrollTile(base)).toEqual({
+            value: 'Rs 2,450,000',
+            note: 'November 2026 · Approved · 52 people',
+            href: '/payroll/runs/7',
+        });
+        expect(payrollTile({ ...base, status: 'draft' }).note).toBe(
+            'November 2026 · Draft · 52 people',
+        );
+        expect(
+            payrollTile({ ...base, status: 'paid', headcount: 1 }).note,
+        ).toBe('November 2026 · Paid · 1 person');
+    });
+
+    test('not generated: a dash read out as "Not generated yet", linking to Payroll Runs', () => {
+        const tile = payrollTile({
+            ...base,
+            status: 'none',
+            headcount: 0,
+            net: 0,
+            run_id: null,
+            url: '/payroll/runs',
+        });
+        expect(tile).toEqual({
+            value: '–',
+            valueLabel: 'Not generated yet',
+            note: 'November 2026 · Not generated yet',
+            href: '/payroll/runs',
+        });
+    });
+
+    test('no link while the payroll screens are not available', () => {
+        expect(payrollTile({ ...base, url: null }).href).toBeUndefined();
+    });
+});
+
+describe('peopleLabel', () => {
+    test.each([
+        [0, '0 people'],
+        [1, '1 person'],
+        [2, '2 people'],
+    ])('%i', (count, expected) => {
+        expect(peopleLabel(count)).toBe(expected);
     });
 });

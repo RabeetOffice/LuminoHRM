@@ -32,6 +32,14 @@ export type AttendanceValues = {
     half_day_hours: number;
     overtime_enabled: boolean;
     overtime_min_minutes: number;
+    /** How overtime is paid: a multiple of hourly pay, or a fixed rate an hour. */
+    overtime_rate_mode: 'multiple' | 'fixed';
+    /** 100 to 300 (150 = one and a half times hourly pay). */
+    overtime_multiplier_percent: number;
+    /** Whole rupees an hour, 0 to 100,000. */
+    overtime_fixed_rate: number;
+    /** 1 to 24: hourly pay = one day's pay / this. */
+    overtime_hours_per_day: number;
     /** "Y-m-d", or null while attendance has not started. */
     start_date: string | null;
     duplicate_punch_minutes: number;
@@ -50,6 +58,8 @@ export type PayrollValues = {
     leave_encashment: boolean;
     notice_period_days: number;
     payslip_footer: string;
+    /** First month of the tax year, 1 to 12 (7 = July to June). */
+    tax_year_start_month: number;
 };
 
 export type EmailValues = {

@@ -10,6 +10,13 @@ import {
 } from '@/components/settings/settings-form';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
 import { useCan } from '@/hooks/use-can';
 import { index as shiftsIndex } from '@/routes/attendance/shifts';
 import type { AttendanceValues } from '@/types/hrm-settings';
@@ -149,7 +156,14 @@ export function AttendancePanel({ values }: { values: AttendanceValues }) {
             <SettingsCard
                 title="Overtime"
                 description="Overtime minutes are always recorded in attendance. This setting only decides whether payroll pays them."
-                {...card(['overtime_enabled', 'overtime_min_minutes'])}
+                {...card([
+                    'overtime_enabled',
+                    'overtime_min_minutes',
+                    'overtime_rate_mode',
+                    'overtime_multiplier_percent',
+                    'overtime_fixed_rate',
+                    'overtime_hours_per_day',
+                ])}
             >
                 <CheckField
                     id="att-overtime"
@@ -170,6 +184,81 @@ export function AttendancePanel({ values }: { values: AttendanceValues }) {
                     error={errors.overtime_min_minutes}
                     onChange={(v) => setData('overtime_min_minutes', v)}
                 />
+                <div className="grid gap-5 sm:grid-cols-2">
+                    <Field
+                        id="att-overtime-mode"
+                        label="Overtime rate"
+                        hint="Used only while overtime is paid."
+                        error={errors.overtime_rate_mode}
+                    >
+                        <Select
+                            value={data.overtime_rate_mode}
+                            onValueChange={(v) =>
+                                setData(
+                                    'overtime_rate_mode',
+                                    v as AttendanceValues['overtime_rate_mode'],
+                                )
+                            }
+                        >
+                            <SelectTrigger
+                                {...fieldAria(
+                                    'att-overtime-mode',
+                                    errors.overtime_rate_mode,
+                                    true,
+                                )}
+                                className="w-full"
+                            >
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="multiple">
+                                    A multiple of hourly pay
+                                </SelectItem>
+                                <SelectItem value="fixed">
+                                    A fixed amount an hour
+                                </SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </Field>
+                    {data.overtime_rate_mode === 'fixed' ? (
+                        <NumberField
+                            id="att-overtime-fixed"
+                            label="Fixed rate"
+                            hint="Whole rupees for each hour of overtime."
+                            suffix="rupees an hour"
+                            min={0}
+                            max={100000}
+                            value={data.overtime_fixed_rate}
+                            error={errors.overtime_fixed_rate}
+                            onChange={(v) => setData('overtime_fixed_rate', v)}
+                        />
+                    ) : (
+                        <NumberField
+                            id="att-overtime-multiplier"
+                            label="Multiple of hourly pay"
+                            hint="150% pays one and a half times the hourly pay."
+                            suffix="%"
+                            min={100}
+                            max={300}
+                            value={data.overtime_multiplier_percent}
+                            error={errors.overtime_multiplier_percent}
+                            onChange={(v) =>
+                                setData('overtime_multiplier_percent', v)
+                            }
+                        />
+                    )}
+                    <NumberField
+                        id="att-overtime-hours"
+                        label="Hours in a working day"
+                        hint="Hourly pay is one day's pay divided by this."
+                        suffix="hours"
+                        min={1}
+                        max={24}
+                        value={data.overtime_hours_per_day}
+                        error={errors.overtime_hours_per_day}
+                        onChange={(v) => setData('overtime_hours_per_day', v)}
+                    />
+                </div>
             </SettingsCard>
         </form>
     );
