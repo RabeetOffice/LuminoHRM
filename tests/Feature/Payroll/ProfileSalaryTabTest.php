@@ -77,11 +77,11 @@ it('leaves the tab out for a Manager viewing a report, with no salary figure in 
 
     $response = $this->actingAs($manager)->get("/employees/{$report->id}")->assertOk();
     $props = $response->inertiaProps();
-    $json = json_encode($props['employee'], JSON_THROW_ON_ERROR).json_encode($props['tabs']);
+    $json = json_encode($props, JSON_THROW_ON_ERROR); // the WHOLE page props, not just the employee
 
     expect($props['tabs'])->not->toContain('salary')
         ->and($props['employee'])->not->toHaveKey('salary');
-    foreach (['5777700', '57,777', '4888800', '48,888', '6493000', '64,930', 'payslips', 'salary'] as $secret) {
+    foreach (['5777700', '57,777', '4888800', '48,888', '6493000', '64,930', 'payslips', '"salary"', '5111100', '51,111'] as $secret) {
         expect($json)->not->toContain($secret);
     }
 });
@@ -94,7 +94,7 @@ it('leaves the tab out on a Manager\'s and an Employee\'s own record and My Prof
 
     expect($myProps['tabs'])->not->toContain('salary')
         ->and($myProps['employee'])->not->toHaveKey('salary')
-        ->and(json_encode($myProps['employee']))->not->toContain('5777700');
+        ->and(json_encode($myProps, JSON_THROW_ON_ERROR))->not->toContain('5777700')->not->toContain('57,777')->not->toContain('"salary"');
 
     if ($role === 'manager') {
         $own = $this->actingAs($user)->get("/employees/{$user->employee->id}")->assertOk()->inertiaProps();

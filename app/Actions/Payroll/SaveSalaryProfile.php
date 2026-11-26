@@ -50,7 +50,7 @@ class SaveSalaryProfile
     public function create(User $by, Employee $employee, array $data): SalaryProfile
     {
         return DB::transaction(function () use ($by, $employee, $data): SalaryProfile {
-            $locked = $this->lockEmployee($by, $employee);
+            $locked = $this->lockEmployee($by, $employee->id);
 
             $this->checkDate($locked, (string) $data['effective_from']);
 
@@ -76,7 +76,7 @@ class SaveSalaryProfile
     public function update(User $by, SalaryProfile $profile, array $data): SalaryProfile
     {
         return DB::transaction(function () use ($by, $profile, $data): SalaryProfile {
-            $locked = $this->lockEmployee($by, $profile->employee()->firstOrFail());
+            $locked = $this->lockEmployee($by, $profile->employee_id);
 
             $current = SalaryProfile::query()->whereKey($profile->id)->with('components')->lockForUpdate()->firstOrFail();
             $this->refuseIfUsed($current);
@@ -108,7 +108,7 @@ class SaveSalaryProfile
     public function delete(User $by, SalaryProfile $profile): void
     {
         DB::transaction(function () use ($by, $profile): void {
-            $locked = $this->lockEmployee($by, $profile->employee()->firstOrFail());
+            $locked = $this->lockEmployee($by, $profile->employee_id);
 
             $current = SalaryProfile::query()->whereKey($profile->id)->with('components')->lockForUpdate()->firstOrFail();
             $this->refuseIfUsed($current);
@@ -185,9 +185,11 @@ class SaveSalaryProfile
      *
      * @throws AuthorizationException
      */
-    private function lockEmployee(User $by, Employee $employee): Employee
+    private function lockEmployee(User $by, int $employeeId): Employee
     {
-        $locked = Employee::query()->whereKey($employee->getKey())->lockForUpdate()->firstOrFail();
+        // By id, as the very first statement: no plain read of the employee may come before it (MariaDB REPEATABLE READ
+        // fixes the snapshot at the first read, so a read before the lock wait would see stale data after it).
+        $locked = Employee::query()->whereKey($employeeId)->lockForUpdate()->firstOrFail();
 
         if (! PayrollAccess::mayEditSalary($by, $locked)) {
             throw new AuthorizationException('You cannot change this person\'s salary.');
@@ -207,9 +209,14 @@ class SaveSalaryProfile
             ]);
         }
 
-        if (self::lockedFrom($from) !== null) {
+        $locked = self::lockedFrom($from);
+
+        if ($locked !== null) {
+            // The label is the latest approved month (shared-locked, current); the month the check found is the fallback.
+            $latest = PayrollLock::query()->max('month');
+
             throw ValidationException::withMessages([
-                'effective_from' => 'Payroll up to '.PayrollRun::monthLabel(self::latestApprovedLabelMonth()).' is approved. Start the new salary after it.',
+                'effective_from' => 'Payroll up to '.PayrollRun::monthLabel(is_string($latest) && $latest !== '' ? $latest : $locked).' is approved. Start the new salary after it.',
             ]);
         }
 
@@ -243,12 +250,6 @@ class SaveSalaryProfile
     private static function lockedFrom(string $date): ?string
     {
         return PayrollLock::rangeTouchesLocked($date, self::FAR_FUTURE);
-    }
-
-    /** The latest approved month, for the refusal's wording only (a plain read; the decision is lockedFrom()). */
-    private static function latestApprovedLabelMonth(): string
-    {
-        return (string) PayrollRun::query()->whereIn('status', (array) config('hrm.payroll.locked_statuses'))->max('month');
     }
 
     /** @param  array<string, mixed>  $data */

@@ -65,9 +65,23 @@ type FormData = TaxDraft & {
     components: ComponentDraft[];
 };
 
-/** Typed whole rupees as the number the server takes, or the text as typed (the server explains what is wrong). */
+/**
+ * Typed whole rupees as the number the server takes, or the text as typed (the server explains what is wrong). A
+ * well-formed amount above the limit goes as a number too (grouping stripped), so the server's limit message shows
+ * rather than "Enter ... in whole rupees".
+ */
 function rupeesOut(text: string): number | string {
-    return parseRupees(text) ?? text.trim();
+    const parsed = parseRupees(text);
+
+    if (parsed !== null) {
+        return parsed;
+    }
+
+    const value = text.trim();
+    const wellFormed = /^(\d{1,3}(,\d{3})*|\d+)$/.test(value);
+    const stripped = Number(value.replace(/,/g, ''));
+
+    return wellFormed && Number.isSafeInteger(stripped) ? stripped : value;
 }
 
 /**

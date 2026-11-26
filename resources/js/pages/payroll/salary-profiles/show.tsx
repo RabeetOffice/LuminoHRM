@@ -71,10 +71,9 @@ export default function SalaryProfileShow({
     const [editing, setEditing] = useState<Editing>(null);
     const [deleting, setDeleting] = useState<SalaryHistoryRow | null>(null);
     const [processing, setProcessing] = useState(false);
-    // A refused delete comes back as a page error (the dialog shows its own).
-    const pageError = editing
-        ? undefined
-        : (props.errors as Record<string, string | undefined>).effective_from;
+    // A refused delete's message, kept apart from the form dialog's own errors so a failed save does not reappear
+    // on the page after Cancel.
+    const [deleteError, setDeleteError] = useState<string | null>(null);
 
     const remove = () => {
         if (!deleting) {
@@ -88,7 +87,16 @@ export default function SalaryProfileShow({
             }).url,
             {
                 preserveScroll: true,
-                onStart: () => setProcessing(true),
+                onStart: () => {
+                    setProcessing(true);
+                    setDeleteError(null);
+                },
+                onError: (errors) =>
+                    setDeleteError(
+                        errors.effective_from ??
+                            Object.values(errors)[0] ??
+                            null,
+                    ),
                 onFinish: () => {
                     setProcessing(false);
                     setDeleting(null);
@@ -146,12 +154,12 @@ export default function SalaryProfileShow({
                         Admin.
                     </p>
                 )}
-                {pageError && (
+                {deleteError && (
                     <p
                         role="alert"
                         className="rounded-lg border border-red-200 bg-red-50/60 p-3 text-sm text-destructive dark:border-red-500/30 dark:bg-red-500/10"
                     >
-                        {pageError}
+                        {deleteError}
                     </p>
                 )}
                 {latest_locked && (

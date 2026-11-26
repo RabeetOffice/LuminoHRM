@@ -247,6 +247,42 @@ Route::middleware(['auth', 'verified'])->group(function () {
         });
     });
 
+    // Payroll > Loans & Advances: Admin / HR only (payroll.view reads, payroll.run writes, payroll.approve cancels; whose
+    // loan a user may change is PayrollAccess::mayEditSalary in SaveLoan / LoanActions, 403).
+    Route::prefix('payroll/loans')->name('payroll.loans.')->controller(\App\Http\Controllers\Payroll\LoanController::class)->group(function () {
+        Route::middleware('can:payroll.view')->group(function () {
+            Route::get('/', 'index')->name('index');
+            Route::get('{loan}', 'show')->whereNumber('loan')->name('show');
+        });
+
+        Route::middleware('can:payroll.run')->group(function () {
+            Route::post('/', 'store')->name('store');
+            Route::put('{loan}', 'update')->whereNumber('loan')->name('update');
+            Route::post('{loan}/skip', 'skip')->whereNumber('loan')->name('skip');
+            Route::delete('{loan}/skip/{month}', 'unskip')->whereNumber('loan')->where('month', '\d{4}-\d{2}')->name('unskip');
+            Route::post('{loan}/repayments', 'repay')->whereNumber('loan')->name('repay');
+        });
+
+        Route::post('{loan}/cancel', 'cancel')->whereNumber('loan')->middleware('can:payroll.approve')->name('cancel');
+    });
+
+    // Payroll > Opening Figures: opening tax per person and tax year (form), and the go-live imports of opening tax and
+    // opening loans ({kind} tax | loans). Static URLs before the numeric edit route.
+    Route::prefix('payroll/opening')->name('payroll.opening.')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Payroll\OpeningFiguresController::class, 'index'])->middleware('can:payroll.view')->name('index');
+
+        Route::middleware('can:payroll.run')->group(function () {
+            Route::prefix('import/{kind}')->where(['kind' => 'tax|loans'])->name('import')
+                ->controller(\App\Http\Controllers\Payroll\OpeningImportController::class)->group(function () {
+                    Route::get('/', 'show');
+                    Route::get('template', 'template')->name('.template');
+                    Route::post('preview', 'upload')->name('.preview');
+                    Route::post('run', 'run')->name('.run');
+                });
+            Route::put('{employee}/{taxYear}', [\App\Http\Controllers\Payroll\OpeningFiguresController::class, 'update'])
+                ->whereNumber('employee')->where('taxYear', '\d{4}')->name('update');
+        });
+
     // Users and roles. No delete route: accounts are disabled, never removed.
     Route::middleware('can:users.manage')->prefix('users')->name('users.')->group(function () {
         Route::get('/', [UserController::class, 'index'])->name('index');

@@ -1,12 +1,14 @@
 <?php
 
 use App\Actions\Payroll\SaveSalaryProfile;
+use App\Models\Department;
 use App\Models\Employee;
 use App\Models\SalaryComponent;
 use App\Models\SalaryProfile;
 use App\Models\User;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Query\Grammars\MySqlGrammar;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Spatie\Activitylog\Models\Activity;
@@ -321,20 +323,85 @@ it('deletes a profile with its components and audits the old values', function (
         ->and(spEntries('Salary profile deleted')->sole()->properties['old']['basic_text'])->toBe('Rs 60,000');
 });
 
-it('locks the employee row first in the save transaction', function () {
-    $person = spPerson();
-    $admin = spUser('admin');
+/**
+ * Runs $run and returns the statements it issued, minus transaction plumbing and permission lookups. On SQLite the
+ * lock clause is not in the SQL, so the lock is proven by ORDER: the employee row is read exactly once, first, and
+ * before anything else about the profile or payroll.
+ *
+ * @return list<string>
+ */
+function spStatements(Closure $run): array
+{
     $statements = [];
     DB::listen(function ($query) use (&$statements) {
         $statements[] = $query->sql;
     });
+    $run();
 
-    app(SaveSalaryProfile::class)->create($admin, $person, [
-        'effective_from' => '2026-12-01', 'basic' => 100, 'tax_mode' => 'none', 'tax_value' => 0, 'tax_base' => null, 'note' => null, 'components' => [],
-    ]);
+    return array_values(array_filter($statements, fn (string $sql) => ! str_contains($sql, 'savepoint') && ! str_contains($sql, 'roles') && ! str_contains($sql, 'permissions')));
+}
 
-    $first = collect($statements)->first(fn (string $sql) => ! str_contains($sql, 'savepoint') && ! str_contains($sql, 'roles') && ! str_contains($sql, 'permissions'));
-    expect($first)->toContain('from "employees"')->toContain('where "employees"."id" = ?');
+it('locks the employee row by id first in create, update and delete, with no other employee read before it', function (string $write) {
+    $person = spPerson();
+    $admin = spUser('admin');
+    $profile = salaryProfile($person, from: '2026-12-01');
+    $data = [
+        'effective_from' => '2026-12-02', 'basic' => 100, 'tax_mode' => 'none', 'tax_value' => 0, 'tax_base' => null, 'note' => null, 'components' => [],
+    ];
+    $fresh = SalaryProfile::query()->findOrFail($profile->id); // its employee relation is not loaded
+    $target = Employee::query()->findOrFail($person->id);
+
+    $statements = spStatements(fn () => match ($write) {
+        'create' => app(SaveSalaryProfile::class)->create($admin, $target, $data),
+        'update' => app(SaveSalaryProfile::class)->update($admin, $fresh, $data),
+        'delete' => app(SaveSalaryProfile::class)->delete($admin, $fresh),
+    });
+
+    // The lock query, as MariaDB would see it, is "... where `employees`.`id` = ? limit 1 for update".
+    $lock = Employee::query()->whereKey($person->id)->lockForUpdate();
+    $compiled = (new MySqlGrammar(DB::connection()))->compileSelect($lock->toBase());
+    expect($compiled)->toContain('for update')->toContain('`employees`.`id` = ?');
+
+    $beforeProfiles = [];
+    foreach ($statements as $sql) {
+        if (str_contains($sql, 'salary_profiles') || str_contains($sql, 'payroll_runs')) {
+            break;
+        }
+        $beforeProfiles[] = $sql;
+    }
+
+    expect($statements[0])->toContain('from "employees"')->toContain('where "employees"."id" = ?')
+        ->and(count(array_filter($beforeProfiles, fn (string $sql) => str_contains($sql, 'from "employees"'))))->toBe(1);
+})->with(['create', 'update', 'delete']);
+
+it('names the latest approved month in the refusal from a current read', function () {
+    $person = spPerson();
+    payrollRun('2026-09', 'approved');
+    payrollRun('2026-11', 'paid');
+
+    $this->actingAs(spUser('hr'))->post("/payroll/salary-profiles/{$person->id}", spPayload(['effective_from' => '2026-09-15']))
+        ->assertSessionHasErrors(['effective_from' => 'Payroll up to November 2026 is approved. Start the new salary after it.']);
+});
+
+it('gives the friendly duplicate message when an update moves a profile onto another profile\'s date', function () {
+    $person = spPerson(['first_name' => 'Sara', 'last_name' => 'Ahmed']);
+    salaryProfile($person, from: '2026-12-01');
+    $other = salaryProfile($person, from: '2026-12-05');
+
+    $this->actingAs(spUser('hr'))->put("/payroll/salary-profiles/{$person->id}/{$other->id}", spPayload(['effective_from' => '2026-12-01']))
+        ->assertSessionHasErrors(['effective_from' => 'Sara Ahmed already has a salary starting on 1 Dec 2026. Edit that one instead.']);
+
+    expect($other->refresh()->effective_from->toDateString())->toBe('2026-12-05');
+});
+
+it('lets HR change the salary of a Manager-role person', function () {
+    $manager = spUser('manager')->employee;
+
+    $this->actingAs(spUser('hr'))->post("/payroll/salary-profiles/{$manager->id}", spPayload())->assertSessionHasNoErrors()->assertRedirect();
+    $profile = SalaryProfile::query()->sole();
+    $this->actingAs(spUser('hr'))->put("/payroll/salary-profiles/{$manager->id}/{$profile->id}", spPayload(['basic' => 70000]))->assertSessionHasNoErrors();
+
+    expect($profile->refresh()->basic)->toBe(7_000_000);
 });
 
 // ---------------------------------------------------------------- validation and money
@@ -480,4 +547,27 @@ it('starts the form from the latest profile, or the default tax mode when there 
         ->and(collect($onPaid['history'])->pluck('effective_from')->all())->toBe(['2027-01-01', '2026-01-01'])
         ->and(collect($onPaid['history'])->pluck('current')->all())->toBe([false, true])
         ->and($onPaid['history'][1])->toMatchArray(['gross' => 9_000_000, 'taxable_gross' => 8_400_000, 'deductions' => 300_000, 'tax' => '5% of gross taxable']);
+});
+
+it('filters the list by department and ignores an unknown department', function () {
+    $hr = spUser('hr');
+    $sales = Department::factory()->create();
+    $inSales = spPerson(['department_id' => $sales->id]);
+    $elsewhere = spPerson();
+
+    $ids = fn (string $query) => collect($this->actingAs($hr)->get("/payroll/salary-profiles{$query}")->inertiaProps()['rows']['data'])->pluck('id')->all();
+
+    expect($ids("?department={$sales->id}"))->toBe([$inSales->id])
+        ->and($this->actingAs($hr)->get("/payroll/salary-profiles?department={$sales->id}")->inertiaProps()['filters']['department'])->toBe($sales->id)
+        ->and($ids('?department=999999'))->toContain($inSales->id)->toContain($elsewhere->id);
+});
+
+it('sends a page past the end back to the last page', function () {
+    $hr = spUser('hr');
+    foreach (range(1, 30) as $i) {
+        spPerson();
+    }
+
+    $this->actingAs($hr)->get('/payroll/salary-profiles?page=9')->assertRedirect('/payroll/salary-profiles?page=2');
+    $this->actingAs($hr)->get('/payroll/salary-profiles?department=999999&search=zzzz&page=3')->assertRedirect('/payroll/salary-profiles?department=999999&search=zzzz');
 });
