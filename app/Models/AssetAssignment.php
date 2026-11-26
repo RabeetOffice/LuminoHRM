@@ -69,6 +69,9 @@ class AssetAssignment extends Model
         });
 
         static::updating(function (AssetAssignment $assignment): void {
+            // A plain read: inside a transaction on MariaDB REPEATABLE READ it returns the transaction's snapshot, not
+            // necessarily the latest row. Callers that decide on the row's state must re-read it FOR UPDATE first (as
+            // ReturnAsset and EditAssignmentNote do); this guard is a backstop for history, not a concurrency check.
             $stored = static::query()->whereKey($assignment->getKey())->first();
 
             if ($stored === null) {

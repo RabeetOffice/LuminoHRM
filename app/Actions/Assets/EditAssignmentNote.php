@@ -14,6 +14,9 @@ use Illuminate\Validation\ValidationException;
  * transaction whose first statement locks the assignment row; the asset and employee rows are not needed (no status,
  * holder or date changes here, and there is no undo of an assignment: return it the same day and assign again).
  *
+ * A note whose key the request did not send stays as it is ($setNote / $setReturnNote false); a key sent empty or null
+ * clears that note.
+ *
  * Refusals (ValidationException): a note over 500 characters on [note] / [return_note]; a return note on an assignment
  * that is still open [return_note].
  *
@@ -31,16 +34,20 @@ class EditAssignmentNote
         return $this->changed;
     }
 
-    public function handle(User $by, AssetAssignment $a, ?string $note, ?string $returnNote): AssetAssignment
+    /**
+     * @param  bool  $setNote  false leaves the hand-over note as it is (the request did not send the key)
+     * @param  bool  $setReturnNote  false leaves the return note as it is
+     */
+    public function handle(User $by, AssetAssignment $a, ?string $note, ?string $returnNote, bool $setNote = true, bool $setReturnNote = true): AssetAssignment
     {
         $this->changed = false;
         $id = $a->getKey();
 
-        return DB::transaction(function () use ($by, $id, $note, $returnNote): AssetAssignment {
+        return DB::transaction(function () use ($by, $id, $note, $returnNote, $setNote, $setReturnNote): AssetAssignment {
             $current = AssetAssignment::query()->whereKey($id)->lockForUpdate()->firstOrFail();
 
-            $note = AssignAsset::cleanNote($note, 'note');
-            $returnNote = AssignAsset::cleanNote($returnNote, 'return_note');
+            $note = $setNote ? AssignAsset::cleanNote($note, 'note') : $current->note;
+            $returnNote = $setReturnNote ? AssignAsset::cleanNote($returnNote, 'return_note') : $current->return_note;
 
             if ($current->isOpen() && $returnNote !== null) {
                 throw ValidationException::withMessages(['return_note' => self::NOT_RETURNED_YET]);

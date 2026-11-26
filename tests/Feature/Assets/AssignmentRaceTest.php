@@ -162,3 +162,30 @@ it('assigns, returns and assigns again without ever breaking the invariant', fun
         ->and($second->refresh()->open_asset_id)->toBe($asset->id)
         ->and(AssetAssignment::query()->where('asset_id', $asset->id)->count())->toBe(2);
 });
+
+it('rethrows a unique violation that is not about the open assignment, writing nothing', function () {
+    $hr = userWithRole('hr');
+    $existing = assignedAsset(aaPerson(['first_name' => 'Ali']), ['returned_on' => '2026-11-21']);
+    $taken = AssetAssignment::query()->where('asset_id', $existing->id)->sole()->id;
+    $asset = assetRow();
+
+    // The action's insert reuses an existing primary key: a unique violation on id, not on open_asset_id.
+    AssetAssignment::creating(function (AssetAssignment $a) use ($taken): void {
+        $a->id = $taken;
+    });
+
+    expect(fn () => app(AssignAsset::class)->handle($hr, $asset, aaPerson(), '2026-11-26', null))
+        ->toThrow(UniqueConstraintViolationException::class);
+
+    expect($asset->refresh()->status)->toBe('available')
+        ->and(AssetAssignment::query()->count())->toBe(1)
+        ->and(Activity::query()->where('description', 'Asset assigned')->count())->toBe(0);
+});
+
+it('names "an employee" when an asset says assigned but has no open row', function () {
+    $asset = assetRow(['asset_code' => 'AST-0009', 'status' => 'assigned']);
+
+    expect(aaRefusal(fn () => app(AssignAsset::class)->handle(userWithRole('hr'), $asset, aaPerson(), '2026-11-26', null)))
+        ->toBe(['asset' => 'AST-0009 is already assigned to an employee. Return it first.'])
+        ->and(AssetAssignment::query()->count())->toBe(0);
+});

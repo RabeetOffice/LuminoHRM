@@ -60,7 +60,15 @@ class AssignmentController extends Controller
         /** @var User $user */
         $user = $request->user();
 
-        $action->handle($user, $assignment, $request->validated('note'), $request->validated('return_note'));
+        // A key the request did not send leaves that note as it is; a key sent empty clears it.
+        $action->handle(
+            $user,
+            $assignment,
+            $request->validated('note'),
+            $request->validated('return_note'),
+            $request->has('note'),
+            $request->has('return_note'),
+        );
 
         return back()->with('success', $action->changed() ? 'Note saved.' : 'Nothing changed.');
     }

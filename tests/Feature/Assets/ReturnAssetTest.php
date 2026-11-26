@@ -206,3 +206,36 @@ it('shows the return refusals as form errors on the route', function () {
         ->assertSessionHasNoErrors();
     expect(Asset::query()->sole()->status)->toBe('retired');
 });
+
+it('leaves a note whose key the PATCH did not send as it is, and clears one sent empty', function () {
+    $hr = userWithRole('hr');
+    [, , $assignment] = raHeld(asset: ['note' => 'Bag included']);
+    app(ReturnAsset::class)->handle($hr, $assignment, '2026-11-26', 'good', 'available', 'Came back fine');
+    $url = "/assets/assignments/{$assignment->id}/note";
+
+    $this->actingAs($hr)->patch($url, ['note' => 'Bag and mouse'])->assertSessionHasNoErrors();
+    expect($assignment->refresh()->note)->toBe('Bag and mouse')->and($assignment->return_note)->toBe('Came back fine');
+
+    $this->actingAs($hr)->patch($url, ['return_note' => 'Mouse missing'])->assertSessionHasNoErrors();
+    expect($assignment->refresh()->note)->toBe('Bag and mouse')->and($assignment->return_note)->toBe('Mouse missing');
+
+    $this->actingAs($hr)->patch($url, [])->assertSessionHasNoErrors()->assertSessionHas('success', 'Nothing changed.');
+    expect($assignment->refresh()->note)->toBe('Bag and mouse')->and($assignment->return_note)->toBe('Mouse missing');
+
+    $this->actingAs($hr)->patch($url, ['note' => '', 'return_note' => null])->assertSessionHasNoErrors();
+    expect($assignment->refresh()->note)->toBeNull()->and($assignment->return_note)->toBeNull();
+
+    $entry = Activity::query()->where('description', 'Asset assignment note changed')->orderBy('id')->get()->last();
+    expect($entry->properties['old'])->toBe(['note' => 'Bag and mouse', 'return_note' => 'Mouse missing'])
+        ->and($entry->properties['attributes'])->toBe(['note' => null, 'return_note' => null]);
+});
+
+it('keeps a note in the action when told not to set it', function () {
+    $hr = userWithRole('hr');
+    [, , $assignment] = raHeld(asset: ['note' => 'Bag included']);
+
+    app(EditAssignmentNote::class)->handle($hr, $assignment, null, null, setNote: false, setReturnNote: false);
+
+    expect($assignment->refresh()->note)->toBe('Bag included')
+        ->and(Activity::query()->where('description', 'Asset assignment note changed')->count())->toBe(0);
+});

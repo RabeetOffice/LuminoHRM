@@ -66,7 +66,9 @@ it('never deletes an assignment, and offers no route that edits or deletes one',
     expect(fn () => $assignment->delete())->toThrow(LogicException::class)
         ->and(AssetAssignment::query()->whereKey($assignment->id)->exists())->toBeTrue();
 
-    $routes = collect(Route::getRoutes()->getRoutes())->filter(fn ($r) => str_contains($r->uri(), 'assets/assignments'));
+    // Every route that writes to an assignment (the list pages only read).
+    $routes = collect(Route::getRoutes()->getRoutes())
+        ->filter(fn ($r) => str_contains($r->uri(), 'assets/assignments') && array_diff($r->methods(), ['GET', 'HEAD']) !== []);
     expect($routes->map(fn ($r) => implode('|', $r->methods()).' '.$r->uri())->sort()->values()->all())->toBe([
         'PATCH assets/assignments/{assignment}/note',
         'POST assets/assignments/{assignment}/return',

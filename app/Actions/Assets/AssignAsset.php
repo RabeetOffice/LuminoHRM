@@ -17,7 +17,7 @@ use Illuminate\Validation\ValidationException;
 /**
  * Hand an asset to an employee. ONE transaction (DB::transaction(fn, 3)) whose first statement locks the employee row by id
  * and whose second locks the asset row by id (plan lock order: employee first, then asset; never the other way). Every
- * decision is read after both locks, with locking reads only, so a stale model passed in by the caller never decides
+ * decision is taken from those two locked rows only, so a stale model passed in by the caller never decides
  * anything (MariaDB REPEATABLE READ: a plain read after the lock wait could still see the snapshot).
  *
  *   app(AssignAsset::class)->handle($hr, $asset, $employee, '2026-11-26', 'Charger included');
@@ -87,20 +87,17 @@ class AssignAsset
     {
         $note = self::cleanNote($note, 'note');
 
-        // The open hand-over, read under the asset lock (locking read: sees what committed while we waited).
-        $open = AssetAssignment::query()
-            ->where('asset_id', $lockedAsset->id)
-            ->open()
-            ->lockForUpdate()
-            ->first();
+        // "Held" is decided from the locked asset row: an asset is `assigned` if and only if it has an open assignment (the
+        // unique open_asset_id index backs that up). No locking read of asset_assignments here: on a never-assigned asset
+        // it would take a gap lock on the asset_id index, and two assigns of different new assets would deadlock on their
+        // inserts.
+        if ($lockedAsset->status === 'assigned') {
+            // The open row and its holder are only message text: plain reads after the locks, never a lock (an employee row
+            // is never locked after an asset row). An asset marked assigned with no open row names "an employee".
+            $holderId = AssetAssignment::query()->where('asset_id', $lockedAsset->id)->open()->value('employee_id');
+            $holder = $holderId === null ? null : Employee::query()->whereKey($holderId)->first()?->full_name;
 
-        if ($open !== null || $lockedAsset->status === 'assigned') {
-            // The holder's name is only message text: a plain read, never a lock (an employee row is never locked after
-            // an asset row).
-            $holder = $open === null ? null : Employee::query()->whereKey($open->employee_id)->first()?->full_name;
-            $holder ??= 'an employee';
-
-            throw ValidationException::withMessages(['asset' => self::heldMessage($lockedAsset->asset_code, $holder)]);
+            throw ValidationException::withMessages(['asset' => self::heldMessage($lockedAsset->asset_code, $holder ?? 'an employee')]);
         }
 
         if ($lockedAsset->status !== 'available') {
@@ -141,7 +138,12 @@ class AssignAsset
             $assignment->save();
         } catch (UniqueConstraintViolationException $e) {
             // The database guard: another open row for this asset was written by someone who did not take our locks.
-            if (! str_contains($e->getMessage(), 'open_asset_id')) {
+            // Judged on the driver's own message (errorInfo), not getMessage(): that one quotes the whole INSERT, whose
+            // column list always names open_asset_id. SQLite: "UNIQUE constraint failed: asset_assignments.open_asset_id";
+            // MariaDB: "Duplicate entry '5' for key 'asset_assignments_open_asset_id_unique'".
+            $driverMessage = (string) ($e->errorInfo[2] ?? $e->getPrevious()?->getMessage() ?? '');
+
+            if (! str_contains($driverMessage, 'open_asset_id')) {
                 throw $e;
             }
 

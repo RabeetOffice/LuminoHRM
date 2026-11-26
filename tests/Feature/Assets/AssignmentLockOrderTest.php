@@ -10,12 +10,15 @@ use App\Models\Asset;
 use App\Models\AssetAssignment;
 use App\Models\Employee;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\Grammars\MySqlGrammar;
+use Illuminate\Database\Query\Grammars\SQLiteGrammar;
 use Illuminate\Support\Facades\DB;
 
-// Statement order. SQLite drops the lock clause, so the recorded SQL shows the order of the reads, and the lock itself is
-// checked by compiling the same query with MySqlGrammar (what MariaDB receives). Lock order: employee row, then asset row;
-// never an asset row and then an employee row.
+// Statement order and locks. SQLite drops the lock clause, so while an action runs the connection's query grammar is swapped
+// for one that writes the lock as a trailing SQL comment ("/* for update */", "/* shared */"), which SQLite ignores. The
+// recorded SQL then shows both the order of the actions' own reads and which of them lock. MySqlGrammar shows the same lock
+// compiles to FOR UPDATE on MariaDB. Lock order: employee row, then asset row; never an asset row and then an employee row.
 
 require_once __DIR__.'/Support/assignment-helpers.php';
 
@@ -32,11 +35,30 @@ if (! function_exists('loStatements')) {
      */
     function loStatements(Closure $run): array
     {
+        $connection = DB::connection();
+        $original = $connection->getQueryGrammar();
+        $connection->setQueryGrammar(new class($connection) extends SQLiteGrammar
+        {
+            protected function compileLock(Builder $query, $value)
+            {
+                return match (true) {
+                    $value === true => '/* for update */',
+                    $value === false => '/* shared */',
+                    default => '',
+                };
+            }
+        });
+
         $statements = [];
         DB::listen(function ($query) use (&$statements) {
             $statements[] = $query->sql;
         });
-        $run();
+
+        try {
+            $run();
+        } finally {
+            $connection->setQueryGrammar($original);
+        }
 
         return array_values(array_filter($statements, fn (string $sql) => ! str_contains($sql, 'savepoint')
             && ! str_contains($sql, 'roles') && ! str_contains($sql, 'permissions') && ! str_contains($sql, 'activity_log')));
@@ -48,11 +70,18 @@ if (! function_exists('loStatements')) {
         return (new MySqlGrammar(DB::connection()))->compileSelect($model::query()->whereKey($id)->lockForUpdate()->toBase());
     }
 
-    /** Index of the first statement that selects from $table by its id, or -1. */
-    function loFirstSelectById(array $statements, string $table): int
+    /** Whether a recorded statement took a FOR UPDATE lock. */
+    function loLocks(string $sql): bool
+    {
+        return str_ends_with($sql, '/* for update */');
+    }
+
+    /** Index of the first statement that selects from $table by its id (and locks it, when $locked), or -1. */
+    function loFirstSelectById(array $statements, string $table, bool $locked = false): int
     {
         foreach ($statements as $i => $sql) {
-            if (str_starts_with($sql, 'select') && str_contains($sql, "from \"{$table}\" where \"{$table}\".\"id\" = ?")) {
+            if (str_starts_with($sql, 'select') && str_contains($sql, "from \"{$table}\" where \"{$table}\".\"id\" = ?")
+                && (! $locked || loLocks($sql))) {
                 return $i;
             }
         }
@@ -67,19 +96,49 @@ it('compiles the employee, asset and assignment locks to FOR UPDATE by id', func
         ->and(loCompiledLock(AssetAssignment::class, 1))->toContain('from `asset_assignments` where `asset_assignments`.`id` = ?')->toEndWith('for update');
 });
 
-it('assign: the employee by id first, the asset by id second, nothing about assets before them', function () {
+it('marks the locks in the recorded SQL, and restores the grammar afterwards', function () {
+    $statements = loStatements(function () {
+        Employee::query()->whereKey(1)->lockForUpdate()->first();
+        Employee::query()->whereKey(1)->sharedLock()->first();
+        Employee::query()->whereKey(1)->first();
+    });
+
+    expect($statements[0])->toEndWith('/* for update */')
+        ->and($statements[1])->toEndWith('/* shared */')
+        ->and(loLocks($statements[2]))->toBeFalse()
+        ->and(Employee::query()->whereKey(1)->lockForUpdate()->toSql())->not->toContain('/*');
+});
+
+it('assign: the employee locked by id first, the asset locked by id second, nothing about assets before them', function () {
     $hr = userWithRole('hr');
     $employee = Employee::query()->findOrFail(aaPerson()->id);
     $asset = Asset::query()->findOrFail(assetRow()->id);
 
     $statements = loStatements(fn () => app(AssignAsset::class)->handle($hr, $asset, $employee, '2026-11-26', null));
 
-    expect($statements[0])->toStartWith('select')->toContain('from "employees" where "employees"."id" = ?')
-        ->and($statements[1])->toStartWith('select')->toContain('from "assets" where "assets"."id" = ?');
+    expect($statements[0])->toStartWith('select')->toContain('from "employees" where "employees"."id" = ?')->toEndWith('/* for update */')
+        ->and($statements[1])->toStartWith('select')->toContain('from "assets" where "assets"."id" = ?')->toEndWith('/* for update */');
 
     $later = array_slice($statements, 2);
     expect(array_filter($later, fn ($sql) => str_contains($sql, 'insert into "asset_assignments"')))->not->toBeEmpty()
-        ->and(array_filter($later, fn ($sql) => str_contains($sql, 'update "assets"')))->not->toBeEmpty();
+        ->and(array_filter($later, fn ($sql) => str_contains($sql, 'update "assets"')))->not->toBeEmpty()
+        // No locking read of asset_assignments: its gap lock would deadlock two assigns of different new assets.
+        ->and(array_filter($statements, fn ($sql) => str_contains($sql, '"asset_assignments"') && str_contains($sql, '/*')))->toBeEmpty();
+});
+
+it('assign refused because held: the open row and the holder are read plainly, after the two locks', function () {
+    $held = assignedAsset(aaPerson(['first_name' => 'Ali']));
+    $sara = Employee::query()->findOrFail(aaPerson()->id);
+    $hr = userWithRole('hr');
+
+    $statements = loStatements(fn () => rescue(fn () => app(AssignAsset::class)->handle($hr, $held, $sara, '2026-11-26', null), report: false));
+
+    expect(loLocks($statements[0]))->toBeTrue()->and($statements[0])->toContain('from "employees"')
+        ->and(loLocks($statements[1]))->toBeTrue()->and($statements[1])->toContain('from "assets"');
+
+    $after = array_slice($statements, 2);
+    expect(array_filter($after, fn ($sql) => str_contains($sql, 'from "asset_assignments"')))->not->toBeEmpty()
+        ->and(array_filter($after, fn ($sql) => str_contains($sql, '/*')))->toBeEmpty();
 });
 
 it('return: the assignment read plainly, then the employee, then the asset, then the assignment again', function () {
@@ -91,9 +150,10 @@ it('return: the assignment read plainly, then the employee, then the asset, then
     $statements = loStatements(fn () => app(ReturnAsset::class)->handle($hr, $fresh, '2026-11-26', 'good', 'available', null));
 
     expect($statements[0])->toStartWith('select')->toContain('from "asset_assignments" where "asset_assignments"."id" = ?')
-        ->and($statements[1])->toStartWith('select')->toContain('from "employees" where "employees"."id" = ?')
-        ->and($statements[2])->toStartWith('select')->toContain('from "assets" where "assets"."id" = ?')
-        ->and($statements[3])->toStartWith('select')->toContain('from "asset_assignments" where "asset_assignments"."id" = ?');
+        ->and(loLocks($statements[0]))->toBeFalse()
+        ->and($statements[1])->toStartWith('select')->toContain('from "employees" where "employees"."id" = ?')->toEndWith('/* for update */')
+        ->and($statements[2])->toStartWith('select')->toContain('from "assets" where "assets"."id" = ?')->toEndWith('/* for update */')
+        ->and($statements[3])->toStartWith('select')->toContain('from "asset_assignments" where "asset_assignments"."id" = ?')->toEndWith('/* for update */');
 });
 
 it('never takes an asset row before an employee row on the assign and return paths', function (string $path) {
@@ -109,11 +169,13 @@ it('never takes an asset row before an employee row on the assign and return pat
         'return' => app(ReturnAsset::class)->handle($hr, $assignment, '2026-11-26', 'good', 'retired', null),
     });
 
-    $employee = loFirstSelectById($statements, 'employees');
-    $asset = loFirstSelectById($statements, 'assets');
+    $employee = loFirstSelectById($statements, 'employees', locked: true);
+    $asset = loFirstSelectById($statements, 'assets', locked: true);
+    $employeeLockedLater = array_filter(array_slice($statements, $asset + 1), fn ($sql) => str_contains($sql, 'from "employees"') && loLocks($sql));
 
     expect($employee)->toBeGreaterThanOrEqual(0)
-        ->and($asset)->toBeGreaterThan($employee);
+        ->and($asset)->toBeGreaterThan($employee)
+        ->and($employeeLockedLater)->toBeEmpty();
 })->with(['assign', 'assign refused (held)', 'return']);
 
 it('the note edit locks only its assignment row, with no employee or asset lock', function () {
@@ -124,8 +186,8 @@ it('the note edit locks only its assignment row, with no employee or asset lock'
 
     $statements = loStatements(fn () => app(EditAssignmentNote::class)->handle($hr, $fresh, 'New note', null));
 
-    expect($statements[0])->toStartWith('select')->toContain('from "asset_assignments" where "asset_assignments"."id" = ?')
-        ->and(loFirstSelectById(array_slice($statements, 0, 2), 'employees'))->toBe(-1)
+    expect($statements[0])->toStartWith('select')->toContain('from "asset_assignments" where "asset_assignments"."id" = ?')->toEndWith('/* for update */')
+        ->and(array_filter($statements, fn ($sql) => str_contains($sql, 'from "employees"') && loLocks($sql)))->toBeEmpty()
         ->and(loFirstSelectById($statements, 'assets'))->toBe(-1);
 });
 
@@ -143,6 +205,6 @@ it('the asset edit, status change and delete paths lock the asset row first and 
         'delete' => app(DeleteAsset::class)->handle($admin, $fresh),
     });
 
-    expect($statements[0])->toStartWith('select')->toContain('from "assets" where "assets"."id" = ?')
+    expect($statements[0])->toStartWith('select')->toContain('from "assets" where "assets"."id" = ?')->toEndWith('/* for update */')
         ->and(array_filter($statements, fn ($sql) => str_contains($sql, 'from "employees"')))->toBeEmpty();
 })->with(['edit', 'status', 'delete']);
