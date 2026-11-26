@@ -55,9 +55,11 @@ class AssetRules
     public static function statusRefusal(User $by, string $from, string $to, bool $hasOpenAssignment, ?Asset $asset = null): ?string
     {
         if ($from === 'assigned' || $hasOpenAssignment) {
-            $holder = $asset?->openAssignment?->employee?->full_name ?? 'an employee';
+            $open = $asset === null ? null : $asset->getRelationValue('openAssignment');
+            $employee = $open === null ? null : $open->getRelationValue('employee');
+            $holder = $employee === null ? 'an employee' : $employee->full_name;
 
-            return self::heldMessage($asset?->asset_code ?? 'This asset', $holder);
+            return self::heldMessage($asset === null ? 'This asset' : $asset->asset_code, $holder);
         }
 
         if ($from === $to) {

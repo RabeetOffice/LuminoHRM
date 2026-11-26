@@ -159,6 +159,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::post('{shift}/make-default', [ShiftController::class, 'makeDefault'])->whereNumber('shift')->name('make-default');
     });
 
+    // Assets: the register's writes (Task 4 adds the pages). Add, edit and status: Admin and HR; delete: Admin only.
+    Route::middleware('can:assets.assign')->prefix('assets')->name('assets.')->controller(\App\Http\Controllers\Assets\AssetController::class)->group(function () {
+        Route::post('/', 'store')->name('store');
+        Route::put('{asset}', 'update')->whereNumber('asset')->name('update');
+        Route::post('{asset}/status', 'status')->whereNumber('asset')->name('status');
+    });
+    Route::delete('assets/{asset}', [\App\Http\Controllers\Assets\AssetController::class, 'destroy'])->middleware('can:assets.manage')->whereNumber('asset')->name('assets.destroy');
+
     // Attendance > Raw Punches: every punch the machines sent (Admin, HR). Giving an unknown machine user ID to an
     // employee also needs attendance.edit (and employees.manage, checked in the controller): it is an employee update.
     Route::get('attendance/punches', [\App\Http\Controllers\Attendance\PunchController::class, 'index'])
