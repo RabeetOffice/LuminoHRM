@@ -212,8 +212,12 @@ class SaveSalaryProfile
         $locked = self::lockedFrom($from);
 
         if ($locked !== null) {
-            // The label is the latest approved month (shared-locked, current); the month the check found is the fallback.
-            $latest = PayrollLock::query()->max('month');
+            // Label text only, and we are inside the write transaction after the employee lock: a plain, unlocked read
+            // by month (status filtered in PHP, as the PayrollLock readers do), never latestLocked() (it would
+            // share-lock every locked run). The month the check found is the fallback.
+            $latest = PayrollRun::query()->orderByDesc('month')->pluck('status', 'month')
+                ->filter(fn ($status) => in_array($status, (array) config('hrm.payroll.locked_statuses'), true))
+                ->keys()->first();
 
             throw ValidationException::withMessages([
                 'effective_from' => 'Payroll up to '.PayrollRun::monthLabel(is_string($latest) && $latest !== '' ? $latest : $locked).' is approved. Start the new salary after it.',

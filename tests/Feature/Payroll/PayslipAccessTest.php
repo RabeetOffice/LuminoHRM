@@ -194,3 +194,35 @@ it('refuses a resend to a person without an active login', function () {
     Mail::assertNothingQueued();
     expect(Activity::query()->where('description', 'Payslip resent')->count())->toBe(0);
 });
+
+it('lets the payroll permission, not the employee-directory scope, decide who downloads or resends a payslip', function () {
+    Mail::fake();
+    $sara = psSara();
+    User::factory()->create(['employee_id' => $sara->id, 'email' => 'sara@example.com', 'is_active' => true]);
+    $item = psItem(psRun(), $sara);
+
+    // A user who holds only the payroll permissions (no employees.view-all, not Sara's manager).
+    $viewer = psUser('employee');
+    $viewer->givePermissionTo('payroll.view');
+    $this->actingAs($viewer)->get(route('payroll.payslips.download', $item))->assertOk();
+    $this->actingAs($viewer)->post(route('payroll.payslips.resend', $item))->assertForbidden();
+
+    $viewer->givePermissionTo('payroll.run');
+    $this->actingAs($viewer)->post(route('payroll.payslips.resend', $item))->assertSessionHasNoErrors();
+    Mail::assertQueued(PayslipIssued::class, 1);
+});
+
+it('surfaces a queue failure on resend and leaves no stamp and no audit entry', function () {
+    $hr = psUser('hr');
+    $sara = psSara();
+    User::factory()->create(['employee_id' => $sara->id, 'email' => 'sara@example.com', 'is_active' => true]);
+    $item = psItem(psRun(), $sara);
+
+    Mail::shouldReceive('to')->andThrow(new RuntimeException('queue is down'));
+    $this->withoutExceptionHandling();
+
+    expect(fn () => $this->actingAs($hr)->post(route('payroll.payslips.resend', $item)))->toThrow(RuntimeException::class, 'queue is down');
+
+    expect($item->fresh()->payslip_emailed_at)->toBeNull()
+        ->and(Activity::query()->where('description', 'Payslip resent')->count())->toBe(0);
+});

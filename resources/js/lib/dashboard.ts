@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { formatClockTime } from '@/lib/clock-time';
+import { formatMoney } from '@/lib/payroll';
 import { leaves as myLeaves } from '@/routes/my';
 import { index as requestsIndex } from '@/routes/leave/requests';
 
@@ -825,20 +826,6 @@ export const PAYROLL_STATUS_LABEL: Record<PayrollStatus, string> = {
     paid: 'Paid',
 };
 
-/**
- * Paisa as rupees, exactly like the server's Money::format: "Rs 2,450,000", "Rs 64,930.50", "-Rs 500". Western
- * grouping in threes (never a South Asian locale), worked out with integers so no float rounding can creep in.
- */
-export function formatRupees(paisa: number): string {
-    const sign = paisa < 0 ? '-' : '';
-    const abs = Math.abs(Math.trunc(paisa));
-    const rupees = Math.floor(abs / 100);
-    const cents = abs % 100;
-    const grouped = String(rupees).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-
-    return `${sign}Rs ${grouped}${cents === 0 ? '' : `.${String(cents).padStart(2, '0')}`}`;
-}
-
 /** "1 person", "52 people". */
 export function peopleLabel(count: number): string {
     return count === 1 ? '1 person' : `${count} people`;
@@ -861,7 +848,7 @@ export function payrollTile(payroll: PayrollThisMonth): TileFigure {
     }
 
     return {
-        value: formatRupees(payroll.net),
+        value: formatMoney(payroll.net),
         note: `${payroll.label} · ${PAYROLL_STATUS_LABEL[payroll.status]} · ${peopleLabel(payroll.headcount)}`,
         href,
     };

@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\Storage;
  *
  * Built ONLY from what was frozen at approval: the item's stored breakdown (version 1, see the Phase 5 plan), the
  * item's bank snapshot (bank name, account number shown as "•••• 1234") and the run's company snapshot
- * (`summary.company` = {name, address, logo_path, footer}). Nothing is recalculated and no setting, profile or employee
+ * (`summary.company` = {name, address, logo_path, logo {mime, data}, footer}). Nothing is recalculated and no setting, profile or employee
  * row is read, so rendering again later (a missing file, a resend) gives the same content.
  *
  * Files live on the private disk ("local", never public) at payslips/{month}/{employee_code}-{item_id}.pdf and are
@@ -234,9 +234,18 @@ final class PayslipPdf
     }
 
     /** The snapshot's logo as a data URI when it is one of our branding files and still on disk (PNG / JPEG). */
-    private static function logoDataUri(PayrollItem $item): ?string
+    public static function logoDataUri(PayrollItem $item): ?string
     {
-        $path = (($item->run->summary ?? [])['company'] ?? [])['logo_path'] ?? null;
+        $company = (array) (($item->run->summary ?? [])['company'] ?? []);
+
+        // The bytes frozen at approval win: a later logo change or a deleted file never alters an issued payslip.
+        $frozen = $company['logo'] ?? null;
+        if (is_array($frozen) && in_array($frozen['mime'] ?? null, self::LOGO_TYPES, true) && is_string($frozen['data'] ?? null) && $frozen['data'] !== '') {
+            return "data:{$frozen['mime']};base64,{$frozen['data']}";
+        }
+
+        // Runs approved before the bytes were frozen: the stored path, while the file is still there.
+        $path = $company['logo_path'] ?? null;
         $filename = Branding::filename($path);
 
         if ($filename === null || ! Branding::disk()->exists((string) $path)) {

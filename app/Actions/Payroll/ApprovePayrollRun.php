@@ -10,6 +10,7 @@ use App\Models\PayrollItem;
 use App\Models\PayrollRun;
 use App\Models\User;
 use App\Support\Audit\Audit;
+use App\Support\Branding;
 use App\Support\Payroll\Money;
 use App\Support\Payroll\PayrollAccess;
 use App\Support\Payroll\PayrollChecks;
@@ -51,7 +52,8 @@ use LogicException;
  *    an approved run); one loan repayment per loan line with an amount. The line was calculated under the loan
  *    locks, so it never deducts more than Loan::remaining() of an active loan; if it ever did, a LogicException rolls
  *    the approval back (a repayment is never silently recorded below the line's deduction); summary.company =
- *    {name, address, logo_path, footer} and summary.checks = the warnings; status approved, approved_by / approved_at; audited "Payroll approved" (totals, own_payslip).
+ *    {name, address, logo_path, logo, footer} (logo = {mime, data (base64)} of a PNG / JPEG logo, else null, so old
+ *    payslips keep the logo they were issued with; a file read, no extra lock) and summary.checks = the warnings; status approved, approved_by / approved_at; audited "Payroll approved" (totals, own_payslip).
  *
  * After the commit: event(new PayrollRunApproved($runId)) once (payslips, Task 9).
  */
@@ -235,6 +237,7 @@ class ApprovePayrollRun
                 'name' => (string) settings('company.name', ''),
                 'address' => (string) settings('company.address', ''),
                 'logo_path' => settings('branding.logo'),
+                'logo' => self::logoSnapshot(settings('branding.logo')),
                 'footer' => (string) settings('payroll.payslip_footer', ''),
             ];
             $summary['checks'] = array_values(array_filter($checks, fn (array $c): bool => $c['severity'] === 'warn'));
@@ -264,5 +267,22 @@ class ApprovePayrollRun
         }
 
         return $outcome;
+    }
+
+    /**
+     * The logo's bytes for the run snapshot: only our own PNG / JPEG branding files (what the payslip PDF can draw).
+     *
+     * @return array{mime: string, data: string}|null
+     */
+    private static function logoSnapshot(mixed $path): ?array
+    {
+        $filename = Branding::filename($path);
+        $mime = $filename === null ? null : (['png' => 'image/png', 'jpg' => 'image/jpeg'][strtolower(pathinfo($filename, PATHINFO_EXTENSION))] ?? null);
+
+        if ($mime === null || ! Branding::disk()->exists((string) $path)) {
+            return null;
+        }
+
+        return ['mime' => $mime, 'data' => base64_encode((string) Branding::disk()->get((string) $path))];
     }
 }

@@ -15,6 +15,7 @@ use App\Models\PayrollRun;
 use App\Models\SalaryProfile;
 use App\Models\User;
 use App\Support\Leave\LeaveDays;
+use App\Support\Payroll\PayslipPdf;
 use App\Support\PayrollLock;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
@@ -24,6 +25,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use Spatie\Activitylog\Models\Activity;
 use Spatie\Permission\PermissionRegistrar;
@@ -93,6 +95,7 @@ it('approves: repayments, bank details, company snapshot, lock, audit and one ev
             'name' => 'Lumino Digital',
             'address' => '12 Main Boulevard, Lahore',
             'logo_path' => null,
+            'logo' => null,
             'footer' => 'Computer generated; no signature needed.',
         ])
         ->and($run->summary['checks'])->toBe([]);
@@ -545,3 +548,37 @@ it('retries the changed outcome after a deadlock and records it once', function 
         app(PermissionRegistrar::class)->forgetCachedPermissions();
     }
 });
+
+it('freezes the company logo bytes into the run snapshot, so a later logo change never reaches an issued payslip', function () {
+    Storage::fake('local');
+    $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==');
+    $path = 'branding/'.str_repeat('a', 40).'.png';
+    Storage::disk('local')->put($path, $png);
+    Settings::set('branding', ['logo' => $path]);
+
+    [$e, $run] = arSetUp();
+    arApprove($this->admin, $run);
+
+    $company = $run->fresh()->summary['company'];
+    expect($company['logo_path'])->toBe($path)
+        ->and($company['logo'])->toBe(['mime' => 'image/png', 'data' => base64_encode($png)]);
+
+    // The logo is replaced and the old file deleted: the payslip still gets the bytes it was issued with.
+    Storage::disk('local')->delete($path);
+    Settings::set('branding', ['logo' => null]);
+    $item = prItem($run->fresh(), $e);
+    expect(PayslipPdf::logoDataUri($item))->toBe('data:image/png;base64,'.base64_encode($png));
+});
+
+it('snapshots no logo when the setting is empty or the file is not a PNG / JPEG of ours', function (?string $logo) {
+    Storage::fake('local');
+    Settings::set('branding', ['logo' => $logo]);
+    if ($logo !== null) {
+        Storage::disk('local')->put($logo, 'x');
+    }
+
+    [, $run] = arSetUp();
+    arApprove($this->admin, $run);
+
+    expect($run->fresh()->summary['company']['logo'])->toBeNull();
+})->with([null, 'branding/'.'b0000000000000000000000000000000000000000.webp', 'elsewhere/logo.png']);

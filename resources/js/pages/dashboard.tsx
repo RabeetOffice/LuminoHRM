@@ -263,9 +263,10 @@ export default function Dashboard({
                                     </>
                                 ) : figure ? (
                                     <>
-                                        <p className="mt-1 text-2xl font-semibold tabular-nums">
+                                        <p className="mt-1 text-xl font-semibold break-words tabular-nums sm:text-2xl">
                                             {figure.value === '–' ? (
                                                 <span
+                                                    role="img"
                                                     aria-label={
                                                         figure.valueLabel ??
                                                         'Not known yet'
@@ -289,7 +290,10 @@ export default function Dashboard({
                                 ) : (
                                     <>
                                         <p className="mt-1 text-2xl font-semibold">
-                                            <span aria-label="No data yet">
+                                            <span
+                                                role="img"
+                                                aria-label="No data yet"
+                                            >
                                                 —
                                             </span>
                                         </p>
@@ -335,7 +339,7 @@ export default function Dashboard({
                     )}
                     {latestPayslip ? (
                         <LatestPayslipCard payslip={latestPayslip} />
-                    ) : hasEmployee && !can('payroll.view') ? (
+                    ) : hasEmployee ? (
                         <LatestPayslipCard payslip={null} />
                     ) : null}
                     {birthdays && <BirthdaysCard people={birthdays} />}
@@ -355,7 +359,7 @@ function TileFrame({
     className: string;
     children: ReactNode;
 }) {
-    const classes = cn('rounded-xl border p-4 shadow-xs', className);
+    const classes = cn('min-w-0 rounded-xl border p-4 shadow-xs', className);
 
     if (!href) {
         return <div className={classes}>{children}</div>;

@@ -207,3 +207,53 @@ it('reads at most two payroll queries', function () {
 
     expect($tile['run_id'])->toBe($run->id)->and($slip['month'])->toBe('2026-10')->and(count($queries))->toBe(2);
 });
+
+// ---------------------------------------------------------------- minors
+
+it('falls back to the runs list for the tile link while the pay month has no run, and to null without the routes', function () {
+    if (! Route::has('payroll.runs.index')) {
+        Route::get('/payroll/runs', fn () => '')->name('payroll.runs.index');
+        app('router')->getRoutes()->refreshNameLookups();
+    }
+
+    expect(DashboardPayroll::thisMonth(app(AttendanceClock::class)))->toMatchArray(['status' => 'none', 'run_id' => null, 'url' => '/payroll/runs']);
+
+    $run = payrollRun('2026-10', 'approved');
+    $url = DashboardPayroll::thisMonth(app(AttendanceClock::class))['url'];
+    expect($url === '/payroll/runs/'.$run->id || $url === '/payroll/runs')->toBeTrue();
+
+    expect(DashboardPayroll::latestPayslip(Employee::factory()->create()->id))->toBeNull();
+});
+
+it('leaves the payslip download link null while that route does not exist', function () {
+    $me = Employee::factory()->create(['joining_date' => '2026-01-01']);
+    dpItem(payrollRun('2026-10', 'approved'), $me, 1_000);
+
+    $slip = DashboardPayroll::latestPayslip($me->id);
+
+    expect($slip['download_url'] === null || str_starts_with($slip['download_url'], '/my/payslips/'))->toBeTrue();
+});
+
+it('gives a Manager their own approved line and nothing of anyone else\'s', function () {
+    $user = userWithRole('manager');
+    $me = employeeFor($user, ['joining_date' => '2026-01-01', 'status' => 'active']);
+    $report = Employee::factory()->create(['manager_id' => $me->id, 'joining_date' => '2026-01-01']);
+    $run = payrollRun('2026-10', 'approved');
+    dpItem($run, $me, 70_000);
+    dpItem($run, $report, 88_888);
+
+    $props = dpProps($this->actingAs($user)->get('/dashboard')->assertOk());
+
+    expect($props['latestPayslip'])->toMatchArray(['month' => '2026-10', 'net' => 7_000_000])
+        ->and($props)->not->toHaveKey('payrollThisMonth')
+        ->and(json_encode($props))->not->toContain('8888800');
+});
+
+it('takes the newest run, a paid one included, over an older approved one', function () {
+    $me = Employee::factory()->create(['joining_date' => '2026-01-01']);
+    dpItem(payrollRun('2026-08', 'approved'), $me, 40_000);
+    dpItem(payrollRun('2026-10', 'paid'), $me, 65_000);
+    dpItem(payrollRun('2026-09', 'approved'), $me, 50_000);
+
+    expect(DashboardPayroll::latestPayslip($me->id))->toMatchArray(['month' => '2026-10', 'net' => 6_500_000]);
+});

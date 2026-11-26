@@ -7,7 +7,6 @@ import {
     dashboardTiles,
     formatDays,
     formatLongDate,
-    formatRupees,
     greetingFor,
     hasTrendData,
     hourIn,
@@ -480,22 +479,6 @@ describe('formatDays', () => {
         [3.5, '3.5'],
     ])('%d', (value, expected) => {
         expect(formatDays(value)).toBe(expected);
-    });
-});
-
-describe('formatRupees', () => {
-    test.each([
-        [0, 'Rs 0'],
-        [100, 'Rs 1'],
-        [6493000, 'Rs 64,930'],
-        [6493050, 'Rs 64,930.50'],
-        [6493005, 'Rs 64,930.05'],
-        [245000000, 'Rs 2,450,000'],
-        [100000000000, 'Rs 1,000,000,000'],
-        [-50000, '-Rs 500'],
-        [99999, 'Rs 999.99'],
-    ])('%i paisa', (paisa, expected) => {
-        expect(formatRupees(paisa)).toBe(expected);
     });
 });
 

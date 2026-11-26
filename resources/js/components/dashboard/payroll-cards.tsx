@@ -1,8 +1,8 @@
 import { Download, ReceiptText } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
-import { formatRupees } from '@/lib/dashboard';
 import type { LatestPayslip } from '@/lib/dashboard';
+import { formatMoney } from '@/lib/payroll';
 
 /** The dashboard card frame (the same look as the page's other cards). */
 function PayrollCardShell({
@@ -53,7 +53,7 @@ export function LatestPayslipCard({
                             {payslip.label}
                         </p>
                         <p className="mt-1 text-2xl font-semibold tabular-nums">
-                            {formatRupees(payslip.net)}
+                            {formatMoney(payslip.net)}
                         </p>
                         <p className="mt-1 text-xs text-muted-foreground">
                             Net pay

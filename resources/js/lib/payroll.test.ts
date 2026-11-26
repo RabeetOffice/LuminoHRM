@@ -32,6 +32,8 @@ describe('formatMoney', () => {
         expect(formatMoney(-50000)).toBe('-Rs 500');
         expect(formatMoney(100000000000)).toBe('Rs 1,000,000,000');
         expect(formatMoney(999999900)).toBe('Rs 9,999,999');
+        expect(formatMoney(245000000)).toBe('Rs 2,450,000');
+        expect(formatMoney(99999)).toBe('Rs 999.99');
     });
 
     it('groups digits the Western way', () => {

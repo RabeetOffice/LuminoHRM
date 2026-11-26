@@ -585,11 +585,16 @@ it('no route in the application can delete a user, and the profile page no longe
     $names = collect(Route::getRoutes())->map->getName()->filter()->all();
     expect($names)->not->toContain('profile.destroy');
 
-    // No DELETE route anywhere in the application whose action is a user or profile controller.
+    // No DELETE route anywhere in the application whose controller IS the user or the account profile controller.
+    // Matched on the whole class name: "SalaryProfileController@destroy" deletes a salary profile, not an account.
+    $userController = '/(^|\\\\)(UserController|ProfileController)(@|$)/';
+    expect(preg_match($userController, 'App\Http\Controllers\Settings\ProfileController@destroy'))->toBe(1)
+        ->and(preg_match($userController, 'App\Http\Controllers\Settings\UserController@destroy'))->toBe(1)
+        ->and(preg_match($userController, 'App\Http\Controllers\Payroll\SalaryProfileController@destroy'))->toBe(0);
     $deleting = collect(Route::getRoutes())
         ->filter(fn ($r) => in_array('DELETE', $r->methods(), true))
         ->map(fn ($r) => $r->getActionName())
-        ->filter(fn ($a) => str_contains($a, 'UserController') || str_contains($a, 'ProfileController'));
+        ->filter(fn ($a) => preg_match($userController, $a) === 1);
     expect($deleting->all())->toBe([]);
 
     expect(file_exists(resource_path('js/components/delete-user.tsx')))->toBeFalse();

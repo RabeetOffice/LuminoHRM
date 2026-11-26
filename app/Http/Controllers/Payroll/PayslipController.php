@@ -22,7 +22,6 @@ use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
-use Throwable;
 
 /**
  * Payroll > Payslips: every payslip of approved / paid runs, by month and person (Admin / HR).
@@ -32,7 +31,7 @@ use Throwable;
  *   POST /payroll/payslips/{item}/resend          can:payroll.run    queue the email again
  *
  * Only lines that are not excluded, of approved / paid runs: a draft's or an excluded line is 404. People are scoped
- * by EmployeeAccess (out of scope: 403 on an id, absent from the list). Figures are the stored item columns, formatted
+ * by EmployeeAccess (absent from the list); a PDF or resend needs the payroll permission (or is the viewer's own line). Figures are the stored item columns, formatted
  * on the server. Reads per page: the months filter, the count and the page (with runs and employees).
  */
 class PayslipController extends Controller
@@ -89,7 +88,7 @@ class PayslipController extends Controller
 
     public function download(Request $request, PayrollItem $item): StreamedResponse
     {
-        $this->authorizeItem($request->user(), $item);
+        $this->authorizeItem($request->user(), $item, 'payroll.view');
 
         return MyPayslipController::pdfResponse($item);
     }
@@ -98,7 +97,7 @@ class PayslipController extends Controller
     {
         /** @var User $by */
         $by = $request->user();
-        $this->authorizeItem($by, $item);
+        $this->authorizeItem($by, $item, 'payroll.run');
 
         $login = User::query()
             ->where('employee_id', $item->employee_id)
@@ -121,11 +120,8 @@ class PayslipController extends Controller
                 'item' => $item->id,
             ], $by);
 
-            try {
-                Mail::to($login)->queue(new PayslipIssued($item));
-            } catch (Throwable $e) {
-                report($e);
-            }
+            // No try/catch: a queue failure must surface and roll the stamp and the audit entry back.
+            Mail::to($login)->queue(new PayslipIssued($item));
         }, 3);
 
         $name = $item->employee !== null ? $item->employee->full_name : 'the employee';
@@ -133,13 +129,20 @@ class PayslipController extends Controller
         return back()->with('success', "The payslip will be emailed to {$name}.");
     }
 
-    /** Approved / paid and not excluded (else 404); the person within the viewer's scope (else 403). */
-    private function authorizeItem(User $user, PayrollItem $item): void
+    /**
+     * Approved / paid and not excluded (else 404); then the viewer's own line, or the payroll permission of the action
+     * (else 403). Not EmployeeAccess::canView: that is the employee-directory rule (a Manager's reports), which says
+     * nothing about who may read salary data; the index stays scoped by EmployeeAccess.
+     */
+    private function authorizeItem(User $user, PayrollItem $item, string $permission): void
     {
-        $item->loadMissing(['run', 'employee']);
+        $item->loadMissing('run');
 
         abort_if($item->excluded || ! $item->run->isLocked(), 404);
-        abort_unless($item->employee !== null && (new EmployeeAccess($user))->canView($item->employee), 403);
+        abort_unless(
+            ($user->employee_id !== null && (int) $item->employee_id === (int) $user->employee_id) || $user->can($permission),
+            403,
+        );
     }
 
     /** @return Builder<PayrollItem> */
