@@ -44,7 +44,16 @@ const TAX_MODES = [
     { value: 'percentage', label: 'Percentage of salary' },
 ];
 
-export function PayrollPanel({ values }: { values: PayrollValues }) {
+/** The select's stand-in for "no leave type chosen" (a Select item cannot hold an empty value). */
+const NO_LEAVE_TYPE = 'none';
+
+export function PayrollPanel({
+    values,
+    leaveTypes,
+}: {
+    values: PayrollValues;
+    leaveTypes: { id: number; name: string }[];
+}) {
     const form = useForm<Editable<PayrollValues>>(values);
     const { card } = useSettingsSubmit('payroll', form);
     const { data, errors, setData } = form;
@@ -166,7 +175,11 @@ export function PayrollPanel({ values }: { values: PayrollValues }) {
             <SettingsCard
                 title="Leave and notice"
                 description="Settlement rules for leavers."
-                {...card(['leave_encashment', 'notice_period_days'])}
+                {...card([
+                    'leave_encashment',
+                    'encashment_leave_type_id',
+                    'notice_period_days',
+                ])}
             >
                 <CheckField
                     id="pay-encashment"
@@ -175,6 +188,47 @@ export function PayrollPanel({ values }: { values: PayrollValues }) {
                     error={errors.leave_encashment}
                     onChange={(v) => setData('leave_encashment', v)}
                 />
+                <Field
+                    id="pay-encashment-type"
+                    label="Leave type paid out"
+                    hint="Only paid leave types are listed. Leave it empty to use the type named Annual."
+                    error={errors.encashment_leave_type_id}
+                >
+                    <Select
+                        value={
+                            data.encashment_leave_type_id === null
+                                ? NO_LEAVE_TYPE
+                                : String(data.encashment_leave_type_id)
+                        }
+                        onValueChange={(v) =>
+                            setData(
+                                'encashment_leave_type_id',
+                                v === NO_LEAVE_TYPE ? null : Number(v),
+                            )
+                        }
+                    >
+                        <SelectTrigger
+                            {...fieldAria(
+                                'pay-encashment-type',
+                                errors.encashment_leave_type_id,
+                                true,
+                            )}
+                            className="w-full sm:w-72"
+                        >
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value={NO_LEAVE_TYPE}>
+                                The type named Annual
+                            </SelectItem>
+                            {leaveTypes.map((t) => (
+                                <SelectItem key={t.id} value={String(t.id)}>
+                                    {t.name}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                </Field>
                 <NumberField
                     id="pay-notice"
                     label="Notice period"

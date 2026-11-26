@@ -3,8 +3,8 @@ import { AttendancePanel } from '@/components/settings/attendance-panel';
 import { BrandingPanel } from '@/components/settings/branding-panel';
 import { CompanyPanel } from '@/components/settings/company-panel';
 import { EmailPanel } from '@/components/settings/email-panel';
+import { ExitPanel } from '@/components/settings/exit-panel';
 import { LeavePanel } from '@/components/settings/leave-panel';
-import { LettersPanel } from '@/components/settings/letters-panel';
 import { PayrollPanel } from '@/components/settings/payroll-panel';
 import { PerformancePanel } from '@/components/settings/performance-panel';
 import {
@@ -84,6 +84,7 @@ export default function HrmSettings({
                             <PayrollPanel
                                 key="payroll"
                                 values={values.payroll}
+                                leaveTypes={options.leaveTypes}
                             />
                         )}
                         {active === 'performance' && values.performance && (
@@ -95,10 +96,10 @@ export default function HrmSettings({
                         {active === 'email' && values.email && (
                             <EmailPanel key="email" values={values.email} />
                         )}
-                        {active === 'letters' && values.letters && (
-                            <LettersPanel
-                                key="letters"
-                                values={values.letters}
+                        {active === 'exit' && values.exit && (
+                            <ExitPanel
+                                key="exit"
+                                values={values.exit}
                                 placeholders={options.placeholders}
                             />
                         )}

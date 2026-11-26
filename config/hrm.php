@@ -91,7 +91,8 @@ return [
         // Owner ruling (26 Nov): HR may change the review rules too.
         'performance' => ['performance.manage'],
         'email' => ['settings.manage'],
-        'letters' => ['settings.manage'],
+        // Owner ruling (26 Nov): Settings > Exit (clearance items, experience letter) is editable by Admin and HR.
+        'exit' => ['exit.clearance'],
     ],
 
     /*
@@ -160,6 +161,24 @@ return [
         // available -> assigned (by an assignment) -> available again (by a return); in_repair and retired are set by hand.
         'statuses' => ['available', 'assigned', 'in_repair', 'retired'],
         'code_prefix' => 'AST-',
+    ],
+
+    // Allowed values for the Exit module (stored as plain strings). Rules: see the Phase 6c design and plan.
+    'exit' => [
+        'types' => ['resignation', 'termination'],
+        // pending (with the manager) -> manager_approved (with HR) -> approved; rejected, withdrawn and cancelled end it.
+        'statuses' => ['pending', 'manager_approved', 'approved', 'rejected', 'withdrawn', 'cancelled'],
+        'open_statuses' => ['pending', 'manager_approved', 'approved'],
+        'settlement_statuses' => ['draft', 'approved', 'paid'],
+        // An approved or paid settlement freezes the person's final month (PayrollLock).
+        'frozen_statuses' => ['approved', 'paid'],
+        'clearance_kinds' => ['assets', 'access', 'dues', 'custom'],
+        'line_kinds' => ['bonus', 'notice_shortfall', 'other'],
+        'max_lines' => 20,
+        'max_clearance_items' => 20,
+        // The dashboard lists approved exits whose last working day falls in the next this many days.
+        'upcoming_days' => 30,
+        'max_days_ahead' => 365,
     ],
 
     // Allowed values for the Performance module (stored as plain strings). Rules: see the Phase 6b design and plan.
@@ -233,6 +252,8 @@ return [
             'default_tax_mode' => 'none',
             'leave_encashment' => false,
             'notice_period_days' => 30,
+            // The leave type paid out on exit (a leave type id). null = the type named "Annual".
+            'encashment_leave_type_id' => null,
             'payslip_footer' => '',
             // First month of the tax year (7 = July to June); a tax year is named by its start year ("2026-27").
             'tax_year_start_month' => 7,
@@ -253,7 +274,9 @@ return [
             'from_address' => '',
             'from_name' => '',
         ],
-        'letters' => [
+        'exit' => [
+            // Custom clearance items added after the built-in three (assets, access, dues), in order.
+            'clearance_items' => [],
             'experience_template' => "To whom it may concern,\n\nThis is to certify that {employee_name} worked with {company_name} as {designation} in the {department} department from {joining_date} to {last_working_day}.\n\nDuring this time we found the employee diligent and dependable. We wish them every success.\n\nSincerely,\nHuman Resources\n{company_name}",
         ],
     ],

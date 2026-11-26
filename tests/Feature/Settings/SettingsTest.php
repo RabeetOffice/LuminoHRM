@@ -22,7 +22,7 @@ it('lets hr save attendance rules but not company, payroll or email', function (
     $hr = userWithRole('hr');
     $this->actingAs($hr)->put('/hrm-settings/attendance', validAttendance(['grace_minutes' => 20]))->assertSessionHasNoErrors();
     expect(settings('attendance.grace_minutes'))->toBe(20);
-    foreach (['company', 'branding', 'payroll', 'email', 'letters'] as $g) {
+    foreach (['company', 'branding', 'payroll', 'email'] as $g) {
         $this->actingAs($hr)->put("/hrm-settings/$g", ['name' => 'Hacked'])->assertForbidden();
     }
     expect(settings('company.name'))->toBe('Lumino Digital');
@@ -30,15 +30,15 @@ it('lets hr save attendance rules but not company, payroll or email', function (
 
 it('shows hr only the groups they may edit', function () {
     $this->actingAs(userWithRole('hr'))->get('/hrm-settings')
-        ->assertInertia(fn ($p) => $p->where('groups', ['attendance', 'leave', 'performance'])->missing('values.payroll')->missing('values.email'));
+        ->assertInertia(fn ($p) => $p->where('groups', ['attendance', 'leave', 'performance', 'exit'])->missing('values.payroll')->missing('values.email'));
 });
 
 it('shows admin every group in order', function () {
     $this->actingAs(userWithRole('admin'))->get('/hrm-settings')
         ->assertInertia(fn ($p) => $p->component('hrm-settings/index')
-            ->where('groups', ['company', 'branding', 'attendance', 'leave', 'payroll', 'performance', 'email', 'letters'])
+            ->where('groups', ['company', 'branding', 'attendance', 'leave', 'payroll', 'performance', 'email', 'exit'])
             ->where('active', 'company')
-            ->has('values.company')->has('values.letters'));
+            ->has('values.company')->has('values.exit'));
 });
 
 it('opens the group named in the query and falls back to the first for an unknown or forbidden one', function () {
@@ -233,11 +233,11 @@ it('enforces the overtime rate ranges', function (string $field, mixed $bad, mix
 
 it('saves the experience letter template', function () {
     $admin = userWithRole('admin');
-    $this->actingAs($admin)->put('/hrm-settings/letters', ['experience_template' => 'This is to certify {employee_name}.'])->assertSessionHasNoErrors();
-    expect(settings('letters.experience_template'))->toBe('This is to certify {employee_name}.');
-    $this->actingAs($admin)->put('/hrm-settings/letters', ['experience_template' => ''])->assertSessionHasErrors('experience_template');
-    $this->actingAs($admin)->get('/hrm-settings?group=letters')
-        ->assertInertia(fn ($p) => $p->where('values.letters.experience_template', 'This is to certify {employee_name}.'));
+    $this->actingAs($admin)->put('/hrm-settings/exit', ['clearance_items' => [], 'experience_template' => 'This is to certify {employee_name}.'])->assertSessionHasNoErrors();
+    expect(settings('exit.experience_template'))->toBe('This is to certify {employee_name}.');
+    $this->actingAs($admin)->put('/hrm-settings/exit', ['clearance_items' => [], 'experience_template' => ''])->assertSessionHasErrors('experience_template');
+    $this->actingAs($admin)->get('/hrm-settings?group=exit')
+        ->assertInertia(fn ($p) => $p->where('values.exit.experience_template', 'This is to certify {employee_name}.'));
 });
 
 // ---- branding -------------------------------------------------------------
@@ -479,7 +479,7 @@ function matrixCases(): array
         'leave' => [['hr_step_enabled' => false, 'prorate_new_joiners' => true], ['leave.hr_step_enabled', false]],
         'payroll' => [['day_pay_basis' => 'thirty', 'default_tax_mode' => 'none', 'leave_encashment' => false, 'notice_period_days' => 45, 'payslip_footer' => null], ['payroll.notice_period_days', 45]],
         'email' => [validEmail(['host' => 'matrix.example.com']), ['email.host', 'matrix.example.com']],
-        'letters' => [['experience_template' => 'Matrix {company_name}'], ['letters.experience_template', 'Matrix {company_name}']],
+        'exit' => [['clearance_items' => [], 'experience_template' => 'Matrix {company_name}'], ['exit.experience_template', 'Matrix {company_name}']],
     ];
 }
 
@@ -593,9 +593,9 @@ it('saves only the fields sent and validates them against the stored rest of the
 
 it('rejects unknown placeholders in the letter template and lists the supported ones', function () {
     $admin = userWithRole('admin');
-    $this->actingAs($admin)->put('/hrm-settings/letters', ['experience_template' => 'Dear {employee_nam}, from {company_name}'])
+    $this->actingAs($admin)->put('/hrm-settings/exit', ['experience_template' => 'Dear {employee_nam}, from {company_name}'])
         ->assertSessionHasErrors('experience_template');
     expect(session('errors')->first('experience_template'))->toContain('{employee_nam}')->toContain('{last_working_day}');
-    $this->actingAs($admin)->put('/hrm-settings/letters', ['experience_template' => 'Plain {employee_name} {designation} {department} {joining_date} {last_working_day} {company_name} { not one }'])
+    $this->actingAs($admin)->put('/hrm-settings/exit', ['experience_template' => 'Plain {employee_name} {designation} {department} {joining_date} {last_working_day} {company_name} { not one }'])
         ->assertSessionHasNoErrors();
 });

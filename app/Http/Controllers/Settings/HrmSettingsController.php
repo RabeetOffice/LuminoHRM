@@ -7,12 +7,13 @@ use App\Http\Requests\Settings\AttendanceRequest;
 use App\Http\Requests\Settings\BrandingRequest;
 use App\Http\Requests\Settings\CompanyRequest;
 use App\Http\Requests\Settings\EmailRequest;
+use App\Http\Requests\Settings\ExitRequest;
 use App\Http\Requests\Settings\LeaveRequest;
-use App\Http\Requests\Settings\LettersRequest;
 use App\Http\Requests\Settings\PayrollRequest;
 use App\Http\Requests\Settings\PerformanceRequest;
 use App\Http\Requests\Settings\SettingsGroupRequest;
 use App\Mail\TestMail;
+use App\Models\LeaveType;
 use App\Models\User;
 use App\Support\Branding;
 use App\Support\Settings;
@@ -41,7 +42,7 @@ class HrmSettingsController extends Controller
         'payroll' => PayrollRequest::class,
         'performance' => PerformanceRequest::class,
         'email' => EmailRequest::class,
-        'letters' => LettersRequest::class,
+        'exit' => ExitRequest::class,
     ];
 
     private const LABELS = [
@@ -52,7 +53,7 @@ class HrmSettingsController extends Controller
         'payroll' => 'Payroll',
         'performance' => 'Performance',
         'email' => 'Email',
-        'letters' => 'Letter templates',
+        'exit' => 'Exit',
     ];
 
     public function index(Request $request): Response
@@ -80,7 +81,12 @@ class HrmSettingsController extends Controller
                     fn (string $format) => ['value' => $format, 'example' => now()->format($format)],
                     config('hrm.date_formats'),
                 ),
-                'placeholders' => LettersRequest::PLACEHOLDERS,
+                'placeholders' => ExitRequest::PLACEHOLDERS,
+                // The paid leave types Settings > Payroll may pick for leave encashment on exit.
+                'leaveTypes' => in_array('payroll', $groups, true)
+                    ? LeaveType::query()->where('is_paid', true)->orderBy('sort_order')->orderBy('name')->get(['id', 'name'])
+                        ->map(fn (LeaveType $t) => ['id' => $t->id, 'name' => $t->name])->all()
+                    : [],
             ],
         ]);
     }

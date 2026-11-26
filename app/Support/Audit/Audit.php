@@ -31,6 +31,7 @@ class Audit
         'payroll' => 'Payroll',
         'assets' => 'Assets',
         'performance' => 'Performance',
+        'exit' => 'Exit',
     ];
 
     /** Text from outside (typed email, user agent) made safe to store: valid UTF-8, no control characters, at most $max characters. */

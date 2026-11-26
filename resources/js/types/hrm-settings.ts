@@ -8,7 +8,7 @@ export type SettingsGroup =
     | 'payroll'
     | 'performance'
     | 'email'
-    | 'letters';
+    | 'exit';
 
 export type CompanyValues = {
     name: string;
@@ -58,6 +58,8 @@ export type PayrollValues = {
     default_tax_mode: string;
     leave_encashment: boolean;
     notice_period_days: number;
+    /** The paid leave type paid out on exit; null = the type named "Annual". */
+    encashment_leave_type_id: number | null;
     payslip_footer: string;
     /** First month of the tax year, 1 to 12 (7 = July to June). */
     tax_year_start_month: number;
@@ -79,7 +81,9 @@ export type EmailValues = {
     has_password: boolean;
 };
 
-export type LettersValues = {
+export type ExitValues = {
+    /** Custom clearance items added after the built-in three. */
+    clearance_items: string[];
     experience_template: string;
 };
 
@@ -91,11 +95,13 @@ export type SettingsValues = {
     payroll?: PayrollValues;
     performance?: PerformanceValues;
     email?: EmailValues;
-    letters?: LettersValues;
+    exit?: ExitValues;
 };
 
 export type SettingsOptions = {
     timezones: string[];
     dateFormats: { value: string; example: string }[];
     placeholders: string[];
+    /** Paid leave types for the encashment picker (Settings > Payroll only). */
+    leaveTypes: { id: number; name: string }[];
 };

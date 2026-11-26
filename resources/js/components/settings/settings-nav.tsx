@@ -59,9 +59,9 @@ export const SETTINGS_GROUPS: Record<
         description: 'SMTP server and sender, with a test email.',
         icon: Mail,
     },
-    letters: {
-        label: 'Letter templates',
-        description: 'Experience letter text and placeholders.',
+    exit: {
+        label: 'Exit',
+        description: 'Clearance items and the experience letter text.',
         icon: FileText,
     },
 };

@@ -2,17 +2,13 @@
 
 namespace App\Actions\Employees;
 
-use App\Actions\Leave\LeaveEmploymentTrim;
 use App\Actions\SetUserActive;
 use App\Exceptions\AccountRuleViolation;
 use App\Models\Employee;
 use App\Models\User;
 use App\Support\Attendance\Leavers;
-use App\Support\Attendance\RebuildMarks;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeRoles;
-use App\Support\PayrollLock;
-use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
@@ -36,8 +32,8 @@ use InvalidArgumentException;
  */
 class ChangeEmployeeStatus
 {
-    /** An employment window with no last working day ends here (for the payroll lock check). */
-    private const OPEN_END = '9999-12-31';
+    /** The refusal while an exit is open: its last working day is changed on the exit page. */
+    public const OPEN_EXIT_MESSAGE = 'This person has an open exit. Change the last working day on the exit page.';
 
     /** Statuses that end a person's access. */
     public const DISABLING = Leavers::STATUSES;
@@ -49,7 +45,7 @@ class ChangeEmployeeStatus
 
     public function __construct(
         private readonly SetUserActive $setActive,
-        private readonly LeaveEmploymentTrim $trim,
+        private readonly EmploymentEnd $end,
     ) {}
 
     /** Whether the last handle() changed anything (false when the stored status and day were asked for again). */
@@ -66,14 +62,17 @@ class ChangeEmployeeStatus
      */
     public function notices(): array
     {
-        return $this->changed ? $this->trim->notices() : [];
+        return $this->changed ? $this->end->notices() : [];
     }
 
     /**
+     * @param  User|null  $by  who changes it; null = the system (the nightly exit job): the Admin / HR rule is skipped and
+     *                         the audit entries have no causer
+     *
      * @throws AccountRuleViolation the account rules refused (nothing is saved)
      * @throws ValidationException resigned or terminated without a last working day
      */
-    public function handle(Employee $employee, string $status, ?string $lastWorkingDay, User $by): Employee
+    public function handle(Employee $employee, string $status, ?string $lastWorkingDay, ?User $by): Employee
     {
         $this->changed = false;
 
@@ -93,7 +92,7 @@ class ChangeEmployeeStatus
 
             // Only an Admin changes anything about an Admin or HR person (judged on the role as stored now). Asked
             // before the no-op check, so a refused person is told so even when they re-post the current status.
-            if (! EmployeeRoles::mayTouchAccount($by, $account)) {
+            if ($by !== null && ! EmployeeRoles::mayTouchAccount($by, $account)) {
                 throw new AccountRuleViolation(EmployeeRoles::PRIVILEGED_MESSAGE);
             }
 
@@ -102,43 +101,25 @@ class ChangeEmployeeStatus
                 return $current;
             }
 
-            // A last working day set, moved or cleared changes the employment window on the days (earlier, later], an
-            // open end counting as 9999-12-31: refused when one of them is in a month whose payroll is approved (so a
-            // last working day on the last day of an approved month is fine, one before it is not). After the employee
-            // row lock (lock order: employee, then payroll_runs shared, then attendance and leave).
+            // While an exit is open its last working day belongs to the exit page: this screen may not set, move or
+            // clear it (a status change that keeps the day is fine). Read after the employee row lock.
             $oldDay = EmployeeWriter::auditValue($current->last_working_day);
 
-            if ($oldDay !== $day) {
-                $from = (string) ($oldDay ?? self::OPEN_END);
-                $to = (string) ($day ?? self::OPEN_END);
-                [$low, $high] = $from <= $to ? [$from, $to] : [$to, $from];
-                $locked = PayrollLock::rangeTouchesLocked(CarbonImmutable::createFromFormat('!Y-m-d', $low)->addDay()->format('Y-m-d'), $high);
-
-                if ($locked !== null) {
-                    throw ValidationException::withMessages(['last_working_day' => PayrollLock::message($locked)]);
-                }
+            if ($oldDay !== $day && $current->openResignation()->exists()) {
+                throw ValidationException::withMessages(['last_working_day' => self::OPEN_EXIT_MESSAGE]);
             }
 
             $wasActive = ! in_array($current->status, self::DISABLING, true);
             $old = [
                 'status' => $current->status,
-                'last_working_day' => EmployeeWriter::auditValue($current->last_working_day),
+                'last_working_day' => $oldDay,
             ];
 
+            // The status and the day are saved together by EmploymentEnd, which also checks the payroll lock on the
+            // window the day change adds or removes, flags the attendance days outside the window and trims leave.
             $current->disableLogging(); // the entry below is the record of this change
             $current->status = $status;
-            $current->setAttribute('last_working_day', $day);
-            $current->save();
-
-            // Attendance days now outside the person's window (after a new last working day, or from today for a
-            // leaver without one) are flagged so the rebuild removes them; manual days stay. Days the window gained
-            // (a last working day extended or cleared, back to active) are backfilled by the hourly close.
-            RebuildMarks::outsideEmployment($current);
-
-            // Leave outside the new window goes too: approved days after the last working day (from today for a leaver
-            // without one) are removed and refunded, open requests reaching past it are cancelled (audited; mail after
-            // the commit, only to an active login, which a leaver's is not once the step below disables it).
-            $this->trim->apply($current, $by);
+            $this->end->apply($current, $day, $by);
 
             // The login follows the status only when it moves between "can sign in" and "cannot"; a change inside a
             // group (or a re-post) never touches an account an Admin disabled or enabled on the Users screen.

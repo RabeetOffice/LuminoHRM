@@ -194,6 +194,23 @@ class Employee extends Model
         return $this->hasMany(AssetAssignment::class);
     }
 
+    /** @return HasMany<Resignation, $this> */
+    public function resignations(): HasMany
+    {
+        return $this->hasMany(Resignation::class);
+    }
+
+    /**
+     * The person's open exit (pending, manager_approved or approved), if any. At most one exists: resignations.
+     * open_employee_id is unique and set only while the exit is open.
+     *
+     * @return HasOne<Resignation, $this>
+     */
+    public function openResignation(): HasOne
+    {
+        return $this->hasOne(Resignation::class)->whereNotNull('open_employee_id');
+    }
+
     /** @return HasMany<Review, $this> */
     public function reviews(): HasMany
     {

@@ -3,15 +3,18 @@
 use App\Models\Asset;
 use App\Models\AssetAssignment;
 use App\Models\AssetCategory;
+use App\Models\Clearance;
 use App\Models\Device;
 use App\Models\DevicePunch;
 use App\Models\Employee;
+use App\Models\FinalSettlement;
 use App\Models\Kpi;
 use App\Models\LeaveDay;
 use App\Models\LeaveRequest;
 use App\Models\LeaveType;
 use App\Models\Loan;
 use App\Models\PayrollRun;
+use App\Models\Resignation;
 use App\Models\Review;
 use App\Models\ReviewCycle;
 use App\Models\ReviewScore;
@@ -434,4 +437,90 @@ function reviewRow(ReviewCycle $cycle, Employee $employee, array $attrs = []): R
     }
 
     return $review->refresh();
+}
+
+/**
+ * A resignation of $employee written directly (no routing, no audit): by default a pending resignation submitted
+ * 2026-11-10 for a last working day of 2026-12-10, 30 days notice required. $attrs override any column; a status of
+ * pending, manager_approved or approved makes it the person's open exit.
+ *
+ * @param  array<string, mixed>  $attrs
+ */
+function resignationRow(Employee $employee, array $attrs = []): Resignation
+{
+    return Resignation::factory()->create(['employee_id' => $employee->id, ...$attrs]);
+}
+
+/**
+ * An approved exit of $employee with last working day $lastDay, written directly: the resignation row (approved, manager
+ * step skipped), the employee's last_working_day, and the three built-in clearance rows (unticked). No leave trim, no
+ * attendance marks, no audit. Pass `clearance_items` (a list of labels) in $attrs for custom rows after the built-ins.
+ *
+ * @param  array<string, mixed>  $attrs
+ */
+function approvedExit(Employee $employee, string $lastDay, array $attrs = []): Resignation
+{
+    $custom = (array) ($attrs['clearance_items'] ?? []);
+    unset($attrs['clearance_items']);
+
+    $resignation = Resignation::factory()->approved()->create([
+        'employee_id' => $employee->id,
+        'last_working_day' => $lastDay,
+        ...$attrs,
+    ]);
+
+    $employee->forceFill(['last_working_day' => $lastDay])->save();
+
+    $labels = [['assets', 'Assets returned'], ['access', 'System access removed'], ['dues', 'Dues cleared']];
+
+    foreach ($custom as $label) {
+        $labels[] = ['custom', $label];
+    }
+
+    foreach ($labels as $order => [$kind, $label]) {
+        Clearance::query()->create(['resignation_id' => $resignation->id, 'kind' => $kind, 'label' => $label, 'sort_order' => $order]);
+    }
+
+    return $resignation->refresh();
+}
+
+/**
+ * A settlement of $resignation written directly: month of the exit's last working day, draft, every figure zero, a
+ * breakdown carrying the `settlement` key (the stored contract). $attrs override any column (money in paisa).
+ *
+ * @param  array<string, mixed>  $attrs
+ */
+function settlementRow(Resignation $resignation, array $attrs = []): FinalSettlement
+{
+    $day = $resignation->last_working_day->format('Y-m-d');
+
+    return FinalSettlement::factory()->create([
+        'resignation_id' => $resignation->id,
+        'employee_id' => $resignation->employee_id,
+        'month' => substr($day, 0, 7),
+        'breakdown' => [
+            'settlement' => [
+                'last_working_day' => $day,
+                'exit_type' => $resignation->type,
+                'encashment' => null,
+                'lines' => [],
+                'loans' => [],
+                'loan_shortfall' => 0,
+                'owed_by_employee' => 0,
+            ],
+        ],
+        ...$attrs,
+    ]);
+}
+
+/**
+ * An approved final settlement for $employee's $month ("Y-m"): locks that person-month. Uses the person's open exit when
+ * they have one (its settlement is written for that month), else makes an approved exit ending on the 28th of $month.
+ */
+function lockSettlement(Employee $employee, string $month): FinalSettlement
+{
+    $exit = Resignation::query()->where('employee_id', $employee->id)->whereNotNull('open_employee_id')->first()
+        ?? approvedExit($employee, "{$month}-28");
+
+    return settlementRow($exit, ['month' => $month, 'status' => 'approved', 'approved_at' => now()]);
 }

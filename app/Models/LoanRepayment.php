@@ -16,6 +16,7 @@ use Illuminate\Support\Carbon;
  * @property int $id
  * @property int $loan_id
  * @property int|null $payroll_item_id
+ * @property int|null $final_settlement_id
  * @property int $amount
  * @property string $month "Y-m"
  * @property string|null $note
@@ -28,7 +29,7 @@ class LoanRepayment extends Model
     /** @use HasFactory<LoanRepaymentFactory> */
     use HasFactory;
 
-    protected $fillable = ['loan_id', 'payroll_item_id', 'amount', 'month', 'note', 'created_by'];
+    protected $fillable = ['loan_id', 'payroll_item_id', 'final_settlement_id', 'amount', 'month', 'note', 'created_by'];
 
     /** @return array<string, string> */
     protected function casts(): array
@@ -46,6 +47,15 @@ class LoanRepayment extends Model
     public function item(): BelongsTo
     {
         return $this->belongsTo(PayrollItem::class, 'payroll_item_id');
+    }
+
+    /** The final settlement that recovered it (null for a payroll or manual repayment).
+     *
+     * @return BelongsTo<FinalSettlement, $this>
+     */
+    public function finalSettlement(): BelongsTo
+    {
+        return $this->belongsTo(FinalSettlement::class);
     }
 
     /** @return BelongsTo<User, $this> */

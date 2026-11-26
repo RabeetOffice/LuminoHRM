@@ -66,7 +66,7 @@ final class LeaveEmploymentTrim
     }
 
     /** @return int the number of requests touched */
-    public function apply(Employee $employee, User $by): int
+    public function apply(Employee $employee, ?User $by): int
     {
         $this->manual = [];
 
@@ -99,7 +99,7 @@ final class LeaveEmploymentTrim
     /**
      * @param  list<array{0: LeaveRequest, 1: string, 2: string}>  $mails  [request, outcome, note], filled here
      */
-    private function trimApproved(Employee $employee, string $from, ?string $to, User $by, array &$mails): int
+    private function trimApproved(Employee $employee, string $from, ?string $to, ?User $by, array &$mails): int
     {
         $outside = LeaveDay::query()->toBase()
             ->where('employee_id', $employee->id)
@@ -193,7 +193,7 @@ final class LeaveEmploymentTrim
     /**
      * @param  list<array{0: LeaveRequest, 1: string, 2: string}>  $mails  [request, outcome, note], filled here
      */
-    private function cancelOpen(Employee $employee, string $from, ?string $to, User $by, array &$mails): int
+    private function cancelOpen(Employee $employee, string $from, ?string $to, ?User $by, array &$mails): int
     {
         $candidates = LeaveRequest::query()
             ->where('employee_id', $employee->id)
@@ -276,7 +276,7 @@ final class LeaveEmploymentTrim
     }
 
     /** @param  array<string, mixed>  $properties */
-    private function audit(LeaveRequest $request, User $by, array $properties): void
+    private function audit(LeaveRequest $request, ?User $by, array $properties): void
     {
         Audit::record('leave', 'Leave trimmed to employment', $request->employee, array_filter([
             'request' => $request->id,
