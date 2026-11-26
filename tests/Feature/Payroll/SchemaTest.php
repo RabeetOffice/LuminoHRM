@@ -1,5 +1,7 @@
 <?php
 
+use App\Actions\Employees\DeleteEmployee;
+use App\Exceptions\AccountRuleViolation;
 use App\Models\Employee;
 use App\Models\Loan;
 use App\Models\LoanRepayment;
@@ -7,9 +9,11 @@ use App\Models\LoanSkip;
 use App\Models\OpeningBalance;
 use App\Models\PayrollAdjustment;
 use App\Models\PayrollItem;
+use App\Models\PayrollRun;
 use App\Models\SalaryComponent;
 use App\Models\SalaryProfile;
 use App\Support\Audit\Audit;
+use App\Support\EmployeeAccess;
 use App\Support\Settings;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Schema;
@@ -175,6 +179,21 @@ it('refuses at the database to delete an employee with payroll rows', function (
     expect(fn () => $employee->delete())->toThrow(QueryException::class);
 });
 
+it('re-checks payroll history inside the delete action and refuses with the payroll message', function (Closure $history) {
+    $employee = Employee::factory()->create();
+    $history($employee);
+
+    expect(fn () => app(DeleteEmployee::class)->handle($employee, userWithRole('admin')))
+        ->toThrow(AccountRuleViolation::class, EmployeeAccess::PAYROLL_MESSAGE);
+
+    expect(Employee::query()->find($employee->id))->not->toBeNull();
+})->with([
+    'a salary profile' => [fn (Employee $e) => salaryProfile($e)],
+    'a loan' => [fn (Employee $e) => loanFor($e, 10000, 5000, '2026-11')],
+    'a payroll line' => [fn (Employee $e) => PayrollItem::factory()->create(['employee_id' => $e->id])],
+    'an opening balance' => [fn (Employee $e) => OpeningBalance::factory()->create(['employee_id' => $e->id])],
+]);
+
 // ---------------------------------------------------------------- models
 
 it('derives what remains of a loan from the opening repaid figure and the repayments', function () {
@@ -252,6 +271,81 @@ it('never makes a fixed deduction or a one-off deduction taxable', function () {
     $adjustment = PayrollAdjustment::factory()->create(['type' => 'deduction', 'is_taxable' => true]);
 
     expect($component->fresh()->is_taxable)->toBeFalse()->and($adjustment->fresh()->is_taxable)->toBeFalse();
+});
+
+it('makes a one-off addition taxable unless HR unticks it', function () {
+    $item = PayrollItem::factory()->create();
+    $base = ['payroll_item_id' => $item->id, 'label' => 'Bonus', 'amount' => 1_000_000];
+
+    $plain = PayrollAdjustment::query()->create([...$base, 'type' => 'addition']);
+    $unticked = PayrollAdjustment::query()->create([...$base, 'type' => 'addition', 'is_taxable' => false]);
+    $deduction = PayrollAdjustment::query()->create([...$base, 'type' => 'deduction']);
+
+    expect($plain->fresh()->is_taxable)->toBeTrue()
+        ->and($unticked->fresh()->is_taxable)->toBeFalse()
+        ->and($deduction->fresh()->is_taxable)->toBeFalse();
+});
+
+// ---------------------------------------------------------------- immutability
+
+it('moves a run only forward: draft to approved, approved to paid', function () {
+    $run = payrollRun('2026-11');
+
+    $run->update(['status' => 'approved']);
+    $run->update(['status' => 'paid']);
+
+    expect($run->fresh()->status)->toBe('paid');
+});
+
+it('refuses any other status change of a run', function (string $from, string $to) {
+    $run = payrollRun('2026-11', $from);
+
+    expect(fn () => $run->update(['status' => $to]))->toThrow(LogicException::class)
+        ->and($run->fresh()->status)->toBe($from);
+})->with([
+    'draft to paid' => ['draft', 'paid'],
+    'approved back to draft' => ['approved', 'draft'],
+    'paid back to approved' => ['paid', 'approved'],
+    'paid back to draft' => ['paid', 'draft'],
+]);
+
+it('never deletes an approved or paid run', function (string $status) {
+    $run = payrollRun('2026-11', $status);
+
+    expect(fn () => $run->delete())->toThrow(LogicException::class)
+        ->and(PayrollRun::query()->whereKey($run->id)->exists())->toBeTrue();
+})->with(['approved', 'paid']);
+
+it('freezes the lines of an approved or paid run, except the payslip file columns', function (string $status) {
+    $run = payrollRun('2026-11');
+    $item = PayrollItem::factory()->create(['payroll_run_id' => $run->id, 'bank_name' => 'Meezan']);
+    $run->update(['status' => 'approved']);
+    if ($status === 'paid') {
+        $run->update(['status' => 'paid']);
+    }
+
+    // A stale copy whose run relation still says draft is refused too: the run's status is read from the database.
+    $item->setRelation('run', $run->replicate()->forceFill(['status' => 'draft']));
+
+    expect(fn () => $item->update(['net' => 1]))->toThrow(LogicException::class)
+        ->and(fn () => $item->fresh()->update(['excluded' => true]))->toThrow(LogicException::class)
+        ->and(fn () => $item->fresh()->delete())->toThrow(LogicException::class)
+        ->and($item->fresh()->net)->toBe(6_000_000);
+
+    $item->fresh()->update(['payslip_path' => 'payslips/2026-11/E-1.pdf', 'payslip_generated_at' => now(), 'payslip_emailed_at' => now()]);
+
+    expect($item->fresh()->payslip_path)->toBe('payslips/2026-11/E-1.pdf');
+})->with(['approved', 'paid']);
+
+it('lets a draft run change and delete its lines', function () {
+    $run = payrollRun('2026-11');
+    $item = PayrollItem::factory()->create(['payroll_run_id' => $run->id]);
+
+    $item->update(['net' => 100, 'bank_name' => 'Meezan']);
+    expect($item->fresh()->net)->toBe(100);
+
+    $item->delete();
+    expect(PayrollItem::query()->count())->toBe(0);
 });
 
 // ---------------------------------------------------------------- config, settings, audit

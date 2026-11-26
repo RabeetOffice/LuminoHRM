@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Carbon;
+use LogicException;
 
 /**
  * One person's line in a payroll run (unique run + employee): the figures (paisa) and the frozen breakdown
@@ -16,6 +17,12 @@ use Illuminate\Support\Carbon;
  *
  * After approval the stored breakdown is the only source for screens, payslips, reports and the bank sheet: it is
  * never recomputed. Salary data: only payroll.view users, and the employee for their own approved line.
+ *
+ * Frozen once its run is approved or paid (safety net, LogicException): an existing line of such a run cannot be
+ * changed or deleted, except the payslip file columns (PAYSLIP_COLUMNS, written after approval). The run's status is
+ * read from the database, not from a loaded relation. So the approval copies the bank snapshot onto the lines BEFORE
+ * it sets the run's status to approved. Creating a line is not guarded here (the actions refuse generating a locked
+ * month; test fixtures may add lines to an approved run).
  *
  * @property int $id
  * @property int $payroll_run_id
@@ -61,6 +68,9 @@ class PayrollItem extends Model
         'other_deductions', 'loan_deduction', 'taxable_pay', 'tax', 'net',
     ];
 
+    /** The only columns that may change on a line of an approved or paid run. */
+    public const PAYSLIP_COLUMNS = ['payslip_path', 'payslip_generated_at', 'payslip_emailed_at', 'updated_at'];
+
     protected $fillable = [
         'payroll_run_id', 'employee_id', 'excluded', 'excluded_reason', 'days_paid',
         'basic', 'allowances', 'overtime', 'additions', 'gross', 'attendance_deduction', 'fixed_deductions',
@@ -97,6 +107,28 @@ class PayrollItem extends Model
             'payslip_generated_at' => 'datetime',
             'payslip_emailed_at' => 'datetime',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::saving(function (PayrollItem $item): void {
+            if ($item->exists && array_diff(array_keys($item->getDirty()), self::PAYSLIP_COLUMNS) !== []) {
+                $item->refuseWhenRunLocked('changed');
+            }
+        });
+
+        static::deleting(function (PayrollItem $item): void {
+            $item->refuseWhenRunLocked('deleted');
+        });
+    }
+
+    private function refuseWhenRunLocked(string $what): void
+    {
+        $status = PayrollRun::query()->whereKey($this->getOriginal('payroll_run_id'))->value('status');
+
+        if (in_array($status, (array) config('hrm.payroll.locked_statuses'), true)) {
+            throw new LogicException("A line of a payroll run that is {$status} cannot be {$what}.");
+        }
     }
 
     /** @return BelongsTo<PayrollRun, $this> */

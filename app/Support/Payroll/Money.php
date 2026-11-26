@@ -87,7 +87,8 @@ final class Money
      */
     public static function bp(string $percent): int
     {
-        if (preg_match('/^(\d{1,3})(?:\.(\d{1,2}))?$/', $percent, $m) !== 1) {
+        // \z, not $: $ also matches before a trailing newline ("5\n").
+        if (preg_match('/^(\d{1,3})(?:\.(\d{1,2}))?\z/', $percent, $m) !== 1) {
             throw new InvalidArgumentException("Not a percentage with at most two decimals [{$percent}].");
         }
 

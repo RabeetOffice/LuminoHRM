@@ -74,6 +74,49 @@ it('finds a locked month inside a date range, in either order, both ends include
         ->and(PayrollLock::rangeTouchesLocked('2026-10-01', '2026-10-31'))->toBeNull();
 });
 
+it('locks the month as soon as its draft run is approved', function () {
+    $run = payrollRun('2026-11');
+    expect(PayrollLock::isLocked('2026-11'))->toBeFalse();
+
+    $run->update(['status' => 'approved']);
+
+    expect(PayrollLock::isLocked('2026-11'))->toBeTrue()
+        ->and(PayrollLock::latestLocked())->toBe('2026-11');
+});
+
+it('sends MariaDB a plain top-level select with the share lock, never an exists() subquery', function () {
+    // RefreshDatabase's transaction is open, so every read takes the shared lock. Compile what MySQL / MariaDB would be
+    // sent (pretend mode runs nothing) by giving the connection the MySQL grammar for the duration.
+    $connection = DB::connection();
+    $sqlite = $connection->getQueryGrammar();
+    $connection->setQueryGrammar(new MySqlGrammar($connection));
+
+    try {
+        $sent = $connection->pretend(function () {
+            PayrollLock::isLocked('2026-11');
+            PayrollLock::lockedMonths(['2026-10', '2026-11']);
+            PayrollLock::firstLocked(['2026-11-30']);
+            PayrollLock::latestLocked();
+            PayrollLock::rangeTouchesLocked('2026-10-01', '2026-12-31');
+        });
+    } finally {
+        $connection->setQueryGrammar($sqlite);
+    }
+
+    expect($sent)->toHaveCount(5);
+
+    foreach (array_column($sent, 'query') as $sql) {
+        expect($sql)->toStartWith('select `')
+            ->toEndWith(' lock in share mode')
+            ->not->toContain('exists')
+            ->and(substr_count($sql, 'select'))->toBe(1);
+    }
+
+    expect($sent[0]['query'])
+        // pretend() logs the query with its bindings filled in.
+        ->toBe("select `id` from `payroll_runs` where `status` in ('approved', 'paid') and `month` = '2026-11' limit 1 lock in share mode");
+});
+
 it('says why a locked month cannot change', function () {
     expect(PayrollLock::message('2026-11'))->toBe('Payroll for November 2026 is approved, so this can no longer change.');
 });

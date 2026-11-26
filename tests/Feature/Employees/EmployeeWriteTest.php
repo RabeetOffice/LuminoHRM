@@ -731,7 +731,12 @@ it('serves the manager picker: at most 20, active or probation only, minus self 
     Employee::factory()->create(['status' => 'resigned', 'first_name' => 'Gone', 'last_name' => 'Away']);
     Employee::factory()->create(['status' => 'inactive', 'first_name' => 'Idle', 'last_name' => 'Away']);
     Employee::factory()->create(['status' => 'terminated', 'first_name' => 'Fired', 'last_name' => 'Away']);
-    Employee::factory()->count(25)->create();
+    // Fixed names: a random faker surname (such as "Sawayn") could match the searches below.
+    Employee::factory()->count(25)->sequence(fn ($s) => [
+        'first_name' => 'Staff',
+        'last_name' => "Member{$s->index}",
+        'email' => "staff{$s->index}@example.test",
+    ])->create();
 
     $all = $this->actingAs($hr)->getJson('/employees/manager-options')->assertOk()->json('data');
     expect(count($all))->toBe(20)

@@ -13,7 +13,7 @@ final readonly class PayResult
     /**
      * @param  array<int, int>  $loanDeductions  loan id => amount deducted this month
      * @param  list<array{key: string, message: string}>  $warnings
-     * @param  list<string>  $blocking  keys of the checks that block approval (e.g. "net_below_zero")
+     * @param  list<string>  $blocking  keys of the checks that block approval (e.g. "negative_net")
      * @param  array<string, mixed>  $breakdown
      */
     public function __construct(

@@ -10,8 +10,9 @@ use Illuminate\Support\Carbon;
 use InvalidArgumentException;
 
 /**
- * A one-off item HR added to one payroll line: an addition (taxable by default) or a deduction (never taxable), in
- * paisa. Kept across recalculation; deleted with its line (only draft lines are ever deleted).
+ * A one-off item HR added to one payroll line: an addition (taxable by default: is_taxable defaults to true and the
+ * run screen shows the box ticked; HR may untick it) or a deduction (never taxable: forced false on save), in paisa.
+ * Kept across recalculation; deleted with its line (only draft lines are ever deleted).
  *
  * @property int $id
  * @property int $payroll_item_id
@@ -30,7 +31,7 @@ class PayrollAdjustment extends Model
 
     protected $fillable = ['payroll_item_id', 'label', 'type', 'amount', 'is_taxable', 'created_by'];
 
-    protected $attributes = ['is_taxable' => false];
+    protected $attributes = ['is_taxable' => true];
 
     /** @return array<string, string> */
     protected function casts(): array

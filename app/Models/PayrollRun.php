@@ -12,11 +12,13 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Carbon;
 use InvalidArgumentException;
+use LogicException;
 
 /**
  * The payroll of one calendar month (unique month): draft -> approved (= locked, App\Support\PayrollLock) -> paid.
  * Totals in paisa. An approved or paid run is never edited, re-opened or deleted; only a draft is deleted (its lines
- * go with it).
+ * go with it). Enforced here as a safety net (LogicException): the status only moves draft -> approved -> paid, and
+ * an approved or paid run cannot be deleted. PayrollItem freezes the lines of such a run.
  *
  * @property int $id
  * @property string $month "Y-m"
@@ -50,6 +52,9 @@ class PayrollRun extends Model
 
     protected $attributes = ['status' => 'draft'];
 
+    /** The one status each status may move to. */
+    private const FORWARD = ['draft' => 'approved', 'approved' => 'paid'];
+
     /** @return array<string, string> */
     protected function casts(): array
     {
@@ -77,6 +82,21 @@ class PayrollRun extends Model
 
             if (preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', (string) $run->month) !== 1) {
                 throw new InvalidArgumentException("Not a month [{$run->month}].");
+            }
+
+            // Status moves only forward: draft -> approved -> paid. Never back, never draft straight to paid.
+            if ($run->exists && $run->isDirty('status')) {
+                $from = (string) $run->getOriginal('status');
+
+                if ((self::FORWARD[$from] ?? null) !== $run->status) {
+                    throw new LogicException("A payroll run cannot go from [{$from}] to [{$run->status}].");
+                }
+            }
+        });
+
+        static::deleting(function (PayrollRun $run): void {
+            if (in_array($run->getOriginal('status'), (array) config('hrm.payroll.locked_statuses'), true)) {
+                throw new LogicException("A payroll run that is {$run->getOriginal('status')} is never deleted.");
             }
         });
     }

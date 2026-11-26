@@ -1,10 +1,12 @@
 <?php
 
+use App\Actions\Leave\LeaveDayRemoval;
 use App\Models\LeaveDay;
 use App\Models\LeaveRequest;
 use App\Support\Leave\LeaveDays;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 
 /*
@@ -85,6 +87,25 @@ it('keeps the days of an approved payroll month when approved leave is cancelled
 
     expect(LeaveDay::query()->where('leave_request_id', $request->id)->orderBy('date')->get()->map(fn ($d) => $d->date->format('Y-m-d'))->all())
         ->toBe(['2026-11-30', '2026-12-01', '2026-12-02']);
+});
+
+it('keeps a locked month\'s day when LeaveDayRemoval is asked to remove it, and reports it', function () {
+    $employee = employeeFor(userWithRole('employee'), ['joining_date' => '2026-01-01']);
+    $request = approvedLeave($employee, '2026-11-30', '2026-12-02');
+
+    payrollRun('2026-11', 'approved');
+
+    $result = DB::transaction(function () use ($request) {
+        $locked = LeaveRequest::query()->whereKey($request->id)->lockForUpdate()->first();
+
+        return app(LeaveDayRemoval::class)->remove($locked, ['2026-11-30', '2026-12-01']);
+    });
+
+    expect($result['kept_locked'])->toBe(['2026-11-30'])
+        ->and($result['removed'])->toBe(['2026-12-01'])
+        ->and($result['amount'])->toBe(1.0)
+        ->and(LeaveDay::query()->where('leave_request_id', $request->id)->orderBy('date')->get()->map(fn ($d) => $d->date->format('Y-m-d'))->all())
+        ->toBe(['2026-11-30', '2026-12-02']);
 });
 
 it('cancels nothing of leave lying wholly in an approved payroll month', function () {

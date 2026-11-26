@@ -76,4 +76,4 @@ it('reads a percentage in basis points', function (string $percent, int $bp) {
 
 it('refuses a malformed or out-of-range percentage', function (string $percent) {
     Money::bp($percent);
-})->throws(InvalidArgumentException::class)->with(['5.255', '101', '100.01', '-5', '', ' 5', '5.', '.5', 'abc', '1e2', '1000']);
+})->throws(InvalidArgumentException::class)->with(['5.255', '101', '100.01', '-5', '', ' 5', '5.', '.5', 'abc', '1e2', '1000', "5\n", "5.25\n", "5\r\n", "5\n5"]);

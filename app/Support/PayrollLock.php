@@ -24,6 +24,21 @@ use InvalidArgumentException;
  * Races: inside a transaction (DB::transactionLevel() > 0) the read takes a shared lock on the run rows it reads, so a
  * write racing an approval (which locks the run row for update first) waits for the approval to commit and then sees
  * the month locked. Outside a transaction it is a plain read (a check before the real write, which checks again).
+ * Every read here is a plain top-level SELECT ... LOCK IN SHARE MODE (value / pluck), never exists().
+ *
+ * Lock order (binding for every payroll-related write, to rule out deadlocks): employee rows first, then the
+ * payroll_runs row.
+ *   - Per-employee writers (leave, attendance, salary profiles, loans, employment dates) lock the employee row(s)
+ *     first and only then call PayrollLock (the shared lock on the run row).
+ *   - Run-level writes that insert, change or delete payroll lines (generate, recalculate, approve) FIRST take shared
+ *     locks on all the run's employees in id order
+ *     (Employee::query()->whereIn('id', $ids)->orderBy('id')->sharedLock()->get(['id'])), THEN lockForUpdate() the run
+ *     row. The run row lock is the first statement after the employee locks: no plain read of the run before it
+ *     (under REPEATABLE READ a plain read fixes the snapshot before the lock is held).
+ *   - Never call PayrollLock (shared lock on a run row) and then lockForUpdate() the same run row in one transaction:
+ *     two such transactions both hold the shared lock and deadlock upgrading it.
+ *   - Avoid latestLocked() inside write transactions: it share-locks every locked run row, widening what the
+ *     transaction holds.
  *
  * Tests lock a month by creating the run: payrollRun('2026-11', 'approved') (tests/Pest.php).
  */
@@ -38,7 +53,10 @@ final class PayrollLock
     {
         self::assertMonth($month);
 
-        return self::query()->where('month', $month)->exists();
+        // A plain top-level SELECT ... LOCK IN SHARE MODE, never exists(): Laravel compiles exists() as
+        // "select exists(select ... lock in share mode)", and whether MariaDB takes the lock inside that subquery is
+        // not something to rely on.
+        return self::query()->where('month', $month)->value('id') !== null;
     }
 
     /**
