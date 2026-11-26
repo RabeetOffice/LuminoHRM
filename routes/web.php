@@ -183,6 +183,16 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('assets/employee-options', [\App\Http\Controllers\Assets\AssetController::class, 'employeeOptions'])->middleware('can:assets.assign')->name('assets.employee-options');
     // The Assignments list (Admin, HR: all; Manager: their team, read-only; checked in the controller).
     Route::get('assets/assignments', [\App\Http\Controllers\Assets\AssignmentController::class, 'index'])->name('assets.assignments.index');
+    // The register import (template -> upload -> preview -> run) and export (Admin, HR).
+    Route::middleware('can:assets.assign')->prefix('assets')->name('assets.')->group(function () {
+        Route::prefix('import')->name('import')->controller(\App\Http\Controllers\Assets\AssetImportController::class)->group(function () {
+            Route::get('/', 'show');
+            Route::get('template', 'template')->name('.template');
+            Route::post('preview', 'upload')->name('.preview');
+            Route::post('run', 'run')->name('.run');
+        });
+        Route::get('export', \App\Http\Controllers\Assets\AssetExportController::class)->name('export');
+    });
     Route::get('assets/{asset}', [\App\Http\Controllers\Assets\AssetController::class, 'show'])->middleware('can:assets.assign')->whereNumber('asset')->name('assets.show');
 
     // Attendance > Raw Punches: every punch the machines sent (Admin, HR). Giving an unknown machine user ID to an
