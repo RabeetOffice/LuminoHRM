@@ -152,6 +152,14 @@ return [
         'max_components' => 20,
     ],
 
+    // Allowed values for the Assets module (stored as plain strings). Rules: see the Phase 6a design and plan.
+    'assets' => [
+        'conditions' => ['new', 'good', 'fair', 'poor', 'damaged'],
+        // available -> assigned (by an assignment) -> available again (by a return); in_repair and retired are set by hand.
+        'statuses' => ['available', 'assigned', 'in_repair', 'retired'],
+        'code_prefix' => 'AST-',
+    ],
+
     // Date formats offered in Settings > Company (PHP date() syntax). The stored value must be one of these.
     'date_formats' => ['d M Y', 'd/m/Y', 'm/d/Y', 'Y-m-d', 'd-m-Y', 'M d, Y'],
 

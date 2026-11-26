@@ -1,5 +1,8 @@
 <?php
 
+use App\Models\Asset;
+use App\Models\AssetAssignment;
+use App\Models\AssetCategory;
 use App\Models\Device;
 use App\Models\DevicePunch;
 use App\Models\Employee;
@@ -313,4 +316,53 @@ function loanFor(Employee $e, int $amountRupees, int $installmentRupees, string 
         'opening_repaid' => $openingRepaidRupees * 100,
         'status' => 'active',
     ]);
+}
+
+/**
+ * The asset category called $name (one of the five seeded ones, or a new one).
+ */
+function assetCategory(string $name = 'Laptop'): AssetCategory
+{
+    return AssetCategory::query()->firstOrCreate(['name' => $name], ['sort_order' => 9]);
+}
+
+/**
+ * An available asset (unique code and serial number) written directly. Pass any column to override, e.g. `['status' =>
+ * 'retired']`; `category` (a name) picks the category, Laptop by default.
+ *
+ * @param  array<string, mixed>  $attrs
+ */
+function assetRow(array $attrs = []): Asset
+{
+    $category = $attrs['category'] ?? 'Laptop';
+    unset($attrs['category']);
+
+    return Asset::factory()->create(array_merge(['asset_category_id' => assetCategory($category)->id], $attrs));
+}
+
+/**
+ * An asset handed to $employee, written directly (no action, no audit): the asset becomes `assigned` and an open
+ * assignment row is added, handed over on 2026-11-20 unless `assigned_on` says otherwise. Asset columns go in `$attrs`
+ * with the assignment's own columns (`assigned_on`, `returned_on`, `condition_out`, `return_condition`, `note`,
+ * `return_note`); a returned row (`returned_on` set) leaves the asset `available`.
+ *
+ * @param  array<string, mixed>  $attrs
+ */
+function assignedAsset(Employee $employee, array $attrs = []): Asset
+{
+    $assignmentColumns = ['assigned_on', 'returned_on', 'condition_out', 'return_condition', 'note', 'return_note', 'assigned_by', 'returned_by'];
+    $assignmentAttrs = array_intersect_key($attrs, array_flip($assignmentColumns));
+    $assetAttrs = array_diff_key($attrs, $assignmentAttrs);
+    $returned = ($assignmentAttrs['returned_on'] ?? null) !== null;
+
+    $asset = assetRow(array_merge(['status' => $returned ? 'available' : 'assigned'], $assetAttrs));
+
+    AssetAssignment::query()->create(array_merge([
+        'asset_id' => $asset->id,
+        'employee_id' => $employee->id,
+        'assigned_on' => '2026-11-20',
+        'condition_out' => $asset->condition,
+    ], $assignmentAttrs));
+
+    return $asset->refresh();
 }

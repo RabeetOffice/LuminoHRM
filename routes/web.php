@@ -355,6 +355,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::delete('{device}', 'destroy')->whereNumber('device')->name('destroy');
             Route::post('{device}/resend', 'resend')->whereNumber('device')->name('resend');
         });
+        // Settings > Asset categories (Admin, HR). Registered before the {group} route.
+        Route::middleware('can:assets.assign')->prefix('asset-categories')->name('asset-categories.')->controller(\App\Http\Controllers\Settings\AssetCategoryController::class)->group(function () {
+            Route::get('/', 'index')->name('index');
+            Route::post('/', 'store')->name('store');
+            Route::put('{category}', 'update')->whereNumber('category')->name('update');
+            Route::delete('{category}', 'destroy')->whereNumber('category')->name('destroy');
+        });
         Route::put('{group}', [HrmSettingsController::class, 'update'])->name('update');
     });
 });

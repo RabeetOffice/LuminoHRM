@@ -188,6 +188,12 @@ class Employee extends Model
         return $this->hasMany(PayrollItem::class);
     }
 
+    /** @return HasMany<AssetAssignment, $this> */
+    public function assetAssignments(): HasMany
+    {
+        return $this->hasMany(AssetAssignment::class);
+    }
+
     /** @return HasMany<OpeningBalance, $this> */
     public function openingBalances(): HasMany
     {
