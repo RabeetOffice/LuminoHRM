@@ -170,6 +170,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::delete('{kpi}', 'destroy')->whereNumber('kpi')->name('destroy');
     });
 
+    // Performance > review cycles (Admin, HR): open, add people, change the due date, close. Task 4 adds the pages.
+    Route::middleware('can:performance.manage')->prefix('performance/cycles')->name('performance.cycles.')->controller(\App\Http\Controllers\Performance\CycleController::class)->group(function () {
+        Route::post('/', 'store')->name('store');
+        Route::post('{cycle}/people', 'people')->whereNumber('cycle')->name('people');
+        Route::put('{cycle}/due-date', 'dueDate')->whereNumber('cycle')->name('due-date');
+        Route::post('{cycle}/close', 'close')->whereNumber('cycle')->name('close');
+    });
+
     // Assets: the register's writes (Task 4 adds the pages). Add, edit and status: Admin and HR; delete: Admin only.
     Route::middleware('can:assets.assign')->prefix('assets')->name('assets.')->controller(\App\Http\Controllers\Assets\AssetController::class)->group(function () {
         Route::post('/', 'store')->name('store');
