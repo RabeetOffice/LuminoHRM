@@ -192,7 +192,11 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::post('{cycle}/people', 'people')->whereNumber('cycle')->name('people');
         Route::put('{cycle}/due-date', 'dueDate')->whereNumber('cycle')->name('due-date');
         Route::post('{cycle}/close', 'close')->whereNumber('cycle')->name('close');
+        Route::get('{cycle}', 'show')->whereNumber('cycle')->name('show');
     });
+
+    // Performance > Reviews: HR and Admin see the cycles, a manager the team list (checked in the controller, 403 otherwise).
+    Route::get('performance/reviews', [\App\Http\Controllers\Performance\ReviewListController::class, 'index'])->name('performance.reviews.index');
 
     // Assets: the register's writes (Task 4 adds the pages). Add, edit and status: Admin and HR; delete: Admin only.
     Route::middleware('can:assets.assign')->prefix('assets')->name('assets.')->controller(\App\Http\Controllers\Assets\AssetController::class)->group(function () {

@@ -3,7 +3,10 @@ import {
     CYCLE_STATES,
     REVIEW_STATES,
     cycleStateLabel,
+    cycleProgressPercent,
     cycleStateTone,
+    cycleTabs,
+    firstError,
     formatScore,
     reviewStateLabel,
     reviewStateTone,
@@ -68,5 +71,57 @@ describe('formatScore', () => {
     it('shows a dash when there is no score yet', () => {
         expect(formatScore(null)).toBe('–');
         expect(formatScore(undefined)).toBe('–');
+    });
+});
+
+describe('cycleProgressPercent', () => {
+    it('is the closed share of what needs closing, skipped ones set aside', () => {
+        expect(
+            cycleProgressPercent({
+                self_review: 2,
+                manager_review: 1,
+                ready_to_close: 1,
+                closed: 4,
+                skipped: 5,
+            }),
+        ).toBe(50);
+        expect(cycleProgressPercent({ closed: 1, self_review: 2 })).toBe(33);
+        expect(cycleProgressPercent({ closed: 3 })).toBe(100);
+    });
+
+    it('is 0 when there is nothing to close', () => {
+        expect(cycleProgressPercent({})).toBe(0);
+        expect(cycleProgressPercent({ skipped: 3 })).toBe(0);
+    });
+});
+
+describe('cycleTabs', () => {
+    it('lists All and each state with its count', () => {
+        const tabs = cycleTabs({ self_review: 2, closed: 1, skipped: 1 });
+
+        expect(tabs.map((t) => t.key)).toEqual([
+            '',
+            'self_review',
+            'manager_review',
+            'ready_to_close',
+            'closed',
+            'skipped',
+        ]);
+        expect(tabs[0]).toEqual({ key: '', label: 'All', count: 4 });
+        expect(tabs[2]).toEqual({
+            key: 'manager_review',
+            label: 'With manager',
+            count: 0,
+        });
+    });
+});
+
+describe('firstError', () => {
+    it('gives the first message, or nothing', () => {
+        expect(firstError({ cycle: '2 reviews are not finished yet.' })).toBe(
+            '2 reviews are not finished yet.',
+        );
+        expect(firstError({ a: undefined, b: 'Second' })).toBe('Second');
+        expect(firstError({})).toBe('');
     });
 });

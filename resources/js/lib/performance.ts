@@ -90,3 +90,50 @@ export function formatScore(hundredths: number | null | undefined): string {
 
     return `${whole}.${String(cents).padStart(2, '0')}`;
 }
+
+export type ReviewCounts = Record<ReviewState, number>;
+
+/**
+ * How far a cycle is, as a whole percent of the reviews that need closing (skipped ones are set aside). A cycle with
+ * nothing to close is 0. Whole-number arithmetic only.
+ */
+export function cycleProgressPercent(counts: Partial<ReviewCounts>): number {
+    const closed = counts.closed ?? 0;
+    const total = REVIEW_STATES.reduce(
+        (sum, state) =>
+            state === 'skipped' ? sum : sum + (counts[state] ?? 0),
+        0,
+    );
+
+    return total === 0 ? 0 : Math.floor((closed * 100) / total);
+}
+
+export type CycleTab = { key: string; label: string; count: number };
+
+/** The tabs of the cycle page: All, then each state, each with its total in the cycle. */
+export function cycleTabs(counts: Partial<ReviewCounts>): CycleTab[] {
+    const all = REVIEW_STATES.reduce(
+        (sum, state) => sum + (counts[state] ?? 0),
+        0,
+    );
+
+    return [
+        { key: '', label: 'All', count: all },
+        ...REVIEW_STATES.map((state) => ({
+            key: state,
+            label: reviewStateLabel(state),
+            count: counts[state] ?? 0,
+        })),
+    ];
+}
+
+/** The first message of a server error bag ("" when there is none), for a toast when no field shows it. */
+export function firstError(errors: Record<string, string | undefined>): string {
+    for (const message of Object.values(errors)) {
+        if (message) {
+            return message;
+        }
+    }
+
+    return '';
+}
