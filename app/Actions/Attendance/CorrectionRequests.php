@@ -202,6 +202,12 @@ class CorrectionRequests
                     throw ValidationException::withMessages(['decision' => PayrollLock::message($month)]);
                 }
 
+                // The person's month frozen by an approved final settlement (shared lock on that row, before the
+                // attendance row lock).
+                if (PayrollLock::isSettled((int) $locked->employee_id, $month)) {
+                    throw ValidationException::withMessages(['decision' => PayrollLock::messageFor($month, true)]);
+                }
+
                 $row = Attendance::query()->where('employee_id', $locked->employee_id)->onDate($date)->lockForUpdate()->first();
 
                 // A day still pending calculation (status null: punches stored, times not worked out yet) is worked out

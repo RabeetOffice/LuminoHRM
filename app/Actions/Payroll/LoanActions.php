@@ -47,7 +47,7 @@ class LoanActions
 
         return DB::transaction(function () use ($by, $loan, $employee, $month, $reason): LoanSkip {
             $this->lockEmployee($employee);
-            self::checkMonth($month, 'month');
+            self::checkMonth($month, 'month', (int) $employee->getKey());
             $locked = $this->lockLoan($loan);
 
             if (! $locked->isActive()) {
@@ -95,7 +95,7 @@ class LoanActions
 
         DB::transaction(function () use ($by, $loan, $employee, $month): void {
             $this->lockEmployee($employee);
-            self::checkMonth($month, 'month');
+            self::checkMonth($month, 'month', (int) $employee->getKey());
             $locked = $this->lockLoan($loan);
 
             if (! $locked->isActive()) {
@@ -125,7 +125,7 @@ class LoanActions
 
         return DB::transaction(function () use ($by, $loan, $employee, $amount, $month, $note): LoanRepayment {
             $this->lockEmployee($employee);
-            self::checkMonth($month, 'month');
+            self::checkMonth($month, 'month', (int) $employee->getKey());
             $locked = $this->lockLoan($loan);
 
             if (! $locked->isActive()) {
@@ -213,16 +213,19 @@ class LoanActions
      *
      * @throws ValidationException
      */
-    public static function checkMonth(string $month, string $field): void
+    public static function checkMonth(string $month, string $field, ?int $employeeId = null): void
     {
         if (preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month) !== 1) {
             throw ValidationException::withMessages([$field => 'Choose a month.']);
         }
 
-        $locked = PayrollLock::rangeTouchesLocked($month.'-01', '9999-12-31');
+        // With $employeeId: also a month of that person frozen by an approved final settlement.
+        $locked = $employeeId === null
+            ? PayrollLock::rangeTouchesLocked($month.'-01', '9999-12-31')
+            : PayrollLock::rangeTouchesLockedFor($employeeId, $month.'-01', '9999-12-31');
 
         if ($locked !== null) {
-            throw ValidationException::withMessages([$field => PayrollLock::message($locked)]);
+            throw ValidationException::withMessages([$field => $employeeId === null ? PayrollLock::message($locked) : PayrollLock::messageForEmployee($employeeId, $locked)]);
         }
     }
 

@@ -63,7 +63,9 @@ final class LeaveDayRemoval
         $kept = [];
         $halves = 0;
         // One read for every month these days touch.
-        $lockedMonths = array_flip(PayrollLock::lockedMonths(
+        // Locked months, and this person's months frozen by an approved final settlement.
+        $lockedMonths = array_flip(PayrollLock::lockedMonthsFor(
+            (int) $locked->employee_id,
             $rows->map(fn ($row) => substr((string) $row->date, 0, 7))->unique()->values()->all(),
         ));
 

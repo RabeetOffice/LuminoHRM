@@ -104,15 +104,17 @@ class CorrectionEligibility
             ->flip();
 
         // Months of an approved (or paid) payroll run: one query for the whole range (at most three months).
-        $locked = array_flip(PayrollLock::lockedMonths(array_values(array_unique(array_map(
-            fn (string $d): string => substr($d, 0, 7),
-            $days,
-        )))));
+        // Plus the months this person's approved final settlement froze (one more query).
+        $months = array_values(array_unique(array_map(fn (string $d): string => substr($d, 0, 7), $days)));
+        $locked = array_flip(PayrollLock::lockedMonths($months));
+        $settled = array_flip(PayrollLock::settledMonths([(int) $employee->id], $months)[(int) $employee->id] ?? []);
 
         $result = [];
         foreach ($days as $day) {
+            $month = substr($day, 0, 7);
             $result[$day] = $this->staticReason($employee, $day)
-                ?? (isset($locked[substr($day, 0, 7)]) ? PayrollLock::message(substr($day, 0, 7)) : null)
+                ?? (isset($locked[$month]) ? PayrollLock::message($month) : null)
+                ?? (isset($settled[$month]) ? PayrollLock::messageFor($month, true) : null)
                 ?? ($manual->has($day) ? 'This day has already been corrected by HR. Ask HR if it is still wrong.' : null)
                 ?? ($open->has($day) ? 'There is already an open correction request for this day.' : null);
         }

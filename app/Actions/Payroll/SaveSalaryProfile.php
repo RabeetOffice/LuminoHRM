@@ -224,6 +224,13 @@ class SaveSalaryProfile
             ]);
         }
 
+        // A month of this person frozen by an approved final settlement, on or after the new start.
+        $settled = PayrollLock::rangeTouchesLockedFor((int) $employee->id, $from, self::FAR_FUTURE);
+
+        if ($settled !== null) {
+            throw ValidationException::withMessages(['effective_from' => PayrollLock::messageFor($settled, true)]);
+        }
+
         $duplicate = SalaryProfile::query()
             ->where('employee_id', $employee->id)
             ->onDate($from)
@@ -243,6 +250,13 @@ class SaveSalaryProfile
         // Approval runs in month order, so a locked month on or after the profile's month means approved payroll used it.
         if (self::lockedFrom($profile->effective_from->toDateString()) !== null) {
             throw ValidationException::withMessages(['effective_from' => self::USED_MESSAGE]);
+        }
+
+        // Used by an approved final settlement of this person (a month on or after the profile's start).
+        $settled = PayrollLock::rangeTouchesLockedFor((int) $profile->employee_id, $profile->effective_from->toDateString(), self::FAR_FUTURE);
+
+        if ($settled !== null) {
+            throw ValidationException::withMessages(['effective_from' => PayrollLock::messageFor($settled, true)]);
         }
     }
 

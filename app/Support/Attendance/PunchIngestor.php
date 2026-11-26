@@ -132,9 +132,14 @@ class PunchIngestor
             }
 
             $lockedMonths = self::lockedMonthsOf(array_map('strval', array_keys($allDates)));
+            // And each person's months frozen by an approved final settlement (one query, after the runs).
+            $settled = PayrollLock::settledMonths(array_map('intval', array_keys($days)), array_values(array_unique(array_map(
+                fn ($d): string => substr((string) $d, 0, 7),
+                array_keys($allDates),
+            ))));
 
             foreach ($days as $employeeId => $dates) {
-                $dates = self::withoutLocked(array_map('strval', array_keys($dates)), $lockedMonths);
+                $dates = self::withoutLocked(array_map('strval', array_keys($dates)), $lockedMonths + array_flip($settled[(int) $employeeId] ?? []));
                 sort($dates);
                 $this->markDays($employeeId, $dates, true);
             }
@@ -208,7 +213,7 @@ class PunchIngestor
             // employee may have no punch left there, so a pending row is not created for it). Days in an approved
             // payroll month are neither created nor flagged (the punches are relinked all the same).
             $all = array_values(array_unique([...$detached, ...$attached]));
-            $all = self::withoutLocked($all, self::lockedMonthsOf($all));
+            $all = self::withoutLocked($all, self::lockedMonthsOf($all, (int) $employeeId));
             sort($all);
             $this->markDays($employeeId, array_values(array_intersect($all, $attached)), true);
             $this->markDays($employeeId, array_values(array_diff($all, $attached)), false);
@@ -362,11 +367,16 @@ class PunchIngestor
      * @param  list<string>  $dates  "Y-m-d"
      * @return array<string, int> locked "Y-m" => index
      */
-    private static function lockedMonthsOf(array $dates): array
+    private static function lockedMonthsOf(array $dates, ?int $employeeId = null): array
     {
         $months = array_values(array_unique(array_map(fn (string $d): string => substr($d, 0, 7), $dates)));
 
-        return $months === [] ? [] : array_flip(PayrollLock::lockedMonths($months));
+        if ($months === []) {
+            return [];
+        }
+
+        // With $employeeId: also that person's months frozen by an approved final settlement.
+        return array_flip($employeeId === null ? PayrollLock::lockedMonths($months) : PayrollLock::lockedMonthsFor($employeeId, $months));
     }
 
     /**

@@ -62,10 +62,10 @@ class EmploymentEnd
             $from = (string) ($oldDay ?? self::OPEN_END);
             $to = (string) ($lastWorkingDay ?? self::OPEN_END);
             [$low, $high] = $from <= $to ? [$from, $to] : [$to, $from];
-            $lockedMonth = PayrollLock::rangeTouchesLocked(CarbonImmutable::createFromFormat('!Y-m-d', $low)->addDay()->format('Y-m-d'), $high);
+            $lockedMonth = PayrollLock::rangeTouchesLockedFor((int) $locked->id, CarbonImmutable::createFromFormat('!Y-m-d', $low)->addDay()->format('Y-m-d'), $high);
 
             if ($lockedMonth !== null) {
-                throw ValidationException::withMessages(['last_working_day' => PayrollLock::message($lockedMonth)]);
+                throw ValidationException::withMessages(['last_working_day' => PayrollLock::messageForEmployee((int) $locked->id, $lockedMonth)]);
             }
         }
 

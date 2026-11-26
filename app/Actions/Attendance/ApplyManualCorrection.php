@@ -111,7 +111,7 @@ class ApplyManualCorrection
         }
 
         // Checked here for a clear first message, and again as the first statement of the write's transaction.
-        self::refuseLocked($date);
+        self::refuseLocked($date, (int) $employee->id);
 
         if ($status !== null && ! in_array($status, self::OVERRIDE_STATUSES, true)) {
             throw ValidationException::withMessages(['status' => 'Choose a valid status.']);
@@ -182,20 +182,25 @@ class ApplyManualCorrection
     }
 
     /**
-     * Refuses a day in a locked payroll month (approved or paid run): ValidationException [date] with
-     * PayrollLock::message(). One query; inside a transaction it takes the shared lock on payroll_runs, so call it
-     * before any row lock. Also used by the Daily screen's reset.
+     * Refuses a day in a locked payroll month (approved or paid run) or, with $employeeId, in that person's month frozen
+     * by an approved final settlement: ValidationException [date] with PayrollLock::messageFor(). Inside a transaction
+     * it takes the shared locks on payroll_runs, then final_settlements, so call it before any row lock. Also used by
+     * the Daily screen's reset.
      *
      * @param  string  $date  "Y-m-d"
      *
      * @throws ValidationException
      */
-    public static function refuseLocked(string $date): void
+    public static function refuseLocked(string $date, ?int $employeeId = null): void
     {
         $month = substr($date, 0, 7);
 
         if (PayrollLock::isLocked($month)) {
             throw ValidationException::withMessages(['date' => PayrollLock::message($month)]);
+        }
+
+        if ($employeeId !== null && PayrollLock::isSettled($employeeId, $month)) {
+            throw ValidationException::withMessages(['date' => PayrollLock::messageFor($month, true)]);
         }
     }
 
@@ -263,8 +268,8 @@ class ApplyManualCorrection
         ?string $note,
     ): Attendance {
         // Lock order: the payroll run (shared, PayrollLock) before the attendance row, so a racing approval either
-        // commits first (and this is refused) or waits for this save.
-        self::refuseLocked($date);
+        // commits first (and this is refused) or waits for this save. The person's settlement row (shared) next.
+        self::refuseLocked($date, (int) $employee->id);
 
         $row = Attendance::query()->where('employee_id', $employee->id)->onDate($date)->lockForUpdate()->first();
 

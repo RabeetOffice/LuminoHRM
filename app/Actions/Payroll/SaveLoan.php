@@ -109,7 +109,7 @@ class SaveLoan
             $openingRepaid = (int) ($data['opening_repaid'] ?? 0);
 
             self::checkFigures($amount, $installment, $openingRepaid);
-            self::checkStartMonth($data['start_month']);
+            self::checkStartMonth($data['start_month'], (int) $employee->getKey());
             self::checkStartWindow($data['start_month']);
 
             $loan = Loan::query()->create([
@@ -153,10 +153,10 @@ class SaveLoan
             // Payroll lock (shared, on one run row) after the employee lock, before the loan row. The stored first month
             // can only change under the employee lock, so it is read fresh here.
             $storedStart = (string) Loan::query()->whereKey($loan->getKey())->value('start_month');
-            $dueInLocked = $storedStart !== '' && PayrollLock::rangeTouchesLocked($storedStart.'-01', '9999-12-31') !== null;
+            $dueInLocked = $storedStart !== '' && PayrollLock::rangeTouchesLockedFor((int) $employee->getKey(), $storedStart.'-01', '9999-12-31') !== null;
 
             if ($startArg !== null && $startArg !== $storedStart) {
-                self::checkStartMonth($startArg);
+                self::checkStartMonth($startArg, (int) $employee->getKey());
             }
 
             /** @var Loan $locked */
@@ -263,12 +263,19 @@ class SaveLoan
      *
      * @throws ValidationException
      */
-    public static function checkStartMonth(string $month): void
+    public static function checkStartMonth(string $month, ?int $employeeId = null): void
     {
         $locked = PayrollLock::rangeTouchesLocked($month.'-01', '9999-12-31');
 
         if ($locked !== null) {
             throw ValidationException::withMessages(['start_month' => self::startMessage($locked)]);
+        }
+
+        // With $employeeId: also a month of that person frozen by an approved final settlement.
+        $settled = $employeeId === null ? null : PayrollLock::rangeTouchesLockedFor($employeeId, $month.'-01', '9999-12-31');
+
+        if ($settled !== null) {
+            throw ValidationException::withMessages(['start_month' => PayrollLock::messageFor($settled, true)]);
         }
     }
 

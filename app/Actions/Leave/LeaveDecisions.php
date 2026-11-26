@@ -277,8 +277,8 @@ class LeaveDecisions
                 ]);
             }
 
-            if (PayrollLock::isLocked(substr($from, 0, 7))) {
-                throw ValidationException::withMessages(['from_date' => PayrollLock::message(substr($from, 0, 7))]);
+            if (PayrollLock::isLockedFor((int) $locked->employee_id, substr($from, 0, 7))) {
+                throw ValidationException::withMessages(['from_date' => PayrollLock::messageForEmployee((int) $locked->employee_id, substr($from, 0, 7))]);
             }
 
             abort_unless(self::mayCancelApproved($this->routing, $by, $locked, $earliest), 403);
@@ -366,9 +366,9 @@ class LeaveDecisions
 
         $dates = $plan->dates();
 
-        $lockedMonth = PayrollLock::firstLocked($dates);
+        $lockedMonth = PayrollLock::firstLockedFor((int) $employee->id, $dates);
         if ($lockedMonth !== null) {
-            throw ValidationException::withMessages(['decision' => PayrollLock::message($lockedMonth)]);
+            throw ValidationException::withMessages(['decision' => PayrollLock::messageForEmployee((int) $employee->id, $lockedMonth)]);
         }
 
         // Other approved leave on these dates: a full day clashes with anything; a half only with the same half.

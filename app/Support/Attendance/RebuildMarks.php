@@ -94,7 +94,7 @@ class RebuildMarks
         $leftWithoutDate = Leavers::withoutLastDay($employee);
         $today = app(AttendanceClock::class)->attendanceToday();
 
-        return self::flagUnlocked(Attendance::query()
+        return self::flagUnlocked((int) $employee->id, Attendance::query()
             ->where('employee_id', $employee->id)
             ->where('is_manual', false)
             ->where('needs_rebuild', false)
@@ -148,8 +148,9 @@ class RebuildMarks
             return 0;
         }
 
-        // Dates in a locked payroll month are left alone (the leave paths already skip them; defensive). One query.
-        $locked = array_flip(PayrollLock::lockedMonths(array_values(array_unique(array_map(
+        // Dates in a locked payroll month, or in this person's month frozen by an approved final settlement, are left
+        // alone (the leave paths already skip them; defensive). Two queries.
+        $locked = array_flip(PayrollLock::lockedMonthsFor($employeeId, array_values(array_unique(array_map(
             fn (string $d): string => substr($d, 0, 7),
             array_keys($wanted),
         )))));
@@ -213,13 +214,13 @@ class RebuildMarks
     }
 
     /**
-     * Sets needs_rebuild on the rows $rows selects, except those dated in a locked payroll month. Reads the distinct
-     * months of those rows (one plain query), the locked ones among them (one query, none when there are no rows), then
-     * one UPDATE.
+     * Sets needs_rebuild on the rows $rows selects (one employee's), except those dated in a locked payroll month or in
+     * that person's month frozen by an approved final settlement. Reads the distinct months of those rows (one plain
+     * query), the frozen ones among them (two queries, none when there are no rows), then one UPDATE.
      *
      * @param  Builder<Attendance>  $rows
      */
-    private static function flagUnlocked(Builder $rows): int
+    private static function flagUnlocked(int $employeeId, Builder $rows): int
     {
         $months = (clone $rows)->toBase()
             ->selectRaw('substr(date, 1, 7) as month')
@@ -232,7 +233,7 @@ class RebuildMarks
             return 0;
         }
 
-        $locked = PayrollLock::lockedMonths($months);
+        $locked = PayrollLock::lockedMonthsFor($employeeId, $months);
 
         if ($locked !== []) {
             $rows->whereNotIn(DB::raw('substr(date, 1, 7)'), $locked);

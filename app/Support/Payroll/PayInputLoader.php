@@ -42,6 +42,15 @@ use InvalidArgumentException;
  * - loans: active, first deduction month on or before the month, something remaining; skipped when a loan_skips row
  *   exists for the month; oldest first.
  *
+ * Final settlement options (Phase 6c, per person in $itemInputs; a payroll run never passes them, so runs do not
+ * change):
+ * - window_to ("Y-m-d" inside the month, on or after the window start): the pay window ends there instead of the
+ *   month's last day (segments, unpaid leave and days off stop there; attendance already stops at the last working
+ *   day through MonthGrid's employment window);
+ * - loans_in_full (bool): each active loan with something remaining, whatever its first deduction month, is due in
+ *   full (installment = remaining) and a skip of the month is ignored (skipped false). The calculator then recovers
+ *   them oldest first up to what the net allows.
+ *
  * Reads a fixed number of queries whatever the headcount or the days (attendance and leave: one per 500 people).
  */
 final class PayInputLoader
@@ -50,10 +59,10 @@ final class PayInputLoader
 
     /**
      * @param  Collection<int, Employee>  $employees  complete employee models
-     * @param  array<int, array{adjustments?: list<PayAdjustment>, tax_override?: int|null, tax_override_reason?: string|null}>  $itemInputs  employee id => HR's inputs of the line
+     * @param  array<int, array{adjustments?: list<PayAdjustment>, tax_override?: int|null, tax_override_reason?: string|null, window_to?: string|null, loans_in_full?: bool}>  $itemInputs  employee id => HR's inputs of the line
      * @return array<int, PayInput> employee id => input
      *
-     * @throws InvalidArgumentException a month that is not "Y-m"
+     * @throws InvalidArgumentException a month that is not "Y-m", or a window_to outside the month / before the window start
      */
     public static function load(string $month, Collection $employees, array $itemInputs = []): array
     {
@@ -79,6 +88,8 @@ final class PayInputLoader
         $startDate = AttendanceClock::startDate();
         $profiles = self::profiles($ids, $last);
         $loans = self::loans($ids, $month);
+        $inFull = array_keys(array_filter($itemInputs, fn (array $line): bool => (bool) ($line['loans_in_full'] ?? false)));
+        $fullLoans = $inFull === [] ? [] : self::loans(array_values(array_intersect($ids, array_map('intval', $inFull))), $month, true);
 
         $basis = (string) settings('payroll.day_pay_basis', 'calendar_days');
         $workingDays = $basis === 'working_days' ? WorkingDays::count($month, $weeklyOffs, $holidays) : [];
@@ -96,7 +107,17 @@ final class PayInputLoader
         foreach ($employees as $employee) {
             $id = (int) $employee->id;
             $windowFrom = max($employee->joining_date->format('Y-m-d'), $first);
+            $line = $itemInputs[$id] ?? [];
             $windowTo = $last;
+
+            if (($line['window_to'] ?? null) !== null) {
+                $windowTo = (string) $line['window_to'];
+
+                if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $windowTo) !== 1 || $windowTo < $windowFrom || $windowTo > $last) {
+                    throw new InvalidArgumentException("window_to [{$windowTo}] must be a day of {$month} on or after {$windowFrom}.");
+                }
+            }
+
             $row = $rows[$id];
 
             $unpaidHalves = array_filter(
@@ -118,8 +139,6 @@ final class PayInputLoader
                 'working_days' => ($workingDays[$id] ?? 0) > 0 ? $workingDays[$id] : $daysInMonth,
                 default => $daysInMonth,
             };
-
-            $line = $itemInputs[$id] ?? [];
 
             $inputs[$id] = new PayInput(
                 employeeId: $id,
@@ -147,7 +166,7 @@ final class PayInputLoader
                 overtime: $overtime,
                 attendanceTotals: $totals,
                 countedFrom: self::countedFrom($employee, $startDate, $first, $last),
-                loans: $loans[$id] ?? [],
+                loans: (bool) ($line['loans_in_full'] ?? false) ? ($fullLoans[$id] ?? []) : ($loans[$id] ?? []),
                 adjustments: $line['adjustments'] ?? [],
                 taxOverride: $line['tax_override'] ?? null,
                 taxOverrideReason: $line['tax_override_reason'] ?? null,
@@ -408,10 +427,13 @@ final class PayInputLoader
      * Loans to recover this month per employee, oldest first: active, first deduction month on or before $month,
      * something remaining. One query for the loans with their repaid sums and one for the month's skips (per 500).
      *
+     * $inFull (final settlement): every active loan with something remaining, whatever its first month, due in full
+     * (installment = remaining) and never skipped; the skips are not read.
+     *
      * @param  list<int>  $ids
      * @return array<int, list<LoanDue>>
      */
-    private static function loans(array $ids, string $month): array
+    private static function loans(array $ids, string $month, bool $inFull = false): array
     {
         $result = [];
 
@@ -419,11 +441,11 @@ final class PayInputLoader
             $active = fn () => Loan::query()
                 ->whereIn('employee_id', $chunk)
                 ->where('status', 'active')
-                ->where('start_month', '<=', $month);
+                ->when(! $inFull, fn ($q) => $q->where('start_month', '<=', $month));
 
             $loans = $active()->withRemaining()->orderBy('start_month')->orderBy('id')->get();
 
-            $skipped = array_flip(LoanSkip::query()
+            $skipped = $inFull ? [] : array_flip(LoanSkip::query()
                 ->where('month', $month)
                 ->whereIn('loan_id', $active()->select('id'))
                 ->pluck('loan_id')
@@ -441,8 +463,8 @@ final class PayInputLoader
                     (int) $loan->id,
                     $loan->type,
                     $remaining,
-                    $loan->installment,
-                    isset($skipped[(int) $loan->id]),
+                    $inFull ? $remaining : $loan->installment,
+                    ! $inFull && isset($skipped[(int) $loan->id]),
                 );
             }
         }

@@ -129,6 +129,10 @@ class DailyController extends Controller
 
         // A day in an approved payroll month is frozen: nobody can correct or reset it (one query, editors only).
         $locked = $canEdit && PayrollLock::isLocked(substr($date, 0, 7));
+        // A person whose final settlement for this month is approved is frozen too (one query, editors only).
+        $settled = $canEdit && ! $locked
+            ? PayrollLock::settledMonths(array_map('intval', $employees->pluck('id')->all()), [substr($date, 0, 7)])
+            : [];
 
         $list = $employees->map(fn (Employee $e) => $this->row(
             $e,
@@ -140,6 +144,7 @@ class DailyController extends Controller
             $canEdit
                 && ! $beforeStart
                 && ! $locked
+                && ! isset($settled[(int) $e->id])
                 && ApplyManualCorrection::mayCorrect($user, $e, isset($privileged[$e->id]))
                 && $this->correct->employmentRefusal($e, $date) === null,
             $beforeStart,
@@ -207,7 +212,7 @@ class DailyController extends Controller
         // row stays marked needs_rebuild and the scheduled rebuild picks it up; the audit then shows that state.
         $reset = DB::transaction(function () use ($employee, $date, $user, $rebuilder): bool {
             // An approved payroll month is frozen: refused before the row lock (shared lock on payroll_runs first).
-            ApplyManualCorrection::refuseLocked($date);
+            ApplyManualCorrection::refuseLocked($date, (int) $employee->id);
 
             $row = Attendance::query()->where('employee_id', $employee->id)->onDate($date)->lockForUpdate()->first();
 

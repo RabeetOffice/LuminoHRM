@@ -5,6 +5,7 @@ namespace App\Actions\Assets;
 use App\Models\Asset;
 use App\Models\AssetAssignment;
 use App\Models\Employee;
+use App\Models\FinalSettlement;
 use App\Models\User;
 use App\Support\Assets\AssetRules;
 use App\Support\Attendance\AttendanceClock;
@@ -41,6 +42,8 @@ class AssignAsset
 
     public const NOTE_TOO_LONG = 'The note cannot be longer than 500 characters.';
 
+    public const SETTLED = "This person's final settlement is approved, so no asset can be assigned.";
+
     /** Employee statuses that may receive an asset. */
     public const ASSIGNABLE_EMPLOYEE_STATUSES = ['active', 'probation'];
 
@@ -64,6 +67,16 @@ class AssignAsset
     public static function beforeJoiningMessage(string $name, string $joinedYmd): string
     {
         return "The assigned date cannot be before {$name} joined (".self::human($joinedYmd).').';
+    }
+
+    /** Whether the person's open exit has an approved or paid final settlement. */
+    public static function settlementApproved(int $employeeId): bool
+    {
+        return FinalSettlement::query()
+            ->where('employee_id', $employeeId)
+            ->whereIn('status', (array) config('hrm.exit.frozen_statuses'))
+            ->whereHas('resignation', fn ($q) => $q->whereNotNull('open_employee_id'))
+            ->exists();
     }
 
     public function handle(User $by, Asset $asset, Employee $employee, string $assignedOn, ?string $note): AssetAssignment
@@ -106,6 +119,12 @@ class AssignAsset
 
         if (! in_array($lockedEmployee->status, self::ASSIGNABLE_EMPLOYEE_STATUSES, true)) {
             throw ValidationException::withMessages(['employee_id' => self::notActiveMessage($lockedEmployee->full_name)]);
+        }
+
+        // An open exit whose final settlement is approved: clearance is frozen, so nothing may be handed out. A plain
+        // read after the employee lock (the settlement approval takes that lock first, so the two serialise).
+        if (self::settlementApproved((int) $lockedEmployee->id)) {
+            throw ValidationException::withMessages(['employee_id' => self::SETTLED]);
         }
 
         $assignedOn = trim($assignedOn);

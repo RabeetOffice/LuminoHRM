@@ -295,10 +295,14 @@ class AttendanceRebuilder
                 return;
             }
 
+            // People whose final settlement for this month is approved keep their day exactly as it was paid.
+            $settled = self::settledOn($date, Attendance::query()->toBase()->where('date', $date)->where('is_manual', false)
+                ->where(fn ($q) => $q->where('closed', false)->orWhereNull('status'))->distinct()->pluck('employee_id')->all());
+
             Attendance::query()->where('date', $date)->where('closed', false)->where('is_manual', false)
-                ->whereNotNull('status')->update(['closed' => true]);
+                ->whereNotIn('employee_id', $settled)->whereNotNull('status')->update(['closed' => true]);
             Attendance::query()->where('date', $date)->where('is_manual', false)->whereNull('status')
-                ->where('needs_attention', false)->update(['needs_attention' => true]);
+                ->whereNotIn('employee_id', $settled)->where('needs_attention', false)->update(['needs_attention' => true]);
         }, 3);
 
         $this->rebuildPending();
@@ -405,8 +409,13 @@ class AttendanceRebuilder
                 return 0;
             }
 
+            // A person whose final settlement for this month is approved keeps the day as it was paid (their settlement
+            // row share-locked before the attendance rows).
+            $settled = self::settledOn($date, Attendance::query()->toBase()->where('date', $date)->where('is_manual', true)
+                ->where('closed', false)->distinct()->pluck('employee_id')->all());
+
             $rows = Attendance::query()->where('date', $date)->where('is_manual', true)->where('closed', false)
-                ->lockForUpdate()->get();
+                ->whereNotIn('employee_id', $settled)->lockForUpdate()->get();
 
             if ($rows->isEmpty()) {
                 return 0;
@@ -463,6 +472,18 @@ class AttendanceRebuilder
 
             return $rows->count();
         });
+    }
+
+    /**
+     * Which of these employees have an approved final settlement for $date's month (PayrollLock::settledMonths, one
+     * query, shared lock inside the transaction).
+     *
+     * @param  array<int, mixed>  $employeeIds
+     * @return list<int>
+     */
+    private static function settledOn(string $date, array $employeeIds): array
+    {
+        return array_map('intval', array_keys(PayrollLock::settledMonths(array_map('intval', $employeeIds), [substr($date, 0, 7)])));
     }
 
     /** Whether $date ("Y-m-d") is in a locked payroll month: one PayrollLock::lockedMonths read. */
@@ -621,10 +642,11 @@ class AttendanceRebuilder
         ): int {
             // Payroll months of these dates that are approved: their days are frozen. Read first, one query (the shared
             // lock on payroll_runs comes before the attendance row locks: see the lock order in the class comment).
-            $locked = array_flip(PayrollLock::lockedMonths(array_values(array_unique(array_map(
-                fn (string $d): string => substr($d, 0, 7),
-                $dates,
-            )))));
+            $months = array_values(array_unique(array_map(fn (string $d): string => substr($d, 0, 7), $dates)));
+            $locked = array_flip(PayrollLock::lockedMonths($months));
+            // Then each person's months frozen by an approved final settlement (shared lock on those rows, after the
+            // runs and before the attendance rows): they are left exactly as a locked month is.
+            $settled = array_map(fn (array $m): array => array_flip($m), PayrollLock::settledMonths($employeeIds, $months));
 
             // Lock first, then read the punches: a punch committed meanwhile is either seen here or re-marks the row
             // (needs_rebuild) after this transaction commits.
@@ -690,7 +712,7 @@ class AttendanceRebuilder
 
                 // A locked payroll month: the row keeps every decided column and only leaves the pending queue; no row
                 // is created or deleted there.
-                if (isset($locked[substr($date, 0, 7)])) {
+                if (isset($locked[substr($date, 0, 7)]) || isset($settled[$id][substr($date, 0, 7)])) {
                     if ($row !== null && $row->needs_rebuild) {
                         $lockedRows[] = $row->id;
                     }

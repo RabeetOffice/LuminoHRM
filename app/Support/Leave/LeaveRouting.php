@@ -289,7 +289,8 @@ class LeaveRouting
             ->all();
 
         $earliest = null;
-        $locked = array_flip(PayrollLock::lockedMonths(array_values(array_unique(array_map(fn (string $d) => substr($d, 0, 7), $dates)))));
+        // Locked months, and the months this person's approved final settlement froze.
+        $locked = array_flip(PayrollLock::lockedMonthsFor((int) $request->employee_id, array_values(array_unique(array_map(fn (string $d) => substr($d, 0, 7), $dates)))));
 
         foreach ($dates as $date) {
             if (isset($locked[substr($date, 0, 7)])) {

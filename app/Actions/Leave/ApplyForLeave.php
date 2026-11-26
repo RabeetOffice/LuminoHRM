@@ -353,10 +353,18 @@ class ApplyForLeave
         }
 
         // Only counted days matter: a weekend or holiday in a locked month gets no leave day, so it does not block.
-        $locked = $this->firstLockedMonth(array_values(array_filter($plan->dates(), fn (string $d): bool => $d < $today)));
+        $past = array_values(array_filter($plan->dates(), fn (string $d): bool => $d < $today));
+        $locked = $this->firstLockedMonth($past);
 
         if ($locked !== null) {
             return $none('from_date', PayrollLock::message($locked));
+        }
+
+        // A month this person's approved final settlement froze (after the employee row lock when applying).
+        $settled = $past === [] ? null : PayrollLock::firstLockedFor((int) $employee->id, $past);
+
+        if ($settled !== null) {
+            return $none('from_date', PayrollLock::messageForEmployee((int) $employee->id, $settled));
         }
 
         $years = [];

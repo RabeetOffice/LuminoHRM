@@ -79,6 +79,10 @@ class MonthlyController extends Controller
         }
 
         $people = $paginator->getCollection();
+        // People whose final settlement for this month is approved are frozen too (one query, editors only).
+        $settled = $mayEdit && ! $locked
+            ? PayrollLock::settledMonths(array_map('intval', $people->pluck('id')->all()), [$grid->month])
+            : [];
         $rows = $grid->rows($people);
         $current = MonthGrid::currentMonth($clock);
 
@@ -105,6 +109,7 @@ class MonthlyController extends Controller
                     'photo_url' => EmployeeFiles::photoUrl($e),
                     'can_edit' => $mayEdit
                         && ! $locked
+                        && ! isset($settled[(int) $e->id])
                         && ApplyManualCorrection::mayCorrect($user, $e, isset($privileged[$e->id]))
                         && $this->correctableWindow($e, $grid, $rows[$e->id]['window']),
                     ...$rows[$e->id],

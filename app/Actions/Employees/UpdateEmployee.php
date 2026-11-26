@@ -111,13 +111,14 @@ class UpdateEmployee
                 $from = $before->joining_date->format('Y-m-d');
                 $to = $current->joining_date->format('Y-m-d');
                 [$low, $high] = $from <= $to ? [$from, $to] : [$to, $from];
-                $locked = PayrollLock::rangeTouchesLocked(
+                $locked = PayrollLock::rangeTouchesLockedFor(
+                    (int) $current->id,
                     $low,
                     CarbonImmutable::createFromFormat('!Y-m-d', $high)->subDay()->format('Y-m-d'),
                 );
 
                 if ($locked !== null) {
-                    throw ValidationException::withMessages(['joining_date' => PayrollLock::message($locked)]);
+                    throw ValidationException::withMessages(['joining_date' => PayrollLock::messageForEmployee((int) $current->id, $locked)]);
                 }
             }
 

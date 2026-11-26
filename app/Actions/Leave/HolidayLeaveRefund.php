@@ -86,6 +86,15 @@ final class HolidayLeaveRefund
 
         $employees = Employee::query()->whereIn('id', $employeeIds)->orderBy('id')->lockForUpdate()->get()->keyBy('id');
 
+        // People whose final settlement for this month is approved keep their leave exactly as it was paid (one query,
+        // after the employee locks). Holidays stay company-wide; only these people's days are left alone.
+        $settled = PayrollLock::settledMonths($employeeIds, [substr($date, 0, 7)]);
+
+        if ($settled !== []) {
+            $dayRows = $dayRows->reject(fn (object $row): bool => isset($settled[(int) $row->employee_id]))->values();
+            $openRows = $openRows->reject(fn (object $row): bool => isset($settled[(int) $row->employee_id]))->values();
+        }
+
         $approvedIds = $dayRows->pluck('leave_request_id')->map(fn ($id): int => (int) $id)->unique()->values()->all();
         $requests = LeaveRequest::query()
             ->whereIn('id', [...$approvedIds, ...$openRows->pluck('id')->map(fn ($id): int => (int) $id)->all()])

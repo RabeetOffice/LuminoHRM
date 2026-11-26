@@ -429,13 +429,17 @@ class LeaveRequestController extends Controller
 
         $windows = [];
         // One query for every month these days touch.
-        $locked = array_flip(PayrollLock::lockedMonths($rows->map(fn ($row) => (string) $row->month)->unique()->values()->all()));
+        $months = $rows->map(fn ($row) => (string) $row->month)->unique()->values()->all();
+        $locked = array_flip(PayrollLock::lockedMonths($months));
+        // Months frozen for one person by an approved final settlement: two more queries (owners, settled months).
+        $owners = LeaveRequest::query()->toBase()->whereIn('id', array_values($ids))->pluck('employee_id', 'id')->map(fn ($id): int => (int) $id)->all();
+        $settled = array_map(fn (array $m): array => array_flip($m), PayrollLock::settledMonths(array_values(array_unique($owners)), $months));
 
         foreach ($rows as $row) {
             $id = (int) $row->leave_request_id;
             $window = $windows[$id] ?? ['min' => null, 'max' => ''];
 
-            if (isset($locked[(string) $row->month])) {
+            if (isset($locked[(string) $row->month]) || isset($settled[$owners[$id] ?? 0][(string) $row->month])) {
                 $window['min'] = null;
             } else {
                 $window['min'] ??= substr((string) $row->first_day, 0, 10);
