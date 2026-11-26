@@ -2,6 +2,7 @@
 
 namespace App\Support\Payroll;
 
+use App\Models\Attendance;
 use App\Models\Employee;
 use App\Models\Loan;
 use App\Models\LoanSkip;
@@ -31,6 +32,11 @@ use InvalidArgumentException;
  *   window, not after today): absent = 2 halves (1 with half-day leave), half day = 1; holiday / weekend dates; manual
  *   present / late dates; late days and overtime minutes from the totals; pending days ("-") deduct nothing (the run's
  *   checks block them);
+ * - days off without an attendance row (before attendance.start_date, a missing row, a day still to come): the weekly
+ *   offs of the person's CURRENT shift and the month's holidays (a closed day's own rules need its row);
+ * - countedFrom: the first day attendance counts, max(joining date, attendance.start_date) within the month;
+ * - attendanceTotals: MonthGrid's totals plus "paid_leave" from the cells: per counted date, an on-leave cell gives
+ *   max(0, 2 - unpaid halves) halves, a present / absent cell with half-day leave 1 - min(1, unpaid halves);
  * - unpaid leave halves from the leave ledger on EVERY day of the window (also before attendance.start_date);
  * - day-pay basis: 30, the days of the month, or the person's working days (0 falls back to the days of the month);
  * - loans: active, first deduction month on or before the month, something remaining; skipped when a loan_skips row
@@ -68,11 +74,14 @@ final class PayInputLoader
         }
         $rows = $grid->rows($employees);
         $unpaid = LeaveLedger::unpaidByDate($ids, $first, $last);
+        $holidays = WorkingDays::holidayDates($month);
+        $weeklyOffs = WorkingDays::weeklyOffs($employees);
+        $startDate = AttendanceClock::startDate();
         $profiles = self::profiles($ids, $last);
         $loans = self::loans($ids, $month);
 
         $basis = (string) settings('payroll.day_pay_basis', 'calendar_days');
-        $workingDays = $basis === 'working_days' ? WorkingDays::forEmployees($month, $employees) : [];
+        $workingDays = $basis === 'working_days' ? WorkingDays::count($month, $weeklyOffs, $holidays) : [];
         $lateRuleCount = max(0, (int) settings('attendance.late_rule_count', 0));
         $overtime = new OvertimeRule(
             (bool) settings('attendance.overtime_enabled', false),
@@ -90,19 +99,25 @@ final class PayInputLoader
             $windowTo = $last;
             $row = $rows[$id];
 
-            $attendance = self::fromCells($month, $row['cells']);
+            $unpaidHalves = array_filter(
+                $unpaid[$id] ?? [],
+                fn (string $date): bool => $date >= $windowFrom && $date <= $windowTo,
+                ARRAY_FILTER_USE_KEY,
+            );
+
+            $attendance = self::fromCells($month, $row['cells'], $unpaidHalves);
+            $off = self::offWithoutRows($month, $row['cells'], $windowFrom, $windowTo, $weeklyOffs[$id] ?? [], $holidays);
+            $offDates = array_values(array_unique([...$attendance['off'], ...$off]));
+            sort($offDates);
+
+            $totals = $row['totals'];
+            $totals['paid_leave'] = self::halvesNumber($attendance['paid_halves']);
 
             $basisDays = match ($basis) {
                 'thirty' => 30,
                 'working_days' => ($workingDays[$id] ?? 0) > 0 ? $workingDays[$id] : $daysInMonth,
                 default => $daysInMonth,
             };
-
-            $unpaidHalves = array_filter(
-                $unpaid[$id] ?? [],
-                fn (string $date): bool => $date >= $windowFrom && $date <= $windowTo,
-                ARRAY_FILTER_USE_KEY,
-            );
 
             $line = $itemInputs[$id] ?? [];
 
@@ -124,14 +139,14 @@ final class PayInputLoader
                 basisDays: $basisDays,
                 attendanceHalves: $attendance['halves'],
                 unpaidLeaveHalves: $unpaidHalves,
-                offDates: $attendance['off'],
+                offDates: $offDates,
                 manualWorkedDates: $attendance['manual'],
                 lateDays: (int) $row['totals']['late'],
                 lateRuleCount: $lateRuleCount,
                 overtimeMinutes: (int) $row['totals']['overtime_minutes'],
                 overtime: $overtime,
-                attendanceTotals: $row['totals'],
-                countedFrom: $attendance['counted_from'],
+                attendanceTotals: $totals,
+                countedFrom: self::countedFrom($employee, $startDate, $first, $last),
                 loans: $loans[$id] ?? [],
                 adjustments: $line['adjustments'] ?? [],
                 taxOverride: $line['tax_override'] ?? null,
@@ -144,17 +159,85 @@ final class PayInputLoader
     }
 
     /**
+     * The past counted days without an attendance row, per employee (every given employee is a key, with an empty list
+     * when nothing is missing): from the first counted day (countedFrom) to the earliest of the month's last day, the
+     * last working day and the day before the current attendance day. Payroll approval is blocked on them (Task 7).
+     * One query per 500 people.
+     *
+     * @param  Collection<int, Employee>  $employees  complete employee models
+     * @return array<int, list<string>> employee id => "Y-m-d" dates in order
+     *
+     * @throws InvalidArgumentException a month that is not "Y-m"
+     */
+    public static function missingDays(string $month, Collection $employees): array
+    {
+        [$first, $last] = PayrollRoster::bounds($month);
+
+        if ($employees->isEmpty()) {
+            return [];
+        }
+
+        $startDate = AttendanceClock::startDate();
+        $yesterday = self::addDays(app(AttendanceClock::class)->attendanceToday(), -1);
+        $ids = array_values($employees->map(fn (Employee $e): int => (int) $e->id)->all());
+
+        $stored = [];
+        foreach (array_chunk($ids, self::CHUNK) as $chunk) {
+            Attendance::query()
+                ->whereIn('employee_id', $chunk)
+                ->betweenDates($first, $last)
+                ->toBase()
+                ->get(['employee_id', 'date'])
+                ->each(function (object $row) use (&$stored): void {
+                    $stored[(int) $row->employee_id][substr((string) $row->date, 0, 10)] = true;
+                });
+        }
+
+        $result = [];
+        foreach ($employees as $employee) {
+            $id = (int) $employee->id;
+            $result[$id] = [];
+            $from = self::countedFrom($employee, $startDate, $first, $last);
+
+            if ($from === null) {
+                continue;
+            }
+
+            $to = min($last, $yesterday, $employee->last_working_day?->format('Y-m-d') ?? $last);
+            for ($date = $from; $date <= $to; $date = self::addDays($date, 1)) {
+                if (! isset($stored[$id][$date])) {
+                    $result[$id][] = $date;
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * The first day attendance counts for this person in the month: max(joining date, attendance.start_date when set,
+     * the 1st); null when that falls after the month.
+     */
+    private static function countedFrom(Employee $employee, ?string $startDate, string $first, string $last): ?string
+    {
+        $from = max($employee->joining_date->format('Y-m-d'), $startDate ?? '', $first);
+
+        return $from <= $last ? $from : null;
+    }
+
+    /**
      * What payroll reads from a MonthGrid row's cells.
      *
      * @param  list<list<int|string|null>|null>  $cells
-     * @return array{halves: array<string, int>, off: list<string>, manual: list<string>, counted_from: string|null}
+     * @param  array<string, int>  $unpaid  date => unpaid leave halves
+     * @return array{halves: array<string, int>, off: list<string>, manual: list<string>, paid_halves: int}
      */
-    private static function fromCells(string $month, array $cells): array
+    private static function fromCells(string $month, array $cells, array $unpaid): array
     {
         $halves = [];
         $off = [];
         $manual = [];
-        $countedFrom = null;
+        $paidHalves = 0;
 
         foreach ($cells as $index => $cell) {
             if ($cell === null) {
@@ -162,23 +245,66 @@ final class PayInputLoader
             }
 
             $date = sprintf('%s-%02d', $month, $index + 1);
-            $countedFrom ??= $date;
             $code = $cell[0];
             $flags = (int) $cell[1];
+            $halfLeave = ($flags & MonthGrid::FLAG_HALF_LEAVE) !== 0;
+            $unpaidHalves = $unpaid[$date] ?? 0;
 
             match ($code) {
-                'A' => $halves[$date] = ($flags & MonthGrid::FLAG_HALF_LEAVE) !== 0 ? 1 : 2,
+                'A' => $halves[$date] = $halfLeave ? 1 : 2,
                 'H' => $halves[$date] = 1,
                 'O', 'W' => $off[] = $date,
                 default => null,
             };
+
+            if ($code === 'V') {
+                $paidHalves += max(0, 2 - $unpaidHalves);
+            } elseif (($code === 'P' || $code === 'A') && $halfLeave) {
+                $paidHalves += 1 - min(1, $unpaidHalves);
+            }
 
             if (($code === 'P' || $code === 'L') && ($flags & MonthGrid::FLAG_MANUAL) !== 0) {
                 $manual[] = $date;
             }
         }
 
-        return ['halves' => $halves, 'off' => $off, 'manual' => $manual, 'counted_from' => $countedFrom];
+        return ['halves' => $halves, 'off' => $off, 'manual' => $manual, 'paid_halves' => $paidHalves];
+    }
+
+    /**
+     * Days of the pay window without an attendance cell that are a weekly off of the person's current shift or a
+     * holiday (a stored closed day keeps its own rules in its row; without a row only the current shift is known).
+     *
+     * @param  list<list<int|string|null>|null>  $cells
+     * @param  list<string>  $weeklyOffs  lower-case day names
+     * @param  list<string>  $holidays  "Y-m-d"
+     * @return list<string>
+     */
+    private static function offWithoutRows(string $month, array $cells, string $windowFrom, string $windowTo, array $weeklyOffs, array $holidays): array
+    {
+        $holidaySet = array_flip($holidays);
+        $off = [];
+
+        foreach ($cells as $index => $cell) {
+            $date = sprintf('%s-%02d', $month, $index + 1);
+
+            if ($cell !== null || $date < $windowFrom || $date > $windowTo) {
+                continue;
+            }
+
+            $weekday = strtolower((new DateTimeImmutable($date, new DateTimeZone('UTC')))->format('l'));
+            if (isset($holidaySet[$date]) || in_array($weekday, $weeklyOffs, true)) {
+                $off[] = $date;
+            }
+        }
+
+        return $off;
+    }
+
+    /** Halves as a day count: whole values as int (2 -> 1), halves as float (1 -> 0.5), like MonthGrid's totals. */
+    private static function halvesNumber(int $halves): int|float
+    {
+        return $halves % 2 === 0 ? intdiv($halves, 2) : $halves / 2;
     }
 
     /**

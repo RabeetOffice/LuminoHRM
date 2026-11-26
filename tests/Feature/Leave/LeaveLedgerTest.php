@@ -131,6 +131,38 @@ it('sums an am and a pm unpaid half to 2, and a full row wins over a half on the
     ]);
 });
 
+it('ignores a cancelled unpaid request whose days were removed', function () {
+    $e = Employee::factory()->create();
+    $request = approvedLeave($e, '2026-11-23', '2026-11-24', type: 'Unpaid');
+    $request->forceFill(['status' => 'cancelled'])->save();
+    LeaveDay::query()->where('leave_request_id', $request->id)->delete();
+
+    expect(LeaveLedger::unpaidByDate([$e->id], '2026-11-01', '2026-11-30'))->toBe([]);
+});
+
+it('still counts the approved days of an unpaid type that was made inactive later', function () {
+    $e = Employee::factory()->create();
+    leaveType('Unpaid study', ['is_paid' => false]);
+    approvedLeave($e, '2026-11-23', null, type: 'Unpaid study');
+    leaveType('Unpaid study')->forceFill(['is_active' => false])->save();
+
+    expect(LeaveLedger::unpaidByDate([$e->id], '2026-11-01', '2026-11-30'))->toBe([$e->id => ['2026-11-23' => 2]]);
+});
+
+it('drops an unpaid half next to a paid full row on the same date: the full row wins', function () {
+    $e = Employee::factory()->create();
+    approvedLeave($e, '2026-11-23');                                   // Annual, full
+    $request = approvedLeave($e, '2026-11-24', null, 'am', 'Unpaid');
+    LeaveDay::query()->create([
+        'leave_request_id' => $request->id, 'employee_id' => $e->id, 'leave_type_id' => leaveType('Unpaid')->id,
+        'date' => '2026-11-23', 'amount' => 0.5, 'half' => 'pm',
+    ]);
+
+    expect(LeaveLedger::unpaidByDate([$e->id], '2026-11-01', '2026-11-30'))->toBe([
+        $e->id => ['2026-11-24' => 1],
+    ]);
+});
+
 it('reads unpaid days of many people in one query', function () {
     $people = Employee::factory()->count(5)->create();
     foreach ($people as $p) {

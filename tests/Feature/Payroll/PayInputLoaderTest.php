@@ -7,6 +7,7 @@ use App\Models\LoanRepayment;
 use App\Models\LoanSkip;
 use App\Support\Payroll\LoanDue;
 use App\Support\Payroll\PayAdjustment;
+use App\Support\Payroll\PayCalculator;
 use App\Support\Payroll\PayInput;
 use App\Support\Payroll\PayInputLoader;
 use App\Support\Payroll\WorkingDays;
@@ -71,13 +72,17 @@ it('turns attendance cells into halves, off dates, manual worked dates, lates an
 
     expect($in->attendanceHalves)->toBe(['2026-11-03' => 2, '2026-11-04' => 1, '2026-11-05' => 1, '2026-11-16' => 2])
         ->and($in->unpaidLeaveHalves)->toBe(['2026-11-06' => 2])
-        ->and($in->offDates)->toBe(['2026-11-07', '2026-11-09'])
+        // the two off cells (7th, 9th) plus the default shift's weekends without a row
+        ->and($in->offDates)->toBe(['2026-11-01', '2026-11-07', '2026-11-08', '2026-11-09', '2026-11-14', '2026-11-15',
+            '2026-11-21', '2026-11-22', '2026-11-28', '2026-11-29'])
         ->and($in->manualWorkedDates)->toBe(['2026-11-13'])
         ->and($in->lateDays)->toBe(2)
         ->and($in->overtimeMinutes)->toBe(45)
-        ->and($in->countedFrom)->toBe('2026-11-02')
+        ->and($in->countedFrom)->toBe('2026-11-01')
         ->and($in->attendanceTotals['absent'])->toBe(2.5)
-        ->and($in->attendanceTotals['on_leave'])->toBe(1.5);
+        ->and($in->attendanceTotals['on_leave'])->toBe(1.5)
+        // the 6th is wholly unpaid; the half-day leave on the 5th is the one paid half
+        ->and($in->attendanceTotals['paid_leave'])->toBe(0.5);
 });
 
 it('keeps unpaid half days as one half and an am plus pm as a whole day', function () {
@@ -127,7 +132,7 @@ it('lists a weekend cell with unpaid leave as an off date', function () {
 
     $in = pilLoad($e);
 
-    expect($in->offDates)->toBe(['2026-11-14'])
+    expect($in->offDates)->toContain('2026-11-14')
         ->and($in->unpaidLeaveHalves)->toBe(['2026-11-14' => 2]);
 });
 
@@ -145,8 +150,119 @@ it('starts a mid-month joiner\'s window, attendance and unpaid leave on the join
         ->and($in->windowTo)->toBe('2026-11-30')
         ->and($in->attendanceHalves)->toBe(['2026-11-17' => 2])
         ->and($in->unpaidLeaveHalves)->toBe(['2026-11-18' => 2])
-        ->and($in->countedFrom)->toBe('2026-11-17')
+        ->and($in->countedFrom)->toBe('2026-11-16')
         ->and(array_map(fn ($s) => [$s->from, $s->to, $s->days], $in->segments))->toBe([['2026-11-16', '2026-11-30', 15]]);
+});
+
+it('counts paid leave from the cells: unpaid leave before the start date and paid leave after it (probe A)', function () {
+    Settings::set('attendance', ['start_date' => '2026-11-16']);
+    $e = pilPerson();
+    salaryProfile($e);
+    pilDay($e, '2026-11-20', 'on_leave');
+    approvedLeave($e, '2026-11-10', null, null, 'Unpaid');            // no cell: before the start date
+    approvedLeave($e, '2026-11-20');                                  // Annual
+
+    $in = pilLoad($e);
+
+    expect($in->attendanceTotals['paid_leave'])->toBe(1)
+        ->and($in->unpaidLeaveHalves)->toBe(['2026-11-10' => 2]);
+});
+
+it('counts paid leave from the cells: unpaid leave on worked, absent and half days is no paid leave (probe B)', function () {
+    $e = pilPerson();
+    salaryProfile($e);
+    pilDay($e, '2026-11-05', 'half_day', ['is_manual' => true, 'status_overridden' => true]);
+    pilDay($e, '2026-11-06', 'present', ['is_manual' => true]);
+    pilDay($e, '2026-11-09', 'absent', ['is_manual' => true]);
+    pilDay($e, '2026-11-10', 'on_leave');
+    approvedLeave($e, '2026-11-05', null, 'am', 'Unpaid');
+    approvedLeave($e, '2026-11-06', null, null, 'Unpaid');
+    approvedLeave($e, '2026-11-09', null, null, 'Unpaid');
+    approvedLeave($e, '2026-11-10');                                  // Annual
+
+    expect(pilLoad($e)->attendanceTotals['paid_leave'])->toBe(1);
+});
+
+it('gives a half-day leave absent cell with an unpaid half 1 + 1 = 2 halves and no paid leave', function () {
+    $e = pilPerson();
+    salaryProfile($e);
+    pilDay($e, '2026-11-11', 'absent', ['leave_half' => 'am']);
+    approvedLeave($e, '2026-11-11', null, 'am', 'Unpaid');
+
+    $in = pilLoad($e);
+
+    expect($in->attendanceHalves)->toBe(['2026-11-11' => 1])
+        ->and($in->unpaidLeaveHalves)->toBe(['2026-11-11' => 1])
+        ->and($in->attendanceTotals['paid_leave'])->toBe(0)
+        ->and(PayCalculator::calculate($in)->breakdown['attendance']['deducted_halves'])->toBe(2);
+});
+
+it('treats a weekly off or holiday without an attendance row as a day off: unpaid leave there is not deducted', function () {
+    Settings::set('attendance', ['start_date' => '2026-11-16']);
+    $e = pilPerson();
+    salaryProfile($e);
+    shiftFor($e, ['weekly_offs' => ['friday']]);
+    Holiday::query()->create(['name' => 'Iqbal Day', 'date' => '2026-11-09']);
+    approvedLeave($e, '2026-11-06', null, null, 'Unpaid');            // Friday, no row: off
+    approvedLeave($e, '2026-11-09', null, null, 'Unpaid');            // holiday, no row: off
+    approvedLeave($e, '2026-11-10', null, null, 'Unpaid');            // Tuesday, no row: deducted
+    approvedLeave($e, '2026-11-14', null, null, 'Unpaid');            // Saturday is a working day on this shift
+
+    $in = pilLoad($e);
+
+    expect($in->offDates)->toBe(['2026-11-06', '2026-11-09', '2026-11-13', '2026-11-20', '2026-11-27'])
+        ->and($in->unpaidLeaveHalves)->toBe(['2026-11-06' => 2, '2026-11-09' => 2, '2026-11-10' => 2, '2026-11-14' => 2]);
+
+    $result = PayCalculator::calculate($in);
+
+    expect($result->breakdown['attendance']['deducted_halves'])->toBe(4)
+        ->and(array_column($result->warnings, 'key'))->toContain('unpaid_leave_on_off_day');
+});
+
+it('counts from max(joining date, attendance start date), not from the first stored day', function () {
+    Settings::set('attendance', ['start_date' => '2026-11-10']);
+    $a = pilPerson();
+    pilDay($a, '2026-11-20', 'present');
+    $b = pilPerson(['joining_date' => '2026-11-18']);
+    $c = pilPerson(['joining_date' => '2026-12-03']);
+
+    $inputs = PayInputLoader::load('2026-11', collect([$a->fresh(), $b->fresh(), $c->fresh()]));
+
+    expect($inputs[$a->id]->countedFrom)->toBe('2026-11-10')
+        ->and($inputs[$b->id]->countedFrom)->toBe('2026-11-18')
+        ->and($inputs[$c->id]->countedFrom)->toBeNull();
+
+    Settings::set('attendance', ['start_date' => null]);
+    expect(pilLoad($a)->countedFrom)->toBe('2026-11-01');
+
+    Settings::set('attendance', ['start_date' => '2026-12-01']);
+    expect(pilLoad($a)->countedFrom)->toBeNull();
+});
+
+it('lists the past counted days without an attendance row per person, in one query', function () {
+    $this->travelTo(CarbonImmutable::parse('2026-11-06 12:00:00', 'Asia/Karachi')); // today is the 6th: up to the 5th
+    Settings::set('attendance', ['start_date' => '2026-11-02']);
+    $a = pilPerson();
+    pilDay($a, '2026-11-02', 'present');
+    pilDay($a, '2026-11-04', null);                                   // pending: a row exists
+    pilDay($a, '2026-11-06', 'present');                              // today: not past
+    $b = pilPerson(['joining_date' => '2026-11-04']);
+    pilDay($b, '2026-11-04', 'present');
+    $c = pilPerson(['joining_date' => '2026-11-20']);
+    $people = Employee::query()->whereKey([$a->id, $b->id, $c->id])->get();
+    settings('attendance.start_date'); // warms the settings cache
+
+    DB::enableQueryLog();
+    DB::flushQueryLog();
+    $missing = PayInputLoader::missingDays('2026-11', $people);
+    $queries = count(DB::getQueryLog());
+
+    expect($missing)->toBe([$a->id => ['2026-11-03', '2026-11-05'], $b->id => ['2026-11-05'], $c->id => []])
+        ->and($queries)->toBe(1)
+        ->and(PayInputLoader::missingDays('2026-11', collect()))->toBe([]);
+
+    $this->travelTo(CarbonImmutable::parse('2026-12-05 12:00:00', 'Asia/Karachi'));
+    expect(PayInputLoader::missingDays('2026-11', collect([$b->fresh()]))[$b->id])->toHaveCount(26); // 5..30 Nov
 });
 
 // ---------------------------------------------------------------- salary profiles
@@ -184,6 +300,19 @@ it('drops the days before the first profile: a profile from 20 Nov gives one 11-
 
     expect($in->windowFrom)->toBe('2026-11-01')
         ->and(array_map(fn ($s) => [$s->profileId, $s->from, $s->to, $s->days], $in->segments))->toBe([[$profile->id, '2026-11-20', '2026-11-30', 11]]);
+});
+
+it('splits the month at several profile changes in one month', function () {
+    $e = pilPerson();
+    $a = salaryProfile($e, from: '2026-01-01');
+    $b = salaryProfile($e, basicRupees: 62000, from: '2026-11-08');
+    $c = salaryProfile($e, basicRupees: 64000, from: '2026-11-21');
+
+    expect(array_map(fn ($s) => [$s->profileId, $s->from, $s->to, $s->days, $s->basic], pilLoad($e)->segments))->toBe([
+        [$a->id, '2026-11-01', '2026-11-07', 7, 6000000],
+        [$b->id, '2026-11-08', '2026-11-20', 13, 6200000],
+        [$c->id, '2026-11-21', '2026-11-30', 10, 6400000],
+    ]);
 });
 
 it('gives no segment to someone without a profile in force in the month', function () {
@@ -237,6 +366,15 @@ it('uses the day-pay basis: calendar days, thirty, or working days', function ()
     expect($in->basisDays)->toBe(20)
         ->and($in->basis)->toBe('working_days')
         ->and($in->daysInMonth)->toBe(30);
+});
+
+it('falls back to the default shift for the working-days basis of someone without a shift', function () {
+    Settings::set('payroll', ['day_pay_basis' => 'working_days']);
+    $e = pilPerson(); // no shift: the default (Saturday and Sunday off)
+    salaryProfile($e);
+
+    expect($e->fresh()->shift_id)->toBeNull()
+        ->and(pilLoad($e)->basisDays)->toBe(21);
 });
 
 it('counts working days of a month (pure) and per person from their shift', function () {
