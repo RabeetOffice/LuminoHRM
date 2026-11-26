@@ -1,19 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import {
     bpToPercent,
+    filterLines,
     firstOpenDate,
     formatMoney,
     groupDigits,
+    lineDeductions,
     monthLabel,
+    needsAttention,
     nextMonth,
     parseRupees,
+    peopleCount,
     percentToBp,
     rupeesText,
     rupeesToPaisa,
+    runStatusPill,
     salaryTotals,
     shortMonthLabel,
+    sortChecks,
     taxLabel,
 } from '@/lib/payroll';
+import type { RunCheck, RunLine } from '@/lib/payroll';
 
 describe('formatMoney', () => {
     it('matches the server Money::format', () => {
@@ -156,5 +163,112 @@ describe('firstOpenDate', () => {
             '2027-01-10',
         );
         expect(nextMonth('2026-09')).toBe('2026-10');
+    });
+});
+
+describe('runStatusPill', () => {
+    it('reads Draft amber, Approved green and Paid blue', () => {
+        expect(runStatusPill('draft')).toEqual({
+            label: 'Draft',
+            tone: 'amber',
+        });
+        expect(runStatusPill('approved')).toEqual({
+            label: 'Approved',
+            tone: 'green',
+        });
+        expect(runStatusPill('paid')).toEqual({ label: 'Paid', tone: 'blue' });
+    });
+});
+
+describe('sortChecks', () => {
+    const check = (key: string, severity: 'block' | 'warn'): RunCheck => ({
+        key,
+        severity,
+        message: key,
+        people: [],
+        count: 0,
+    });
+
+    it('puts blocking checks first and keeps the order inside each group', () => {
+        const sorted = sortChecks([
+            check('w1', 'warn'),
+            check('b1', 'block'),
+            check('w2', 'warn'),
+            check('b2', 'block'),
+        ]);
+
+        expect(sorted.map((c) => c.key)).toEqual(['b1', 'b2', 'w1', 'w2']);
+    });
+});
+
+describe('run lines', () => {
+    const line = (over: Partial<RunLine> = {}): RunLine => ({
+        id: 1,
+        employee: {
+            id: 1,
+            name: 'Sara Ahmed',
+            code: 'LD-0007',
+            department: 'HR',
+        },
+        days_paid: 30,
+        gross: 9000000,
+        attendance_deduction: 1350000,
+        other_deductions: 300000,
+        loan_deduction: 500000,
+        tax: 357000,
+        net: 6493000,
+        excluded: false,
+        excluded_reason: null,
+        tax_overridden: false,
+        warnings: 0,
+        blocking: [],
+        can_edit: true,
+        payslip_url: null,
+        ...over,
+    });
+
+    it('adds up the deductions taken before tax, in paisa', () => {
+        expect(lineDeductions(line())).toBe(2150000);
+        expect(formatMoney(lineDeductions(line()))).toBe('Rs 21,500');
+    });
+
+    it('needs attention for a blocking key or a warning, never when excluded', () => {
+        expect(needsAttention(line())).toBe(false);
+        expect(needsAttention(line({ warnings: 1 }))).toBe(true);
+        expect(needsAttention(line({ blocking: ['no_profile'] }))).toBe(true);
+        expect(
+            needsAttention(line({ excluded: true, blocking: ['no_profile'] })),
+        ).toBe(false);
+    });
+
+    it('filters by name or code and by needs attention', () => {
+        const lines = [
+            line(),
+            line({
+                id: 2,
+                employee: {
+                    id: 2,
+                    name: 'Omar Khan',
+                    code: 'LD-0008',
+                    department: null,
+                },
+                warnings: 2,
+            }),
+        ];
+
+        expect(filterLines(lines, '', false)).toHaveLength(2);
+        expect(filterLines(lines, ' sara ', false).map((l) => l.id)).toEqual([
+            1,
+        ]);
+        expect(filterLines(lines, 'ld-0008', false).map((l) => l.id)).toEqual([
+            2,
+        ]);
+        expect(filterLines(lines, '', true).map((l) => l.id)).toEqual([2]);
+        expect(filterLines(lines, 'sara', true)).toEqual([]);
+    });
+
+    it('counts people', () => {
+        expect(peopleCount(1)).toBe('1 person');
+        expect(peopleCount(3)).toBe('3 people');
     });
 });

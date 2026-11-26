@@ -112,6 +112,7 @@ describe('ready flag', () => {
         expect(r[2].items.map((i) => i.title)).toEqual(['Payroll']);
         expect(r[2].items[0].children?.map((c) => c.title)).toEqual([
             'Salary Profiles',
+            'Payroll Runs',
             'Payslips',
             'Loans & Advances',
             'Opening Figures',
@@ -367,6 +368,16 @@ describe('soon entries (default)', () => {
         expect(payroll?.soon).toBe(false);
         expect(profiles?.href).toBe('/payroll/salary-profiles');
         expect(profiles?.soon).toBe(false);
+    });
+
+    test('payroll.view opens Payroll Runs', () => {
+        const r = filterNavigation(navigation, ['payroll.view']);
+        const payroll = r
+            .flatMap((g) => g.items)
+            .find((i) => i.title === 'Payroll');
+        const runs = payroll?.children?.find((c) => c.title === 'Payroll Runs');
+        expect(runs?.href).toBe('/payroll/runs');
+        expect(runs?.soon).toBe(false);
     });
 
     test('payroll.view opens Loans & Advances and Opening Figures', () => {

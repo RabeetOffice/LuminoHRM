@@ -284,6 +284,38 @@ Route::middleware(['auth', 'verified'])->group(function () {
         });
     });
 
+    // Payroll > Payroll Runs: the list, generating a month, the run page and its actions, and the lines' drawer and
+    // inputs. Admin / HR only (payroll.view reads, payroll.run writes, payroll.approve approves; the actions check who
+    // may edit whose line and who may approve, 403). A line, adjustment or loan of another run / person is 404.
+    Route::prefix('payroll/runs')->name('payroll.runs.')->controller(\App\Http\Controllers\Payroll\PayrollRunController::class)->group(function () {
+        Route::middleware('can:payroll.view')->group(function () {
+            Route::get('/', 'index')->name('index');
+            Route::get('{run}', 'show')->whereNumber('run')->name('show');
+        });
+
+        Route::middleware('can:payroll.run')->group(function () {
+            Route::post('/', 'store')->name('store');
+            Route::post('{run}/recalculate', 'recalculate')->whereNumber('run')->name('recalculate');
+            Route::post('{run}/paid', 'paid')->whereNumber('run')->name('paid');
+            Route::delete('{run}', 'destroy')->whereNumber('run')->name('destroy');
+        });
+
+        Route::post('{run}/approve', 'approve')->whereNumber('run')->middleware('can:payroll.approve')->name('approve');
+    });
+
+    Route::prefix('payroll/runs/{run}/items/{item}')->name('payroll.items.')->whereNumber(['run', 'item'])
+        ->controller(\App\Http\Controllers\Payroll\PayrollItemController::class)->group(function () {
+            Route::get('/', 'show')->middleware('can:payroll.view')->name('show');
+
+            Route::middleware('can:payroll.run')->group(function () {
+                Route::post('adjustments', 'storeAdjustment')->name('adjustments.store');
+                Route::delete('adjustments/{adjustment}', 'destroyAdjustment')->whereNumber('adjustment')->name('adjustments.destroy');
+                Route::put('tax', 'tax')->name('tax');
+                Route::put('exclude', 'exclude')->name('exclude');
+                Route::put('loans/{loan}', 'loanSkip')->whereNumber('loan')->name('loan-skip');
+            });
+        });
+
     // Payroll downloads and the yearly tax report (Admin / HR only). The bank sheet is for approved / paid runs (a draft
     // is 404 in the controller); the summary is for any run.
     Route::get('payroll/runs/{run}/bank-sheet', [\App\Http\Controllers\Payroll\PayrollExportController::class, 'bankSheet'])

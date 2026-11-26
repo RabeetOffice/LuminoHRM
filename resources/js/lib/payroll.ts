@@ -242,3 +242,97 @@ export function taxYearLabel(year: number): string {
 export function isMonth(text: string): boolean {
     return /^\d{4}-(0[1-9]|1[0-2])$/.test(text);
 }
+
+// --- Payroll runs (Task 8) --------------------------------------------------
+
+export type RunStatus = 'draft' | 'approved' | 'paid';
+
+/** How a run's status reads and its pill colour: Draft amber, Approved green, Paid blue. */
+export function runStatusPill(status: string): {
+    label: string;
+    tone: 'amber' | 'green' | 'blue';
+} {
+    if (status === 'paid') {
+        return { label: 'Paid', tone: 'blue' };
+    }
+
+    if (status === 'approved') {
+        return { label: 'Approved', tone: 'green' };
+    }
+
+    return { label: 'Draft', tone: 'amber' };
+}
+
+export type RunCheck = {
+    key: string;
+    severity: 'block' | 'warn';
+    message: string;
+    people: { id: number; name: string }[];
+    count: number;
+};
+
+/** Blocking checks first, then warnings; each group keeps the server's order. */
+export function sortChecks(checks: RunCheck[]): RunCheck[] {
+    return [
+        ...checks.filter((c) => c.severity === 'block'),
+        ...checks.filter((c) => c.severity !== 'block'),
+    ];
+}
+
+export type RunLine = {
+    id: number;
+    employee: {
+        id: number;
+        name: string;
+        code: string;
+        department: string | null;
+    };
+    days_paid: number;
+    gross: number;
+    attendance_deduction: number;
+    other_deductions: number;
+    loan_deduction: number;
+    tax: number;
+    net: number;
+    excluded: boolean;
+    excluded_reason: string | null;
+    tax_overridden: boolean;
+    warnings: number;
+    blocking: string[];
+    can_edit: boolean;
+    payslip_url: string | null;
+};
+
+/** Everything taken off a line before tax: attendance, fixed and one-off deductions, and the loan installment. */
+export function lineDeductions(line: RunLine): number {
+    return (
+        line.attendance_deduction + line.other_deductions + line.loan_deduction
+    );
+}
+
+/** A line needs a look when something blocks approval or it carries a warning. Excluded lines never do. */
+export function needsAttention(line: RunLine): boolean {
+    return !line.excluded && (line.blocking.length > 0 || line.warnings > 0);
+}
+
+/** The lines matching a name or code search and, optionally, only those that need attention. */
+export function filterLines(
+    lines: RunLine[],
+    search: string,
+    onlyAttention: boolean,
+): RunLine[] {
+    const term = search.trim().toLowerCase();
+
+    return lines.filter(
+        (line) =>
+            (!onlyAttention || needsAttention(line)) &&
+            (term === '' ||
+                line.employee.name.toLowerCase().includes(term) ||
+                line.employee.code.toLowerCase().includes(term)),
+    );
+}
+
+/** "3 people" / "1 person". */
+export function peopleCount(n: number): string {
+    return `${n} ${n === 1 ? 'person' : 'people'}`;
+}

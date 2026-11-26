@@ -190,7 +190,6 @@ export const navigation: NavGroup[] = [
                     {
                         title: 'Payroll Runs',
                         href: '/payroll/runs',
-                        ...unready,
                     },
                     {
                         title: 'Payslips',
