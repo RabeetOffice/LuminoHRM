@@ -1,6 +1,7 @@
 <?php
 
 use App\Actions\Performance\AddReviewPeople;
+use App\Actions\Performance\OpenReviewCycle;
 use App\Models\Designation;
 use App\Models\Review;
 use App\Models\ReviewCycle;
@@ -124,3 +125,26 @@ it('keeps Manager and Employee out of add people', function (string $role) {
 
     expect(Review::count())->toBe(0);
 })->with(['manager', 'employee']);
+
+it('refuses with a friendly message, not a 500, when a KPI or a person is deleted while people are added', function (string $what) {
+    cyPerson();
+    $cycle = cyOpen();
+    $a = cyPerson(['first_name' => 'Ali']);
+    $b = cyPerson(['first_name' => 'Zed', 'designation_id' => Designation::factory()->create()->id]);
+    $fired = false;
+
+    DB::listen(function ($query) use (&$fired, $what, $b) {
+        if (! $fired && str_contains($query->sql, 'insert into "reviews"')) {
+            $fired = true;
+            DB::table('kpis')->where('designation_id', $b->designation_id)->delete();
+
+            if ($what === 'person') {
+                DB::table('employees')->where('id', $b->id)->delete();
+            }
+        }
+    });
+
+    expect(cyRefusal(fn () => apAdd($cycle, [$a->id, $b->id])))->toBe('cycle: '.OpenReviewCycle::CHANGED)
+        ->and(Review::query()->whereIn('employee_id', [$a->id, $b->id])->count())->toBe(0)
+        ->and(Activity::query()->where('description', 'Review cycle people added')->count())->toBe(0);
+})->with(['a KPI' => 'kpi', 'a person' => 'person']);

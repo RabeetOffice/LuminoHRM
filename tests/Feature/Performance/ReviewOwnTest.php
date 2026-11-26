@@ -1,11 +1,18 @@
 <?php
 
+use App\Actions\Performance\ChangeReviewer;
 use App\Actions\Performance\CloseReview;
+use App\Actions\Performance\ReopenReview;
+use App\Actions\Performance\RestoreReview;
+use App\Actions\Performance\SendBackReview;
+use App\Actions\Performance\SkipReview;
 use App\Actions\Performance\SubmitManagerReview;
+use App\Actions\Performance\WaiveSelfReview;
 use App\Models\Employee;
 use App\Models\Review;
 use App\Support\Performance\ReviewAccess;
 use Carbon\CarbonImmutable;
+use Illuminate\Auth\Access\AuthorizationException;
 
 require_once __DIR__.'/Support/review-helpers.php';
 
@@ -86,3 +93,80 @@ it('nobody reaches their own review through reviewer_id', function () {
         ->post(route('performance.reviews.manager-submit', $selfReviewed->id), ['ratings' => rvRatings($selfReviewed, [5, 5, 5])])
         ->assertForbidden();
 });
+
+// ---------------------------------------------------------------- M6: the sole manager and a manager as reviewer
+
+it('the sole performance.manage user whose own review has a manager as reviewer cannot rate it, but can close it, flagged own_review', function () {
+    $this->admin->forceFill(['is_active' => false])->save();
+    $manager = userWithRole('manager');
+    $managerEmp = employeeFor($manager, ['first_name' => 'Omar', 'last_name' => 'Khan']);
+    $this->hrEmp->forceFill(['manager_id' => $managerEmp->id])->save();
+    $own = rvReview($this->hrEmp, 'ready_to_close', ['reviewer_id' => $managerEmp->id, 'manager' => [4, 4, 4]]);
+
+    expect(ReviewAccess::mayRate($this->hr, $own))->toBeFalse()
+        ->and(ReviewAccess::mayManage($this->hr, $own))->toBeTrue()
+        ->and(ReviewAccess::role($this->hr, $own))->toBe('reviewee');
+
+    $this->actingAs($this->hr)
+        ->put(route('performance.reviews.manager-draft', $own->id), ['ratings' => rvRatings($own, [1])])
+        ->assertForbidden();
+
+    app(CloseReview::class)->handle($this->hr, $own);
+
+    expect(Review::query()->findOrFail($own->id)->status)->toBe('closed')
+        ->and(rvAudit('Review closed')->sole()->properties['own_review'])->toBeTrue();
+});
+
+it('an HR user who is the stored reviewer has the role hr and may rate', function () {
+    $report = Employee::factory()->create(['manager_id' => $this->hrEmp->id]);
+    $review = rvReview($report, 'manager_review', ['reviewer_id' => $this->hrEmp->id]);
+
+    expect(ReviewAccess::role($this->hr, $review))->toBe('hr')
+        ->and(ReviewAccess::mayRate($this->hr, $review))->toBeTrue();
+});
+
+// ---------------------------------------------------------------- M1: every HR action on one's own review is flagged
+
+/** The six HR actions: [state to start in, review attributes, the audit entry, how to run it as $by on $review]. */
+function ownActions(): array
+{
+    return [
+        'waive' => ['self_review', [], 'Self-review waived', fn ($by, $r) => app(WaiveSelfReview::class)->handle($by, $r)],
+        'skip' => ['manager_review', [], 'Review skipped', fn ($by, $r) => app(SkipReview::class)->handle($by, $r, 'On leave')],
+        'send back' => ['ready_to_close', ['manager' => [4, 4, 4]], 'Review sent back', fn ($by, $r) => app(SendBackReview::class)->handle($by, $r, 'Redo it')],
+        'reopen' => ['closed', ['manager' => [4, 4, 4], 'final_score' => 400, 'closed_at' => now()], 'Review reopened', fn ($by, $r) => app(ReopenReview::class)->handle($by, $r)],
+        'restore' => ['skipped', ['skipped_from' => 'self_review', 'skip_reason' => 'Away'], 'Review restored', fn ($by, $r) => app(RestoreReview::class)->handle($by, $r)],
+        'change reviewer' => ['manager_review', [], 'Review reviewer changed', function ($by, $r) {
+            $boss = userWithRole('manager');
+            $bossEmp = employeeFor($boss, ['first_name' => 'Omar', 'last_name' => 'Khan']);
+
+            return app(ChangeReviewer::class)->handle($by, $r, $bossEmp->id);
+        }],
+    ];
+}
+
+it('flags own_review: true when the sole performance.manage user runs an HR action on their own review', function (string $action) {
+    [$state, $attrs, $entry, $run] = ownActions()[$action];
+    $this->admin->forceFill(['is_active' => false])->save();
+    $own = rvReview($this->hrEmp, $state, array_merge(['reviewer_id' => null], $attrs));
+
+    $run($this->hr, $own);
+
+    expect(rvAudit($entry)->sole()->properties['own_review'])->toBeTrue();
+})->with(['waive', 'skip', 'send back', 'reopen', 'restore', 'change reviewer']);
+
+it('flags own_review: false when another performance.manage user runs the action on that review', function (string $action) {
+    [$state, $attrs, $entry, $run] = ownActions()[$action];
+    $own = rvReview($this->hrEmp, $state, array_merge(['reviewer_id' => null], $attrs));
+
+    $run($this->admin, $own);
+
+    expect(rvAudit($entry)->sole()->properties['own_review'])->toBeFalse();
+})->with(['waive', 'skip', 'send back', 'reopen', 'restore', 'change reviewer']);
+
+it('refuses every one of those actions on their own review once a second performance.manage user is active', function (string $action) {
+    [$state, $attrs, , $run] = ownActions()[$action];
+    $own = rvReview($this->hrEmp, $state, array_merge(['reviewer_id' => null], $attrs));
+
+    expect(fn () => $run($this->hr, $own))->toThrow(AuthorizationException::class);
+})->with(['waive', 'skip', 'send back', 'reopen', 'restore', 'change reviewer']);

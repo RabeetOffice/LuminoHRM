@@ -64,14 +64,14 @@ class ReviewController extends Controller
 
     public function managerDraft(RatingsRequest $request, int $review, SaveManagerRatings $action): RedirectResponse
     {
-        $action->handle($request->user(), $this->visible($request, $review), $request->ratings(), $request->overallComment());
+        $action->handle($request->user(), $this->visible($request, $review), $request->ratings(), $request->overallComment(), $request->hasOverallComment());
 
         return back()->with('success', 'Draft saved.');
     }
 
     public function managerSubmit(RatingsRequest $request, int $review, SubmitManagerReview $action): RedirectResponse
     {
-        $action->handle($request->user(), $this->visible($request, $review), $request->ratings(), $request->overallComment());
+        $action->handle($request->user(), $this->visible($request, $review), $request->ratings(), $request->overallComment(), $request->hasOverallComment());
 
         return back()->with('success', 'Review submitted.');
     }

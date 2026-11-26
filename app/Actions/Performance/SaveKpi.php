@@ -34,9 +34,17 @@ class SaveKpi
         return "{$name} cannot be chosen: only active or probation employees can have KPIs.";
     }
 
+    public const NAME_REQUIRED = 'Enter a name for the KPI.';
+
+    public const NAME_TOO_LONG = 'The name can be at most 120 characters.';
+
+    public const DESCRIPTION_TOO_LONG = 'The description can be at most 500 characters.';
+
     public static function inUseMessage(int $count): string
     {
-        return "{$count} review(s) use this KPI, so it cannot be deleted. Deactivate it instead.";
+        $uses = $count === 1 ? '1 review uses' : "{$count} reviews use";
+
+        return "{$uses} this KPI, so it cannot be deleted. Deactivate it instead.";
     }
 
     /** @param  array<string, mixed>  $data */
@@ -196,10 +204,24 @@ class SaveKpi
             throw ValidationException::withMessages(['weight' => self::WEIGHT_MESSAGE]);
         }
 
+        $name = (string) Names::normalise($data['name'] ?? '');
+
+        if ($name === '') {
+            throw ValidationException::withMessages(['name' => self::NAME_REQUIRED]);
+        }
+
+        if (mb_strlen($name) > 120) {
+            throw ValidationException::withMessages(['name' => self::NAME_TOO_LONG]);
+        }
+
         $description = Names::normalise($data['description'] ?? null);
 
+        if (is_string($description) && mb_strlen($description) > 500) {
+            throw ValidationException::withMessages(['description' => self::DESCRIPTION_TOO_LONG]);
+        }
+
         return [
-            'name' => (string) Names::normalise($data['name'] ?? ''),
+            'name' => $name,
             'description' => is_string($description) && $description !== '' ? $description : null,
             'weight' => $weight,
             'is_active' => (bool) ($data['is_active'] ?? true),

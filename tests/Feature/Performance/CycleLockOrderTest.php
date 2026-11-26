@@ -128,10 +128,11 @@ it('close: the cycle row FOR UPDATE, then the review ids, then the review rows F
 });
 
 it('due date: only the cycle row, FOR UPDATE by id', function () {
-    $cycle = reviewCycleRow();
+    // A fixed period: the factory's counter moves the default period_end forward with every cycle made in the process.
+    $cycle = reviewCycleRow(['period_end' => '2026-09-30', 'due_on' => '2026-10-15']);
     $hr = userWithRole('hr');
 
-    $statements = clStatements(fn () => app(ChangeCycleDueDate::class)->handle($hr, $cycle, '2030-01-01'));
+    $statements = clStatements(fn () => app(ChangeCycleDueDate::class)->handle($hr, $cycle, '2026-12-31'));
 
     expect($statements[0])->toContain('from "review_cycles" where "review_cycles"."id" = ?')->toEndWith('/* for update */')
         ->and(clFirst($statements, 'reviews'))->toBe(PHP_INT_MAX);
@@ -143,12 +144,13 @@ it('no path locks reviews before review_cycles, and none locks employees, payrol
     $person = cyPerson();
     $hr = userWithRole('hr');
 
-    $statements = clStatements(fn () => rescue(fn () => match ($path) {
+    // No rescue(): a refusal would end the path early and the order would be checked on nothing. Each path must succeed.
+    $statements = clStatements(fn () => match ($path) {
         'open' => app(OpenReviewCycle::class)->handle($hr, '2026-Q4', null),
         'add' => app(AddReviewPeople::class)->handle($hr, $cycle, [$person->id]),
         'close' => app(CloseReviewCycle::class)->handle($hr, $cycle),
-        'due' => app(ChangeCycleDueDate::class)->handle($hr, $cycle, '2030-01-01'),
-    }, report: false));
+        'due' => app(ChangeCycleDueDate::class)->handle($hr, $cycle, '2026-12-31'),
+    });
 
     $cycleLock = clFirst($statements, 'review_cycles', locked: true);
     $reviewLock = clFirst($statements, 'reviews', locked: true);

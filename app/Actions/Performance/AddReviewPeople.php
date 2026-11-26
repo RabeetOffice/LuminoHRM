@@ -8,6 +8,7 @@ use App\Models\ReviewCycle;
 use App\Models\User;
 use App\Support\Audit\Audit;
 use App\Support\Performance\ReviewEligibility;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -54,54 +55,70 @@ class AddReviewPeople
             throw ValidationException::withMessages(['employee_ids' => self::NONE]);
         }
 
-        return DB::transaction(function () use ($by, $cycle, $ids): array {
-            $current = ReviewCycle::query()->whereKey($cycle->getKey())->lockForUpdate()->firstOrFail();
-
-            if ($current->status !== 'open') {
-                throw ValidationException::withMessages(['cycle' => self::CLOSED]);
+        try {
+            return DB::transaction(fn (): array => $this->add($by, $cycle, $ids), 3);
+        } catch (QueryException $e) {
+            // A KPI or a person deleted while their review was being copied (see OpenReviewCycle::CHANGED).
+            if (OpenReviewCycle::isForeignKeyViolation($e)) {
+                throw ValidationException::withMessages(['cycle' => OpenReviewCycle::CHANGED]);
             }
 
-            $periodEnd = $current->period_end->format('Y-m-d');
-            $found = ReviewEligibility::forPeriod($periodEnd, $current->id, $ids);
-            $eligible = $found['eligible']->keyBy('id');
-            $noKpis = $found['no_kpis']->keyBy('id');
+            throw $e;
+        }
+    }
 
-            $people = Employee::query()->whereKey($ids)->get()->keyBy('id');
-            $already = Review::query()->where('review_cycle_id', $current->id)->whereIn('employee_id', $ids)->pluck('employee_id')->flip();
+    /**
+     * @param  list<int>  $ids
+     * @return array{added: int, refused: array<int, string>}
+     */
+    private function add(User $by, ReviewCycle $cycle, array $ids): array
+    {
+        $current = ReviewCycle::query()->whereKey($cycle->getKey())->lockForUpdate()->firstOrFail();
 
-            $refused = [];
-            $added = [];
+        if ($current->status !== 'open') {
+            throw ValidationException::withMessages(['cycle' => self::CLOSED]);
+        }
 
-            foreach ($ids as $id) {
-                $person = $people->get($id);
+        $periodEnd = $current->period_end->format('Y-m-d');
+        $found = ReviewEligibility::forPeriod($periodEnd, $current->id, $ids);
+        $eligible = $found['eligible']->keyBy('id');
+        $noKpis = $found['no_kpis']->keyBy('id');
 
-                if ($person === null) {
-                    $refused[$id] = self::NOT_FOUND;
-                } elseif ($already->has($id)) {
-                    $refused[$id] = self::alreadyInMessage($person->full_name);
-                } elseif ($noKpis->has($id)) {
-                    $refused[$id] = self::noKpisMessage($person->full_name);
-                } elseif (! $eligible->has($id)) {
-                    $refused[$id] = self::ineligibleMessage($person->full_name);
-                } else {
-                    $added[] = $person;
-                }
+        $people = Employee::query()->whereKey($ids)->get()->keyBy('id');
+        $already = Review::query()->where('review_cycle_id', $current->id)->whereIn('employee_id', $ids)->pluck('employee_id')->flip();
+
+        $refused = [];
+        $added = [];
+
+        foreach ($ids as $id) {
+            $person = $people->get($id);
+
+            if ($person === null) {
+                $refused[$id] = self::NOT_FOUND;
+            } elseif ($already->has($id)) {
+                $refused[$id] = self::alreadyInMessage($person->full_name);
+            } elseif ($noKpis->has($id)) {
+                $refused[$id] = self::noKpisMessage($person->full_name);
+            } elseif (! $eligible->has($id)) {
+                $refused[$id] = self::ineligibleMessage($person->full_name);
+            } else {
+                $added[] = $person;
             }
+        }
 
-            if ($added === []) {
-                throw ValidationException::withMessages(['employee_ids' => implode(' ', $refused)]);
-            }
+        if ($added === []) {
+            throw ValidationException::withMessages(['employee_ids' => implode(' ', $refused)]);
+        }
 
-            foreach ($added as $employee) {
-                OpenReviewCycle::createReview($current, $employee, $found['kpis'][$employee->id]);
-            }
+        foreach ($added as $employee) {
+            OpenReviewCycle::createReview($current, $employee, $found['kpis'][$employee->id]);
+        }
 
-            Audit::record('performance', 'Review cycle people added', $current, [
-                'added' => array_map(fn (Employee $e) => ['id' => $e->id, 'name' => $e->full_name], $added),
-                'refused' => count($refused),
-            ], $by);
+        Audit::record('performance', 'Review cycle people added', $current, [
+            'added' => array_map(fn (Employee $e) => ['id' => $e->id, 'name' => $e->full_name], $added),
+            'refused' => count($refused),
+        ], $by);
 
-            return ['added' => count($added), 'refused' => $refused];
-        }, 3);
+        return ['added' => count($added), 'refused' => $refused];
     }
 }

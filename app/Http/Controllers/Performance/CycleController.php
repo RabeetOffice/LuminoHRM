@@ -230,7 +230,9 @@ class CycleController extends Controller
             $row['label'] = ReviewScoring::label($review->final_score);
         }
 
-        if ($state === ReviewStates::SKIPPED) {
+        // HR looking at their own review gets the reviewee view (spec 5.7): no skip reason. Only the sole performance.manage user
+        // keeps it, as on the review page (ReviewView).
+        if ($state === ReviewStates::SKIPPED && (! ReviewAccess::isReviewee($viewer, $review) || ReviewAccess::soleManager($viewer))) {
             $row['skip_reason'] = $review->skip_reason;
         }
 

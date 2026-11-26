@@ -38,6 +38,9 @@ class OpenReviewCycle
 
     public const BAD_DATE = 'Enter a valid date.';
 
+    /** A KPI or a person was deleted between the eligibility read and the insert (the restrict foreign keys refused). */
+    public const CHANGED = 'Something changed while opening the cycle. Try again.';
+
     public static function existsMessage(string $name): string
     {
         return "A cycle already exists for {$name}.";
@@ -65,6 +68,12 @@ class OpenReviewCycle
         try {
             return DB::transaction(fn (): ReviewCycle => $this->open($by, $type, $periodKey, $dueOn), 3);
         } catch (QueryException $e) {
+            // A KPI or an employee deleted while we were copying: the plain reads still saw it, the restrict foreign key did not.
+            // Catching it (instead of locking the KPI and employee rows) keeps the lock order clean: cycle rows first, nothing else.
+            if (self::isForeignKeyViolation($e)) {
+                throw ValidationException::withMessages(['period' => self::CHANGED]);
+            }
+
             if (! self::isUniqueViolation($e)) {
                 throw $e;
             }
@@ -210,6 +219,12 @@ class OpenReviewCycle
         $parsed = DateTimeImmutable::createFromFormat('!Y-m-d', $ymd);
 
         return $parsed === false ? $ymd : $parsed->format('j M Y');
+    }
+
+    /** A foreign key refusal (SQLSTATE 23000): shared with AddReviewPeople. */
+    public static function isForeignKeyViolation(QueryException $e): bool
+    {
+        return $e->getCode() === '23000' && str_contains(strtolower($e->getMessage()), 'foreign key');
     }
 
     private static function isUniqueViolation(QueryException $e): bool

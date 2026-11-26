@@ -266,3 +266,42 @@ it('keeps Manager and Employee out of open', function (string $role) {
 
     expect(ReviewCycle::count())->toBe(0);
 })->with(['manager', 'employee']);
+
+// ---------------------------------------------------------------- races with a delete (M5)
+
+it('refuses with a friendly message, not a 500, when a KPI is deleted while the cycle is being opened', function () {
+    cyPerson(['first_name' => 'Ali']);
+    $second = cyPerson(['first_name' => 'Zed', 'designation_id' => Designation::factory()->create()->id]);
+    $zedKpi = Kpi::query()->where('designation_id', $second->designation_id)->sole();
+    $fired = false;
+
+    // The first review insert is the moment the other HR user's delete lands: the KPI is still in the plain read, gone by the copy.
+    DB::listen(function ($query) use (&$fired, $zedKpi) {
+        if (! $fired && str_contains($query->sql, 'insert into "reviews"')) {
+            $fired = true;
+            DB::table('kpis')->where('id', $zedKpi->id)->delete();
+        }
+    });
+
+    expect(cyRefusal(fn () => cyOpen(key: '2026-Q4')))->toBe('period: '.OpenReviewCycle::CHANGED)
+        ->and(OpenReviewCycle::CHANGED)->toBe('Something changed while opening the cycle. Try again.')
+        ->and(ReviewCycle::count())->toBe(0)
+        ->and(Review::count())->toBe(0);
+});
+
+it('refuses with the same message when a person is deleted while the cycle is being opened', function () {
+    cyPerson(['first_name' => 'Ali']);
+    $gone = cyPerson(['first_name' => 'Zed', 'designation_id' => Designation::factory()->create()->id]);
+    $fired = false;
+
+    DB::listen(function ($query) use (&$fired, $gone) {
+        if (! $fired && str_contains($query->sql, 'insert into "reviews"')) {
+            $fired = true;
+            DB::table('kpis')->where('designation_id', $gone->designation_id)->delete();
+            DB::table('employees')->where('id', $gone->id)->delete();
+        }
+    });
+
+    expect(cyRefusal(fn () => cyOpen(key: '2026-Q4')))->toBe('period: '.OpenReviewCycle::CHANGED)
+        ->and(ReviewCycle::count())->toBe(0);
+});

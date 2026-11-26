@@ -30,7 +30,7 @@ beforeEach(function () {
 });
 
 /** @return list<string> */
-function rloStatements(Closure $run): array
+function rloStatements(Closure $run, bool $keepAccessQueries = false): array
 {
     $connection = DB::connection();
     $original = $connection->getQueryGrammar();
@@ -58,7 +58,7 @@ function rloStatements(Closure $run): array
     }
 
     return array_values(array_filter($statements, fn (string $sql) => ! str_contains($sql, 'savepoint')
-        && ! str_contains($sql, 'roles') && ! str_contains($sql, 'permissions') && ! str_contains($sql, 'activity_log')));
+        && ($keepAccessQueries || (! str_contains($sql, 'roles') && ! str_contains($sql, 'permissions'))) && ! str_contains($sql, 'activity_log')));
 }
 
 it('compiles the cycle lock to a shared lock and the review lock to FOR UPDATE on MariaDB', function () {
@@ -103,17 +103,49 @@ it('takes the cycle row (shared) before the review row (FOR UPDATE), and no othe
         'change reviewer' => app(ChangeReviewer::class)->handle($p['hr'], $fresh, $bilal->id),
     });
 
-    expect($statements[0])->toStartWith('select "review_cycle_id" from "reviews" where "reviews"."id" = ?')->not->toContain('/*')
-        ->and($statements[1])->toStartWith('select')->toContain('from "review_cycles" where "review_cycles"."id" = ?')->toEndWith('/* shared */')
-        ->and($statements[2])->toStartWith('select')->toContain('from "reviews" where "reviews"."id" = ?')->toEndWith('/* for update */');
+    // ChangeReviewer share-locks the new reviewer's employee and user rows, but BEFORE the cycle row: never after a review row.
+    $early = $action === 'change reviewer' ? ['employees', 'users'] : [];
+    $n = count($early);
+
+    expect($statements[0])->toStartWith('select "review_cycle_id", "employee_id" from "reviews" where "reviews"."id" = ?')->not->toContain('/*')
+        ->and($statements[1 + $n])->toStartWith('select')->toContain('from "review_cycles" where "review_cycles"."id" = ?')->toEndWith('/* shared */')
+        ->and($statements[2 + $n])->toStartWith('select')->toContain('from "reviews" where "reviews"."id" = ?')->toEndWith('/* for update */');
 
     $locking = array_values(array_filter($statements, fn ($sql) => str_contains($sql, '/*')));
     $lockedTables = array_map(fn ($sql) => preg_match('/from "([a-z_]+)"/', $sql, $m) ? $m[1] : '?', $locking);
 
-    // Only the cycle, the review and (for rating writes) the review's own score rows are ever locked.
-    expect(array_diff($lockedTables, ['review_cycles', 'reviews', 'review_scores']))->toBe([])
-        ->and(array_search('review_cycles', $lockedTables, true))->toBe(0)
-        ->and(array_keys($lockedTables, 'review_cycles', true))->toBe([0])
-        ->and(array_filter($statements, fn ($sql) => (str_contains($sql, '"employees"') || str_contains($sql, '"payroll_')
-            || str_contains($sql, '"leave_') || str_contains($sql, '"asset')) && str_contains($sql, '/*')))->toBeEmpty();
+    // Only the cycle, the review and (for rating writes) the review's own score rows are ever locked, after the early locks.
+    expect(array_diff($lockedTables, ['review_cycles', 'reviews', 'review_scores', ...$early]))->toBe([])
+        ->and(array_slice($lockedTables, 0, $n))->toBe($early)
+        ->and(array_search('review_cycles', $lockedTables, true))->toBe($n)
+        ->and(array_keys($lockedTables, 'review_cycles', true))->toBe([$n])
+        ->and(array_filter(array_slice($lockedTables, $n), fn ($table) => in_array($table, ['employees', 'users'], true) || str_starts_with($table, 'payroll_')
+            || str_starts_with($table, 'leave_') || str_starts_with($table, 'asset')))->toBeEmpty();
 })->with(['self draft', 'self submit', 'waive', 'manager draft', 'manager submit', 'send back', 'close', 'reopen', 'skip', 'restore', 'change reviewer']);
+
+it('locks the other managers BEFORE the cycle and review rows when the actor is the reviewee, and never afterwards (M3)', function () {
+    $hr = userWithRole('hr');
+    $hrEmp = employeeFor($hr, ['first_name' => 'Hina', 'last_name' => 'Raza']);
+    $own = rvReview($hrEmp, 'ready_to_close', ['reviewer_id' => null, 'manager' => [4, 4, 4]]);
+
+    $statements = rloStatements(fn () => app(CloseReview::class)->handle($hr, Review::query()->findOrFail($own->id)), keepAccessQueries: true);
+
+    $userLocks = array_keys(array_filter($statements, fn ($sql) => str_contains($sql, 'from "users"') && str_contains($sql, '/* shared */')));
+    $cycleLock = array_key_first(array_filter($statements, fn ($sql) => str_contains($sql, 'from "review_cycles"') && str_contains($sql, '/* shared */')));
+    $reviewLock = array_key_first(array_filter($statements, fn ($sql) => str_contains($sql, 'from "reviews"') && str_contains($sql, '/* for update */')));
+
+    // The first lock is the managers', before the cycle row; the read in the action only repeats it (held already).
+    expect($userLocks)->not->toBeEmpty()
+        ->and($userLocks[0])->toBeLessThan($cycleLock)
+        ->and($cycleLock)->toBeLessThan($reviewLock)
+        ->and(Review::query()->findOrFail($own->id)->status)->toBe('closed');
+});
+
+it('takes no user lock at all when the actor is not the reviewee', function () {
+    $p = rvPeople();
+    $review = rvReview($p['employeeEmp'], 'ready_to_close', ['reviewer_id' => $p['managerEmp']->id, 'manager' => [4, 4, 4]]);
+
+    $statements = rloStatements(fn () => app(CloseReview::class)->handle($p['hr'], Review::query()->findOrFail($review->id)), keepAccessQueries: true);
+
+    expect(array_filter($statements, fn ($sql) => str_contains($sql, 'from "users"') && str_contains($sql, '/*')))->toBeEmpty();
+});

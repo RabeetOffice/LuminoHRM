@@ -25,7 +25,7 @@ class SkipReview
 
     public function handle(User $by, Review $review, string $reason): Review
     {
-        return ReviewLock::run($review, fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked, $reason));
+        return ReviewLock::run($review, fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked, $reason), $by);
     }
 
     public function within(User $by, ReviewCycle $cycle, Review $locked, string $reason): Review
@@ -49,7 +49,7 @@ class SkipReview
             'skipped_from' => $from,
         ])->save();
 
-        ReviewRatings::audit('Review skipped', $locked, $cycle, ['reason' => $reason, 'from' => $from], $by);
+        ReviewRatings::audit('Review skipped', $locked, $cycle, ['reason' => $reason, 'from' => $from, 'own_review' => ReviewAccess::isReviewee($by, $locked)], $by);
 
         return $locked;
     }

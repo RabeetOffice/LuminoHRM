@@ -14,10 +14,16 @@ use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Validation\ValidationException;
 
 /**
- * HR changes who reviews (ReviewAccess::mayManage, so never on one's own review), in any state but closed (a skipped
- * review too). The new reviewer needs an active login holding performance.review-team and is never the reviewee; null
- * means "HR" (any performance.manage user). The previous reviewer loses access at once; saved drafts stay. Audit
- * `Review reviewer changed` (old / attributes: reviewer name or "HR"). Lock order: ReviewLock.
+ * HR changes who reviews (ReviewAccess::mayManage: never on one's own review, except for the sole active
+ * performance.manage user, and then the audit entry says own_review: true), in any state but closed (a skipped review
+ * too). The new reviewer needs an active login holding performance.review-team and is never the reviewee; null means "HR"
+ * (any performance.manage user). The previous reviewer loses access at once; saved drafts stay. Audit
+ * `Review reviewer changed` (old / attributes: reviewer name or "HR", own_review). Lock order: ReviewLock.
+ *
+ * The new reviewer's employee and user rows are read with a shared lock, taken by ReviewLock BEFORE the cycle and review
+ * rows (never an employee or user lock after a review row). A plain read inside the transaction would come from the
+ * snapshot fixed by ReviewLock's first read and could miss a login disabled, or an employee removed, while this call
+ * waited for the review lock. Both rows are then held until commit, so the check cannot go stale before the update.
  */
 class ChangeReviewer
 {
@@ -39,10 +45,22 @@ class ChangeReviewer
 
     public function handle(User $by, Review $review, ?int $reviewerEmployeeId): Review
     {
-        return ReviewLock::run($review, fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked, $reviewerEmployeeId));
+        $facts = null;
+
+        return ReviewLock::run(
+            $review,
+            fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked, $reviewerEmployeeId, $facts),
+            $by,
+            function () use (&$facts, $reviewerEmployeeId) {
+                $facts = $reviewerEmployeeId === null ? null : $this->reviewerFacts($reviewerEmployeeId, lock: true);
+            },
+        );
     }
 
-    public function within(User $by, ReviewCycle $cycle, Review $locked, ?int $reviewerEmployeeId): Review
+    /**
+     * @param  array{employee: ?Employee, login: ?User}|null  $facts  the new reviewer's rows as handle() locked them; read plainly when null (a direct call)
+     */
+    public function within(User $by, ReviewCycle $cycle, Review $locked, ?int $reviewerEmployeeId, ?array $facts = null): Review
     {
         ReviewLock::assertCycleOpen($cycle);
 
@@ -65,10 +83,10 @@ class ChangeReviewer
                 throw ValidationException::withMessages(['reviewer_id' => self::SELF]);
             }
 
-            $employee = Employee::query()->with('user')->find($reviewerEmployeeId)
-                ?? throw ValidationException::withMessages(['reviewer_id' => self::UNKNOWN]);
+            $facts ??= $this->reviewerFacts($reviewerEmployeeId, lock: false);
+            $employee = $facts['employee'] ?? throw ValidationException::withMessages(['reviewer_id' => self::UNKNOWN]);
             $newName = $employee->full_name;
-            $login = $employee->user;
+            $login = $facts['login'];
 
             if ($reviewerEmployeeId !== $current
                 && ($login === null || ! $login->is_active || ! $login->can('performance.review-team'))) {
@@ -85,9 +103,24 @@ class ChangeReviewer
         ReviewRatings::audit('Review reviewer changed', $locked, $cycle, [
             'old' => ['reviewer' => $oldName],
             'attributes' => ['reviewer' => $newName],
+            'own_review' => ReviewAccess::isReviewee($by, $locked),
         ], $by);
 
         return $locked;
+    }
+
+    /** @return array{employee: ?Employee, login: ?User} */
+    private function reviewerFacts(int $employeeId, bool $lock): array
+    {
+        $employee = Employee::query()->whereKey($employeeId);
+        $login = User::query()->where('employee_id', $employeeId);
+
+        if ($lock) {
+            $employee->sharedLock();
+            $login->sharedLock();
+        }
+
+        return ['employee' => $employee->first(), 'login' => $login->first()];
     }
 
     private function nameOf(?int $employeeId): string

@@ -83,7 +83,9 @@ class Designation extends Model
         $kpis = Kpi::query()->where('designation_id', $this->getKey())->count();
 
         if ($kpis > 0) {
-            return "{$kpis} KPI(s) use this designation. Remove or move them first.";
+            return $kpis === 1
+                ? '1 KPI uses this designation. Remove or move it first.'
+                : "{$kpis} KPIs use this designation. Remove or move them first.";
         }
 
         return null;

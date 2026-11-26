@@ -20,16 +20,16 @@ use App\Support\Performance\ReviewStates;
 class SubmitManagerReview
 {
     /** @param  array<int|string, mixed>  $ratings */
-    public function handle(User $by, Review $review, array $ratings, ?string $overallComment): Review
+    public function handle(User $by, Review $review, array $ratings, ?string $overallComment, bool $commentSent = true): Review
     {
-        return ReviewLock::run($review, fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked, $ratings, $overallComment));
+        return ReviewLock::run($review, fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked, $ratings, $overallComment, $commentSent), $by);
     }
 
     /** @param  array<int|string, mixed>  $ratings */
-    public function within(User $by, ReviewCycle $cycle, Review $locked, array $ratings, ?string $overallComment): Review
+    public function within(User $by, ReviewCycle $cycle, Review $locked, array $ratings, ?string $overallComment, bool $commentSent = true): Review
     {
         SaveManagerRatings::check($by, $cycle, $locked, ReviewStates::MANAGER_SUBMIT);
-        SaveManagerRatings::write($locked, $ratings, $overallComment);
+        SaveManagerRatings::write($locked, $ratings, $overallComment, $commentSent);
         ReviewRatings::assertAllRated($locked, 'manager');
 
         $locked->forceFill([

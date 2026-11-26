@@ -363,6 +363,6 @@ it('reads a fixed number of queries for the leave figures whatever the number of
 
     // Measured with leave data present (approved + pending requests, a leave day today): admin 22, hr 22, manager 24,
     // employee 11 queries for the whole dashboard (Phase 5 added one payroll query each: the "Payroll This Month" run
-    // for admin / hr, the own latest payslip for viewers with an employee record). Bound unchanged.
-    expect($large)->toBe($small)->and($large)->toBeLessThanOrEqual(25);
+    // for admin / hr, the own latest payslip for viewers with an employee record; Phase 6b added the two waiting-reviews queries, so a manager now reads 26). Still fixed whatever the number of people.
+    expect($large)->toBe($small)->and($large)->toBeLessThanOrEqual(27);
 })->with(['admin', 'hr', 'manager', 'employee']);

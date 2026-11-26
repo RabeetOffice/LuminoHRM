@@ -19,7 +19,7 @@ class RestoreReview
 {
     public function handle(User $by, Review $review): Review
     {
-        return ReviewLock::run($review, fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked));
+        return ReviewLock::run($review, fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked), $by);
     }
 
     public function within(User $by, ReviewCycle $cycle, Review $locked): Review
@@ -38,7 +38,7 @@ class RestoreReview
 
         $locked->forceFill(['status' => $to, 'skip_reason' => null, 'skipped_from' => null])->save();
 
-        ReviewRatings::audit('Review restored', $locked, $cycle, ['to' => $to], $by);
+        ReviewRatings::audit('Review restored', $locked, $cycle, ['to' => $to, 'own_review' => ReviewAccess::isReviewee($by, $locked)], $by);
 
         return $locked;
     }

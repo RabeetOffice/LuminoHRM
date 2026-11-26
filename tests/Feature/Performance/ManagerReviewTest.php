@@ -100,3 +100,35 @@ it('HR rates a review whose reviewer is "HR"', function () {
         ->put(route('performance.reviews.manager-draft', $review->id), ['ratings' => []])
         ->assertForbidden();
 });
+
+it('keeps the saved overall comment when a draft or a submit has no manager_comment key; a key that is present changes it', function () {
+    $this->review->forceFill(['manager_comment' => 'Saved overall'])->save();
+    $comment = fn () => Review::query()->findOrFail($this->review->id)->manager_comment;
+
+    // A draft with only ratings (an autosave of the changed rows): the comment stays.
+    $this->actingAs($this->p['manager'])
+        ->put(route('performance.reviews.manager-draft', $this->review->id), ['ratings' => rvRatings($this->review, [3])])
+        ->assertSessionHasNoErrors();
+    expect($comment())->toBe('Saved overall');
+
+    // A key that is present changes it, to a new text...
+    $this->actingAs($this->p['manager'])
+        ->put(route('performance.reviews.manager-draft', $this->review->id), ['ratings' => [], 'manager_comment' => 'Changed overall'])
+        ->assertSessionHasNoErrors();
+    expect($comment())->toBe('Changed overall');
+
+    // ...and to nothing, when it is sent empty.
+    $this->actingAs($this->p['manager'])
+        ->put(route('performance.reviews.manager-draft', $this->review->id), ['ratings' => [], 'manager_comment' => null])
+        ->assertSessionHasNoErrors();
+    expect($comment())->toBeNull();
+
+    // A submit without the key keeps whatever is saved.
+    $this->review->forceFill(['manager_comment' => 'Kept on submit'])->save();
+    $this->actingAs($this->p['manager'])
+        ->post(route('performance.reviews.manager-submit', $this->review->id), ['ratings' => rvRatings($this->review, [4, 4, 4])])
+        ->assertSessionHasNoErrors();
+
+    expect($comment())->toBe('Kept on submit')
+        ->and(Review::query()->findOrFail($this->review->id)->status)->toBe('ready_to_close');
+});

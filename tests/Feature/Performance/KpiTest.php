@@ -298,7 +298,7 @@ it('refuses to delete a KPI that reviews use and deletes nothing', function () {
     reviewRow(reviewCycleRow(), Employee::factory()->create(['designation_id' => $employee->designation_id, 'department_id' => $employee->department_id]));
 
     $this->actingAs(userWithRole('admin'))->delete("/performance/kpis/{$kpi->id}")
-        ->assertSessionHasErrors(['kpi' => '2 review(s) use this KPI, so it cannot be deleted. Deactivate it instead.']);
+        ->assertSessionHasErrors(['kpi' => '2 reviews use this KPI, so it cannot be deleted. Deactivate it instead.']);
 
     expect(Kpi::query()->whereKey($kpi->id)->exists())->toBeTrue()
         ->and(Activity::query()->where('log_name', 'performance')->count())->toBe(0);
@@ -368,14 +368,59 @@ it('refuses to delete a designation that has KPIs, and deletes it again once the
     kpiRow(['designation' => $designation]);
     $admin = userWithRole('admin');
 
-    expect($designation->deleteBlocker())->toBe('2 KPI(s) use this designation. Remove or move them first.');
+    expect($designation->deleteBlocker())->toBe('2 KPIs use this designation. Remove or move them first.');
 
     $this->actingAs($admin)->delete("/organization/designations/{$designation->id}")
-        ->assertSessionHas('error', '2 KPI(s) use this designation. Remove or move them first.');
+        ->assertSessionHas('error', '2 KPIs use this designation. Remove or move them first.');
 
     expect(Designation::query()->whereKey($designation->id)->exists())->toBeTrue();
 
     Kpi::query()->where('designation_id', $designation->id)->delete();
 
     expect($designation->fresh()->deleteBlocker())->toBeNull();
+});
+
+// ---------------------------------------------------------------- wording (F1) and the action's own checks (F5)
+
+it('words the refusals for one and for several, with no "(s)"', function () {
+    expect(SaveKpi::inUseMessage(1))->toBe('1 review uses this KPI, so it cannot be deleted. Deactivate it instead.')
+        ->and(SaveKpi::inUseMessage(2))->toBe('2 reviews use this KPI, so it cannot be deleted. Deactivate it instead.');
+
+    $employee = Employee::factory()->create();
+    $kpi = kpiRow(['designation' => $employee->designation]);
+    reviewRow(reviewCycleRow(), $employee);
+
+    $this->actingAs(userWithRole('admin'))->delete("/performance/kpis/{$kpi->id}")
+        ->assertSessionHasErrors(['kpi' => '1 review uses this KPI, so it cannot be deleted. Deactivate it instead.']);
+
+    $designation = Designation::factory()->create();
+    kpiRow(['designation' => $designation]);
+
+    expect($designation->deleteBlocker())->toBe('1 KPI uses this designation. Remove or move it first.');
+
+    $this->actingAs(userWithRole('admin'))->delete("/organization/designations/{$designation->id}")
+        ->assertSessionHas('error', '1 KPI uses this designation. Remove or move it first.');
+});
+
+it('checks the name and description in the action itself, not only in the request', function (array $override, string $field, string $message) {
+    $designation = Designation::factory()->create();
+    $save = app(SaveKpi::class);
+
+    expect(fn () => $save->create(userWithRole('hr'), validKpi($designation, $override)))
+        ->toThrow(fn (ValidationException $e) => expect($e->errors())->toBe([$field => [$message]]))
+        ->and(Kpi::count())->toBe(0);
+})->with([
+    'empty name' => [['name' => ''], 'name', SaveKpi::NAME_REQUIRED],
+    'blank name' => [['name' => '  	 '], 'name', SaveKpi::NAME_REQUIRED],
+    'missing name' => [['name' => null], 'name', SaveKpi::NAME_REQUIRED],
+    'name over 120' => [['name' => str_repeat('a', 121)], 'name', SaveKpi::NAME_TOO_LONG],
+    'description over 500' => [['description' => str_repeat('b', 501)], 'description', SaveKpi::DESCRIPTION_TOO_LONG],
+]);
+
+it('accepts a name of exactly 120 characters and a description of exactly 500', function () {
+    $designation = Designation::factory()->create();
+
+    $kpi = app(SaveKpi::class)->create(userWithRole('hr'), validKpi($designation, ['name' => str_repeat('a', 120), 'description' => str_repeat('b', 500)]));
+
+    expect(mb_strlen($kpi->name))->toBe(120)->and(mb_strlen($kpi->description))->toBe(500);
 });

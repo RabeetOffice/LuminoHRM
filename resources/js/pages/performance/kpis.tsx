@@ -35,6 +35,13 @@ type Props = {
 const ALL = 'all';
 
 /** The data the update route needs to change only the active flag. */
+/** The same sentence the server gives when a delete is refused (SaveKpi::inUseMessage). */
+function inUseMessage(count: number): string {
+    const uses = count === 1 ? '1 review uses' : `${count} reviews use`;
+
+    return `${uses} this KPI, so it cannot be deleted. Deactivate it instead.`;
+}
+
 function activeToggleData(kpi: KpiRow, active: boolean) {
     return {
         name: kpi.name,
@@ -184,7 +191,7 @@ export default function Kpis({ kpis, filters, options }: Props) {
                         title={
                             row.can_delete
                                 ? undefined
-                                : `${row.uses} review(s) use this KPI. Deactivate it instead.`
+                                : `${inUseMessage(row.uses)}`
                         }
                         disabled={!row.can_delete}
                         onClick={() => {

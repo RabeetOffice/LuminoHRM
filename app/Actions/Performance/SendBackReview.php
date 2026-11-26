@@ -25,7 +25,7 @@ class SendBackReview
 
     public function handle(User $by, Review $review, string $note): Review
     {
-        return ReviewLock::run($review, fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked, $note));
+        return ReviewLock::run($review, fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked, $note), $by);
     }
 
     public function within(User $by, ReviewCycle $cycle, Review $locked, string $note): Review
@@ -47,7 +47,7 @@ class SendBackReview
             'manager_submitted_at' => null,
         ])->save();
 
-        ReviewRatings::audit('Review sent back', $locked, $cycle, ['note' => $note], $by);
+        ReviewRatings::audit('Review sent back', $locked, $cycle, ['note' => $note, 'own_review' => ReviewAccess::isReviewee($by, $locked)], $by);
 
         return $locked;
     }

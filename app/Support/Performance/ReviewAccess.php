@@ -5,6 +5,7 @@ namespace App\Support\Performance;
 use App\Models\Review;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Who may see and do what on a review (spec 5.5 and 5.7). Every screen and action asks here; nothing re-implements it.
@@ -92,17 +93,38 @@ final class ReviewAccess
         return $user->can('performance.manage');
     }
 
-    /** $user holds performance.manage and no other active user does. */
+    /**
+     * $user holds performance.manage and no other active user does.
+     *
+     * Inside a transaction (the review actions) this is a current read, not the transaction's snapshot: the other managers'
+     * rows are share-locked. ReviewLock::run has already taken that lock before the cycle and review rows (lockManagers),
+     * so this one only repeats a lock the transaction holds and never adds a user lock after a review row.
+     */
     public static function soleManager(User $user): bool
     {
         if (! $user->is_active || ! $user->can('performance.manage')) {
             return false;
         }
 
-        return ! User::permission('performance.manage')
-            ->where('users.is_active', true)
-            ->whereKeyNot($user->getKey())
-            ->exists();
+        $others = self::activeManagers()->whereKeyNot($user->getKey())->select('users.id');
+
+        if (DB::transactionLevel() > 0) {
+            $others->sharedLock();
+        }
+
+        return $others->first() === null;
+    }
+
+    /** Share-locks the active performance.manage users' rows (call it before any review lock; see ReviewLock). */
+    public static function lockManagers(): void
+    {
+        self::activeManagers()->select('users.id')->sharedLock()->get();
+    }
+
+    /** @return Builder<User> */
+    private static function activeManagers(): Builder
+    {
+        return User::permission('performance.manage')->where('users.is_active', true);
     }
 
     /**

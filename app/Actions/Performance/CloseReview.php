@@ -21,7 +21,7 @@ class CloseReview
 {
     public function handle(User $by, Review $review): Review
     {
-        return ReviewLock::run($review, fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked));
+        return ReviewLock::run($review, fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked), $by);
     }
 
     public function within(User $by, ReviewCycle $cycle, Review $locked): Review

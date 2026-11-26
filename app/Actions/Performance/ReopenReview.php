@@ -21,7 +21,7 @@ class ReopenReview
 
     public function handle(User $by, Review $review): Review
     {
-        return ReviewLock::run($review, fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked));
+        return ReviewLock::run($review, fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked), $by);
     }
 
     public function within(User $by, ReviewCycle $cycle, Review $locked): Review
@@ -43,7 +43,7 @@ class ReopenReview
             'closed_by' => null,
         ])->save();
 
-        ReviewRatings::audit('Review reopened', $locked, $cycle, ['previous_score' => $previous], $by);
+        ReviewRatings::audit('Review reopened', $locked, $cycle, ['previous_score' => $previous, 'own_review' => ReviewAccess::isReviewee($by, $locked)], $by);
 
         return $locked;
     }

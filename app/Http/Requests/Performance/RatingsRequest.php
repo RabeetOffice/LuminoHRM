@@ -64,6 +64,12 @@ class RatingsRequest extends FormRequest
         return $ratings;
     }
 
+    /** Whether the request carries the manager_comment key at all: a missing key keeps the saved overall comment. */
+    public function hasOverallComment(): bool
+    {
+        return $this->has('manager_comment');
+    }
+
     public function overallComment(): ?string
     {
         $comment = $this->input('manager_comment');

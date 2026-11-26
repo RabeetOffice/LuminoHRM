@@ -158,3 +158,8 @@ it('has the Employee relations', function () {
         ->and($employee->reviews()->count())->toBe(0)
         ->and(ReviewScore::query()->count())->toBe(0);
 });
+
+it('has explicit indexes on both KPI target columns', function () {
+    expect(Schema::hasIndex('kpis', ['designation_id']))->toBeTrue()
+        ->and(Schema::hasIndex('kpis', ['employee_id']))->toBeTrue();
+});

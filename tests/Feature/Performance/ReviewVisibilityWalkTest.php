@@ -268,8 +268,8 @@ it('shows each viewer only what the matrix allows, on every page, in every state
             foreach (walkRequest($user, $url) as $response) {
                 $found = walkFindings($response);
 
-                // "label" is also an ordinary key on pages that are not about reviews (tiles, filters, option lists): there it is judged by the sentinels and numbers; Tasks 6 and 7 name their own score keys.
-                if ($name !== 'review') {
+                // "label" is also an ordinary key on pages that are not about scores (dashboard tiles, filters, option lists): there it is judged by the sentinels and numbers. On the review page and My Reviews it IS the score label, so it is checked (the profile page has tab labels; its score label is covered by the sentinels, final_score and the numbers).
+                if (! in_array($name, ['review', 'my.reviews'], true)) {
                     $found = array_values(array_diff($found, ['key:label']));
                 }
 

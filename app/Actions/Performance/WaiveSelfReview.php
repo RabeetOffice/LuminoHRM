@@ -19,7 +19,7 @@ class WaiveSelfReview
 {
     public function handle(User $by, Review $review): Review
     {
-        return ReviewLock::run($review, fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked));
+        return ReviewLock::run($review, fn (ReviewCycle $cycle, Review $locked) => $this->within($by, $cycle, $locked), $by);
     }
 
     public function within(User $by, ReviewCycle $cycle, Review $locked): Review
@@ -34,7 +34,7 @@ class WaiveSelfReview
 
         $locked->forceFill(['status' => ReviewStates::target(ReviewStates::WAIVE, $locked->status)])->save();
 
-        ReviewRatings::audit('Self-review waived', $locked, $cycle, [], $by);
+        ReviewRatings::audit('Self-review waived', $locked, $cycle, ['own_review' => ReviewAccess::isReviewee($by, $locked)], $by);
 
         return $locked;
     }
