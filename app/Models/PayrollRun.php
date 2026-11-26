@@ -136,6 +136,25 @@ class PayrollRun extends Model
         return $this->status === 'draft';
     }
 
+    /**
+     * A digest of the figures someone reviewed (sha256 of "employee_id:net:tax:gross:loan_deduction" per line, in
+     * employee id order). The run page sends it back on approve; ApprovePayrollRun compares it after recalculating.
+     * One query.
+     */
+    public function fingerprint(): string
+    {
+        $lines = $this->items()
+            ->orderBy('employee_id')
+            ->toBase()
+            ->get(['employee_id', 'net', 'tax', 'gross', 'loan_deduction'])
+            ->map(fn (object $i): string => implode(':', [
+                (int) $i->employee_id, (int) $i->net, (int) $i->tax, (int) $i->gross, (int) $i->loan_deduction,
+            ]))
+            ->all();
+
+        return hash('sha256', implode("\n", $lines));
+    }
+
     /** "November 2026". */
     public function label(): string
     {
