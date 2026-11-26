@@ -7,7 +7,9 @@ function Card({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card"
       className={cn(
-        "bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm",
+        "bg-surface-card text-card-foreground border-glass-border shadow-glass-xs flex flex-col gap-6 rounded-xl border py-6",
+        // Cards that are links or buttons (or opt in with data-interactive) lift gently on hover.
+        "transition-[transform,box-shadow] duration-(--duration-normal) ease-glide [a&]:hover:-translate-y-0.5 [a&]:hover:shadow-glass-sm [button&]:hover:-translate-y-0.5 [button&]:hover:shadow-glass-sm data-[interactive=true]:hover:-translate-y-0.5 data-[interactive=true]:hover:shadow-glass-sm",
         className
       )}
       {...props}

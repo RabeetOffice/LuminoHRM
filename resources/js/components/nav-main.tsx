@@ -139,10 +139,10 @@ function ParentItem({
                     <SidebarMenuButton tooltip={{ children: item.title }}>
                         {item.icon && <item.icon />}
                         <span>{item.title}</span>
-                        <ChevronRight className="ml-auto transition-transform group-data-[state=open]/collapsible:rotate-90" />
+                        <ChevronRight className="ml-auto transition-transform duration-(--duration-normal) ease-glide group-data-[state=open]/collapsible:rotate-90" />
                     </SidebarMenuButton>
                 </CollapsibleTrigger>
-                <CollapsibleContent>
+                <CollapsibleContent className="data-[state=open]:animate-in data-[state=open]:duration-(--duration-normal) data-[state=open]:ease-glide data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-1">
                     <SidebarMenuSub>
                         {children.map((child) =>
                             child.soon ? (

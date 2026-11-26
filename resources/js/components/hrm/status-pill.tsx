@@ -6,12 +6,12 @@ export type StatusTone = 'green' | 'grey' | 'amber' | 'red' | 'blue' | 'violet';
 // Green Active/Approved/Present, grey Inactive/Draft, amber Probation/Pending/Late,
 // red Terminated/Rejected/Absent, blue On Leave, violet Holiday.
 const tones: Record<StatusTone, string> = {
-    green: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300',
-    grey: 'bg-neutral-100 text-neutral-600 dark:bg-neutral-500/20 dark:text-neutral-300',
-    amber: 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
-    red: 'bg-red-50 text-red-700 dark:bg-red-500/15 dark:text-red-300',
-    blue: 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300',
-    violet: 'bg-violet-50 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300',
+    green: 'bg-emerald-50 text-emerald-700 ring-emerald-600/15 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-400/20',
+    grey: 'bg-neutral-100 text-neutral-600 ring-neutral-500/15 dark:bg-neutral-500/20 dark:text-neutral-300 dark:ring-neutral-400/20',
+    amber: 'bg-amber-50 text-amber-700 ring-amber-600/20 dark:bg-amber-500/15 dark:text-amber-300 dark:ring-amber-400/20',
+    red: 'bg-red-50 text-red-700 ring-red-600/15 dark:bg-red-500/15 dark:text-red-300 dark:ring-red-400/20',
+    blue: 'bg-blue-50 text-blue-700 ring-blue-600/15 dark:bg-blue-500/15 dark:text-blue-300 dark:ring-blue-400/20',
+    violet: 'bg-violet-50 text-violet-700 ring-violet-600/15 dark:bg-violet-500/15 dark:text-violet-300 dark:ring-violet-400/20',
 };
 
 const dots: Record<StatusTone, string> = {
@@ -33,7 +33,7 @@ export function StatusPill({ tone, children, className }: Props) {
     return (
         <span
             className={cn(
-                'inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap',
+                'inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap ring-1 transition-colors duration-(--duration-fast) ring-inset',
                 tones[tone],
                 className,
             )}

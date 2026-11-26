@@ -11,12 +11,15 @@ function Toaster({ ...props }: ToasterProps) {
         <Sonner
             theme={appearance}
             className="toaster group"
+            toastOptions={{
+                className: 'backdrop-blur-xl backdrop-saturate-150 shadow-glass-md!',
+            }}
             position="bottom-right"
             style={
                 {
-                    '--normal-bg': 'var(--popover)',
+                    '--normal-bg': 'var(--glass-bg-strong)',
                     '--normal-text': 'var(--popover-foreground)',
-                    '--normal-border': 'var(--border)',
+                    '--normal-border': 'var(--glass-border)',
                 } as React.CSSProperties
             }
             {...props}

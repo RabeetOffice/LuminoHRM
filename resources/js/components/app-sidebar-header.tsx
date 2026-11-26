@@ -45,9 +45,9 @@ function AvatarMenu() {
                     type="button"
                     aria-label="Account menu"
                     data-test="sidebar-menu-button"
-                    className="rounded-full outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40"
+                    className="rounded-full transition-transform duration-(--duration-fast) ease-out outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40 active:scale-95"
                 >
-                    <Avatar className="size-8">
+                    <Avatar className="size-8 ring-1 ring-glass-border">
                         <AvatarFallback className="bg-primary/15 text-xs font-medium text-brand-ink">
                             {getInitials(auth.user.name)}
                         </AvatarFallback>
@@ -67,7 +67,10 @@ export function AppSidebarHeader({
     breadcrumbs?: BreadcrumbItemType[];
 }) {
     return (
-        <header className="flex h-16 shrink-0 items-center justify-between gap-2 border-b border-sidebar-border/50 px-6 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 md:px-4">
+        <header
+            data-app-header
+            className="sticky top-0 z-20 flex h-16 shrink-0 items-center justify-between gap-2 border-b border-glass-border glass px-6 transition-[height] duration-(--duration-normal) ease-glide group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 md:rounded-t-xl md:px-4"
+        >
             <div className="flex min-w-0 items-center gap-2">
                 <SidebarTrigger className="-ml-1" />
                 <Breadcrumbs breadcrumbs={breadcrumbs} />

@@ -252,7 +252,8 @@ export function DataTable<T>({
                                 ))}
                             </TableRow>
                         </TableHeader>
-                        <TableBody>
+                        {/* New rows rise in, staggered (pagination, filters, first load). */}
+                        <TableBody className="stagger-children">
                             {rows.length === 0 ? (
                                 <TableRow className="hover:bg-transparent">
                                     <TableCell
