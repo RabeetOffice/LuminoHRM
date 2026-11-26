@@ -174,6 +174,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::patch('assignments/{assignment}/note', 'note')->whereNumber('assignment')->name('assignments.note');
     });
 
+    // Assets: the list (Admin, HR: everything; Manager: what their team holds, read-only; checked in the controller) and
+    // the asset page (Admin, HR). Static `assets/...` paths come before `assets/{asset}`.
+    Route::get('assets', [\App\Http\Controllers\Assets\AssetController::class, 'index'])->name('assets.index');
+    Route::get('assets/employee-options', [\App\Http\Controllers\Assets\AssetController::class, 'employeeOptions'])->middleware('can:assets.assign')->name('assets.employee-options');
+    Route::get('assets/{asset}', [\App\Http\Controllers\Assets\AssetController::class, 'show'])->middleware('can:assets.assign')->whereNumber('asset')->name('assets.show');
+
     // Attendance > Raw Punches: every punch the machines sent (Admin, HR). Giving an unknown machine user ID to an
     // employee also needs attendance.edit (and employees.manage, checked in the controller): it is an employee update.
     Route::get('attendance/punches', [\App\Http\Controllers\Attendance\PunchController::class, 'index'])

@@ -77,3 +77,82 @@ export function assetConditionOptions(): { value: string; label: string }[] {
         label: CONDITION_LABELS[value],
     }));
 }
+
+/** A person as the asset screens carry them: the name and the employee code. */
+export type AssetPerson = { id: number; code: string; name: string };
+
+/** "Sara Ahmed (EMP-0007)". */
+export function personLabel(person: Pick<AssetPerson, 'code' | 'name'>) {
+    return `${person.name} (${person.code})`;
+}
+
+/**
+ * People whose name or code contains the typed text (case-insensitive, extra spaces ignored); everyone for empty text.
+ * The server's own search (the "employee-options" route) is used instead when the list was cut short.
+ */
+export function filterPeople<T extends Pick<AssetPerson, 'code' | 'name'>>(
+    people: T[],
+    term: string,
+): T[] {
+    const needle = term.trim().replace(/\s+/g, ' ').toLowerCase();
+
+    if (needle === '') {
+        return people;
+    }
+
+    return people.filter(
+        (person) =>
+            person.name.toLowerCase().includes(needle) ||
+            person.code.toLowerCase().includes(needle),
+    );
+}
+
+/**
+ * What a returned asset can become: available or in repair for HR; retired too for an Admin (the server refuses a
+ * retirement from anyone else, this only keeps the choice off the screen).
+ */
+export function returnStatusOptions(canRetire: boolean): {
+    value: AssetStatus;
+    label: string;
+}[] {
+    const next: AssetStatus[] = canRetire
+        ? ['available', 'in_repair', 'retired']
+        : ['available', 'in_repair'];
+
+    return next.map((value) => ({ value, label: STATUS_LABELS[value] }));
+}
+
+/** The status choices for the Change status dialog, from the server's list, in the order given. */
+export function statusChoices(
+    targets: string[],
+): { value: string; label: string }[] {
+    return targets.map((value) => ({
+        value,
+        label: assetStatusLabel(value),
+    }));
+}
+
+/** A cost in paisa as the text of the whole-rupees field: 15050000 -> "150500"; empty for no cost. */
+export function costFieldText(paisa: number | null | undefined): string {
+    if (paisa === null || paisa === undefined) {
+        return '';
+    }
+
+    return paisa % 100 === 0 ? String(paisa / 100) : (paisa / 100).toFixed(2);
+}
+
+/** The first server error found under any of `keys` (the ones a dialog has no field for), or undefined. */
+export function firstError(
+    errors: Record<string, string | undefined>,
+    keys: string[],
+): string | undefined {
+    for (const key of keys) {
+        const message = errors[key];
+
+        if (message) {
+            return message;
+        }
+    }
+
+    return undefined;
+}
