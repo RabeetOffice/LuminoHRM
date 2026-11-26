@@ -38,7 +38,7 @@ it('refuses the final approval of leave in an approved payroll month', function 
 
     $this->actingAs($hr)->from('/leave/requests')
         ->put("/leave/requests/{$request->id}/final-decide", ['decision' => 'approve', 'note' => null])
-        ->assertSessionHas('error', 'Payroll for November 2026 is locked; leave in it cannot be approved.');
+        ->assertSessionHas('error', 'Payroll for November 2026 is approved, so this can no longer change.');
 
     expect($request->fresh()->status)->toBe('pending')
         ->and(LeaveDay::query()->where('leave_request_id', $request->id)->exists())->toBeFalse();

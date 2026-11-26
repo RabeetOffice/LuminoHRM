@@ -356,7 +356,7 @@ class ApplyForLeave
         $locked = $this->firstLockedMonth(array_values(array_filter($plan->dates(), fn (string $d): bool => $d < $today)));
 
         if ($locked !== null) {
-            return $none('from_date', 'Payroll for '.(new DateTimeImmutable($locked.'-01'))->format('F Y').' is locked, so leave cannot be added in that month.');
+            return $none('from_date', PayrollLock::message($locked));
         }
 
         $years = [];

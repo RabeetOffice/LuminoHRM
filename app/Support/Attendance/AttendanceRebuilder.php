@@ -70,7 +70,9 @@ use Throwable;
  *   - Payroll lock: a day in a locked payroll month (an approved or paid run, PayrollLock) is frozen. process() keeps
  *     every decided column of its row, creates and deletes nothing there, and only sets needs_rebuild = false (so a
  *     late punch, which is still stored in device_punches, or a mark never loops in the pending queue); closeDay() of
- *     such a date does nothing; daysWithMissingRows() never lists one. The locked months of a batch are read once, as
+ *     such a date does nothing (and its later steps, finaliseManual and the safety-net updates, re-read the lock in
+ *     their own transaction, so a month approved mid-close is left alone); daysWithMissingRows() never lists one. The
+ *     locked months of a batch are read once, as
  *     the first statement of its transaction: lock order payroll_runs (shared) -> attendances (for update), the same
  *     as every attendance write, so it cannot cycle with the payroll approval (run row for update, then loans).
  *   - One employee-day that cannot be decided (bad data) never blocks the others: it is logged (class and ids only),
@@ -286,10 +288,18 @@ class AttendanceRebuilder
 
         // Safety net: anything decided, non-manual and still open on that day (normally nothing left) is marked closed.
         // A row still pending here could not be decided: it stays open (the next close tries again) and is flagged.
-        Attendance::query()->where('date', $date)->where('closed', false)->where('is_manual', false)
-            ->whereNotNull('status')->update(['closed' => true]);
-        Attendance::query()->where('date', $date)->where('is_manual', false)->whereNull('status')
-            ->where('needs_attention', false)->update(['needs_attention' => true]);
+        // The month may have been approved since the check above: re-read the lock first, in the same transaction
+        // (shared lock on payroll_runs before the attendance rows), and leave a just-approved day alone.
+        DB::transaction(function () use ($date): void {
+            if (self::monthLocked($date)) {
+                return;
+            }
+
+            Attendance::query()->where('date', $date)->where('closed', false)->where('is_manual', false)
+                ->whereNotNull('status')->update(['closed' => true]);
+            Attendance::query()->where('date', $date)->where('is_manual', false)->whereNull('status')
+                ->where('needs_attention', false)->update(['needs_attention' => true]);
+        }, 3);
 
         $this->rebuildPending();
 
@@ -389,6 +399,12 @@ class AttendanceRebuilder
     private function finaliseManual(string $date): int
     {
         return DB::transaction(function () use ($date): int {
+            // Approved since closeDay() checked: leave the day as it is. First statement (payroll_runs before the
+            // attendance row locks).
+            if (self::monthLocked($date)) {
+                return 0;
+            }
+
             $rows = Attendance::query()->where('date', $date)->where('is_manual', true)->where('closed', false)
                 ->lockForUpdate()->get();
 
@@ -447,6 +463,12 @@ class AttendanceRebuilder
 
             return $rows->count();
         });
+    }
+
+    /** Whether $date ("Y-m-d") is in a locked payroll month: one PayrollLock::lockedMonths read. */
+    private static function monthLocked(string $date): bool
+    {
+        return PayrollLock::lockedMonths([substr($date, 0, 7)]) !== [];
     }
 
     /**

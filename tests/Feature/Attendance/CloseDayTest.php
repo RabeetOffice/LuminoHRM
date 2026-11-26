@@ -431,7 +431,8 @@ it('closes a day whose rows ingestion already created with the same queries as o
     }
     $existing = $queriesFor(fn () => $rebuilder->closeDay('2026-10-05'));
 
-    expect($existing)->toBe($created)->and($created)->toBeLessThanOrEqual(13)
+    // 14: Phase 5 adds closeDay's own lock read, the batch's locked months and the safety net's re-read of the lock.
+    expect($existing)->toBe($created)->and($created)->toBeLessThanOrEqual(14)
         ->and(Attendance::query()->where('date', '2026-10-05')->whereNull('status')->count())->toBe(0)
         ->and(Attendance::query()->where('date', '2026-10-05')->where('closed', true)->count())->toBe(55)
         ->and(Attendance::query()->where('date', '2026-10-05')->where('status', 'present')->count())->toBe(20);
@@ -606,7 +607,7 @@ it('stays idle and writes nothing while the start date is unset, within a fixed 
 
     expect(Attendance::query()->count())->toBe(0)
         ->and($many)->toBe($few)
-        ->and($few)->toBeLessThanOrEqual(7 * 6);
+        ->and($few)->toBeLessThanOrEqual(7 * 7); // 7 days, 7 queries each (one is the safety net's payroll lock re-read)
 });
 
 it('costs three extra queries when nothing older is missing', function () {

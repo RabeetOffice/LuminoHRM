@@ -1,0 +1,38 @@
+# Task 6 fix round report: payroll lock reads by month only, no shift-path cycle, ingestion and employment-window rules
+
+Status: see the end. Commit: `fix: payroll lock reads by month only, no shift-path cycle, ingestion and employment-window rules` (hash in the coordinator reply).
+
+## Items
+
+- **I2** `PayrollLock`: `isLocked`, `lockedMonths`, `firstLocked` (through `lockedMonths`), `latestLocked` and `rangeTouchesLocked` now read through a private `rows()` builder (`DB::table('payroll_runs')`, `LOCK IN SHARE MODE` inside a transaction) that selects rows by month only (equality, `IN` list or `BETWEEN` on the unique `month` index; `latestLocked` reads all rows ordered by month) and filters the status in PHP against `config('hrm.payroll.locked_statuses')`. Public signatures and results unchanged; still one query per call. `PayrollLock::query()` is kept exactly as it was (status-filtered, shared lock): it is public, and `SaveSalaryProfile::checkDate` uses `query()->max('month')` for the label of a refusal message, so making it month-only would have changed that label (it would count drafts). The readers no longer use it. Note for the coordinator: that one `SaveSalaryProfile` read (refusal path only, a label) is still a status-filtered locking read; not my file.
+  - New test (`tests/Feature/Payroll/PayrollLockTest.php`): compiles each reader with the MySQL grammar (`pretend`) and asserts the WHERE has no `status` condition, every statement ends with ` lock in share mode`, and the exact SQL of all five; plus a results test with drafts between locked months. The existing exact-SQL expectation changed to `select `status` from `payroll_runs` where `month` = '2026-11' limit 1 lock in share mode`.
+- **I1** `RebuildMarks::forEmployeesFromToday` (behind `forShift`, `forEmployeesWithoutShift`, `forEmployee`) reads no payroll lock: its rows are dated from `attendanceToday()` on and `PayrollChecks` refuses approval while `run.month >= month(attendanceToday())`. The `LockedMonthTest` case that faked "today" in a locked month is replaced by one at the real "now" (2026-12-03) asserting the three paths flag only today-on rows and issue no query on `payroll_runs`. Plan lock-order bullet updated: the from-today exception, the ingestion / rebuilder re-checks, month-only reads, and the two remaining cycles (holiday-with-refund vs generate/recalculate; holiday-with-refund vs a per-employee writer while an approval waits), resolved by InnoDB rollback + `DB::transaction(fn, 3)` retry.
+- **M1** `PunchIngestor`: `ingest` reads `lockedMonths` once over all marked dates of the upload (after the punch inserts, before any attendance write) and drops locked dates before `markDays`; `relink` reads it once over its detached + attached dates. Punches are stored / relinked as before. Tests: a punch on a locked date with no row stores the punch and creates no row (December row created); relink on a locked date creates no row and does not flag the existing open November row.
+- **M2** Employment window rule. `UpdateEmployee`: a joining date move checks `rangeTouchesLocked(earlier, later - 1 day)` (days [min, max)). `ChangeEmployeeStatus`: a last working day change checks `rangeTouchesLocked(earlier + 1 day, later)` (days (min, max]), a null day counting as `9999-12-31`. Tests: last working day 2026-11-30 with November locked and the person employed all November is allowed (and moving it to December and back); 2026-10-31 is refused; joining 12-01 to 11-30 and 11-30 to 12-01 refused, 12-02 to 12-01 allowed. The earlier Task 6 cases (set 11-25, move 12-20 to 11-28, clear from 11-25, joining 11-10 to 12-05 / 12-10 to 10-01 refused, 12-10 to 12-05 allowed) still pass unchanged.
+- **M3** `HolidayController::update`: no lock read when the bound and new dates are equal; after the row lock, if the stored date differs from the new date, the unchecked dates are checked (both stored and new when bound = new; the stored date otherwise). So a name-only change with bound = new = stored is allowed on a locked date; every date change stays refused. Tests: rename on 2026-11-09 allowed, date change within November refused; a "rename" whose stored date was moved to December meanwhile (it would move it back into November) refused.
+- **M4** `ApplyForLeave` (apply), `LeaveDecisions` (approve, and cancel-from-date) now use `PayrollLock::message($month)`; the now-unused private `LeaveDecisions::monthLabel` was removed. Tests updated: `tests/Feature/Leave/ApplyTest.php` (2), `tests/Feature/Payroll/LeaveLockedMonthTest.php` (1), `LockedMonthTest` (2). No test pinned the cancel wording.
+- **M5** `AttendanceRebuilder`: `finaliseManual` re-reads the lock (one `lockedMonths` read via a private `monthLocked()`) as the first statement of its transaction and returns 0 for a just-approved month; the `closeDay` safety-net updates now run in `DB::transaction(fn, 3)` that first re-reads the lock and skips the updates when locked. Test: the November run is approved (simulated via `DB::listen`) right after the close's first attendance insert; the open manual row stays open and no `update "attendances"` runs afterwards.
+- **Weekly-off refund test**: Monday/Tuesday become weekly offs with the recount starting 2026-11-11; the November (locked) leave keeps both days and stays approved, the December leave loses both and is cancelled.
+
+## Query budgets raised (only by what this round adds)
+
+`tests/Feature/Attendance/CloseDayTest.php`: one 55-person close 13 to 14 (the safety net's lock re-read); idle seven-day close 7*6 to 7*7 (one re-read per day).
+
+## Files
+
+app/Support/PayrollLock.php, app/Support/Attendance/RebuildMarks.php, app/Support/Attendance/AttendanceRebuilder.php, app/Support/Attendance/PunchIngestor.php, app/Http/Controllers/HolidayController.php, app/Actions/Employees/UpdateEmployee.php, app/Actions/Employees/ChangeEmployeeStatus.php, app/Actions/Leave/ApplyForLeave.php, app/Actions/Leave/LeaveDecisions.php, docs/superpowers/plans/2026-11-25-phase-5-payroll.md, tests/Feature/Payroll/LockedMonthTest.php, tests/Feature/Payroll/PayrollLockTest.php, tests/Feature/Payroll/LeaveLockedMonthTest.php, tests/Feature/Leave/ApplyTest.php, tests/Feature/Attendance/CloseDayTest.php, this report. `tests/Unit/PayrollLockTest.php` needed no change (passes).
+
+## Tests
+
+- `LockedMonthTest` 36/36; `PayrollLockTest` feature 13 + unit 13 = 26/26; `CloseDayTest` 32/32.
+- Focused (Payroll, Unit/PayrollLockTest, Unit/Attendance, Attendance, Leave, HolidayTest, EmployeeWriteTest, EmployeeAuditTest, Iclock, MyAttendanceTest): 1803 tests, 1800 passed before the CloseDay budget fix; the two CloseDay budgets are fixed (32/32 after); the remaining failure is Task 7's in-progress `tests/Feature/Payroll/ApproveRunTest.php` ("refuses a leave approval in November once the run is approved…") which pins the old leave wording `Payroll for November 2026 is locked; leave in it cannot be approved.` — Task 7 must change that expectation to `PayrollLock::message('2026-11')` (M4 is decided). Not my file; not edited.
+- Pint clean; PHPStan 0 errors on every touched app file.
+
+## Full PHP suite (`pest --parallel`, once)
+
+3022 tests: 3017 passed, 2 skipped, 3 failed, none from this round:
+- `Payroll\ApproveRunTest` (Task 7, untracked, in progress) pins the old leave approval wording; needs `PayrollLock::message('2026-11')` (M4).
+- `AuditLogTest` "no route ... can delete a user": finds `Payroll\SalaryProfileController@destroy` (known from the Task 6 run; salary profile work).
+- `EmployeeImportTest` "accepts a manager in the same file...": the known shared-fake-disk / import flake (not touched by this round).
+
+Status: DONE_WITH_CONCERNS (only concern: Task 7 must update the one pinned message in `ApproveRunTest`).

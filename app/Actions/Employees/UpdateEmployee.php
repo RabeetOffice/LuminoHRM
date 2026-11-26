@@ -17,6 +17,7 @@ use App\Support\Leave\BalanceLine;
 use App\Support\Leave\LeaveBalances;
 use App\Support\Leave\LeaveDays;
 use App\Support\PayrollLock;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -32,8 +33,9 @@ use Spatie\Activitylog\Models\Activity;
  *
  * The caller authorises and validates; see EmployeeWriter for the shape of $data. Only keys present in $data change.
  *
- * Payroll lock: a joining date change whose old-to-new range touches a month with an approved or paid payroll run is
- * refused ([joining_date] PayrollLock::message()); nothing is saved.
+ * Payroll lock: a joining date change is refused ([joining_date] PayrollLock::message()) when a day it adds to or
+ * removes from the employment window ([earlier date, later date)) is in a month with an approved or paid payroll run;
+ * nothing is saved.
  */
 class UpdateEmployee
 {
@@ -102,12 +104,16 @@ class UpdateEmployee
             $before = clone $current; // the record as stored, for the allocation recalculation below
             $current->fill($attributes);
 
-            // A joining date moved across (or within) a month whose payroll is approved would change that month: refused.
-            // After the employee row lock (lock order: employee, then payroll_runs shared, then attendance and leave rows).
+            // A joining date move changes the employment window on the days [earlier, later): refused when one of them
+            // is in a month whose payroll is approved. After the employee row lock (lock order: employee, then
+            // payroll_runs shared, then attendance and leave rows).
             if ($current->isDirty('joining_date')) {
+                $from = $before->joining_date->format('Y-m-d');
+                $to = $current->joining_date->format('Y-m-d');
+                [$low, $high] = $from <= $to ? [$from, $to] : [$to, $from];
                 $locked = PayrollLock::rangeTouchesLocked(
-                    $before->joining_date->format('Y-m-d'),
-                    $current->joining_date->format('Y-m-d'),
+                    $low,
+                    CarbonImmutable::createFromFormat('!Y-m-d', $high)->subDay()->format('Y-m-d'),
                 );
 
                 if ($locked !== null) {

@@ -38,9 +38,10 @@ use Throwable;
  * mails each employee after the commit. Removing a holiday adds nothing back; the list sends, per holiday, the people
  * with approved leave around its date (`affected_leave`, people this user may see) for the delete confirmation.
  *
- * Payroll lock: a holiday cannot be added on, moved into or out of, renamed on or deleted from a date in a month whose
- * payroll is approved or paid ([date] PayrollLock::message()). The check is the first statement of each transaction
- * (shared lock on payroll_runs before the holiday, attendance and leave row locks).
+ * Payroll lock: a holiday cannot be added on, moved into or out of, or deleted from a date in a month whose payroll is
+ * approved or paid ([date] PayrollLock::message()). Renaming it there (same date) is allowed: a name changes no day.
+ * The check is the first statement of each transaction (shared lock on payroll_runs before the holiday, attendance and
+ * leave row locks); only an update that finds the row moved meanwhile checks the stored date after the row lock.
  */
 class HolidayController extends Controller
 {
@@ -119,8 +120,11 @@ class HolidayController extends Controller
 
         try {
             $changed = DB::transaction(function () use ($request, $holiday, $refund, $newDate, $name, $boundDate): array {
-                // The payroll lock first (both dates, one query), then the row.
-                self::refuseLocked([$boundDate, $newDate]);
+                // A date change: the payroll lock first (both dates, one query), then the row. A rename (same date)
+                // reads no lock here: a name alone changes no attendance or leave, so it is allowed on a locked date.
+                if ($boundDate !== $newDate) {
+                    self::refuseLocked([$boundDate, $newDate]);
+                }
 
                 // Read and lock the row inside the transaction: a deadlock retry runs this again from the stored row
                 // (the bound model may already hold the new values after a rolled-back attempt, so updating it would
@@ -128,9 +132,10 @@ class HolidayController extends Controller
                 $current = Holiday::query()->whereKey($holiday->id)->lockForUpdate()->firstOrFail();
                 $oldDate = $current->date->format('Y-m-d');
 
-                // Moved by someone else since the page was read: its stored date is checked too.
-                if ($oldDate !== $boundDate && $oldDate !== $newDate) {
-                    self::refuseLocked([$oldDate]);
+                // Moved by someone else since the page was read, so this save moves it (back) from the stored date:
+                // the dates not checked above are checked now (name-only when bound, new and stored are all equal).
+                if ($oldDate !== $newDate) {
+                    self::refuseLocked($boundDate === $newDate ? [$oldDate, $newDate] : [$oldDate]);
                 }
                 $current->update(['name' => $name, 'date' => $newDate]);
 

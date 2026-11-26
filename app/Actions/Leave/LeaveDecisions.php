@@ -278,7 +278,7 @@ class LeaveDecisions
             }
 
             if (PayrollLock::isLocked(substr($from, 0, 7))) {
-                throw ValidationException::withMessages(['from_date' => 'Payroll for that month is locked; its leave days cannot be cancelled.']);
+                throw ValidationException::withMessages(['from_date' => PayrollLock::message(substr($from, 0, 7))]);
             }
 
             abort_unless(self::mayCancelApproved($this->routing, $by, $locked, $earliest), 403);
@@ -368,7 +368,7 @@ class LeaveDecisions
 
         $lockedMonth = PayrollLock::firstLocked($dates);
         if ($lockedMonth !== null) {
-            throw ValidationException::withMessages(['decision' => "Payroll for {$this->monthLabel($lockedMonth)} is locked; leave in it cannot be approved."]);
+            throw ValidationException::withMessages(['decision' => PayrollLock::message($lockedMonth)]);
         }
 
         // Other approved leave on these dates: a full day clashes with anything; a half only with the same half.
@@ -598,13 +598,6 @@ class LeaveDecisions
         $parsed = DateTimeImmutable::createFromFormat('!Y-m-d', $date);
 
         return $parsed === false ? $date : $parsed->format('D j M Y');
-    }
-
-    private function monthLabel(string $month): string
-    {
-        $parsed = DateTimeImmutable::createFromFormat('!Y-m', $month);
-
-        return $parsed === false ? $month : $parsed->format('F Y');
     }
 
     private function daysText(float $days): string

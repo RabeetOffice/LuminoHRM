@@ -192,15 +192,24 @@ class RebuildMarks
         return $flagged + $created;
     }
 
-    /** @param  Builder<Employee>  $employees  a query selecting employee ids */
+    /**
+     * No payroll lock read here: every row it touches is dated from the current attendance day on, and approval refuses
+     * a month that has not ended (PayrollChecks: the run's month must be before the current attendance month), so none
+     * of these rows can be in a locked month. Leaving the read out also keeps the shift path (shift row -> attendance
+     * rows) from taking a shared lock on payroll_runs after the shift row, which would close a lock cycle with a run
+     * write that locks that shift's employees.
+     *
+     * @param  Builder<Employee>  $employees  a query selecting employee ids
+     */
     private static function forEmployeesFromToday(Builder $employees): int
     {
-        return self::flagUnlocked(Attendance::query()
+        return Attendance::query()
             ->whereIn('employee_id', $employees)
             ->where('date', '>=', app(AttendanceClock::class)->attendanceToday())
             ->where('closed', false)
             ->where('is_manual', false)
-            ->where('needs_rebuild', false));
+            ->where('needs_rebuild', false)
+            ->update(['needs_rebuild' => true]);
     }
 
     /**

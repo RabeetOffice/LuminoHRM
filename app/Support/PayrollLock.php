@@ -5,6 +5,7 @@ namespace App\Support;
 use App\Models\PayrollRun;
 use DateTimeImmutable;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
@@ -24,7 +25,8 @@ use InvalidArgumentException;
  * Races: inside a transaction (DB::transactionLevel() > 0) the read takes a shared lock on the run rows it reads, so a
  * write racing an approval (which locks the run row for update first) waits for the approval to commit and then sees
  * the month locked. Outside a transaction it is a plain read (a check before the real write, which checks again).
- * Every read here is a plain top-level SELECT ... LOCK IN SHARE MODE (value / pluck), never exists().
+ * Every read here is a plain top-level SELECT ... LOCK IN SHARE MODE (value / pluck), never exists(), and selects
+ * the run rows by month only (never by status in SQL), so a draft run row in the range is share-locked as well.
  *
  * Lock order (binding for every payroll-related write, to rule out deadlocks): employee rows first, then the
  * payroll_runs row.
@@ -56,7 +58,7 @@ final class PayrollLock
         // A plain top-level SELECT ... LOCK IN SHARE MODE, never exists(): Laravel compiles exists() as
         // "select exists(select ... lock in share mode)", and whether MariaDB takes the lock inside that subquery is
         // not something to rely on.
-        return self::query()->where('month', $month)->value('id') !== null;
+        return self::isLockedStatus(self::rows()->where('month', $month)->value('status'));
     }
 
     /**
@@ -111,18 +113,13 @@ final class PayrollLock
             return [];
         }
 
-        /** @var list<string> $locked */
-        $locked = self::query()->whereIn('month', $months)->orderBy('month')->pluck('month')->map(fn ($m) => (string) $m)->all();
-
-        return $locked;
+        return self::lockedOf(self::rows()->whereIn('month', $months)->orderBy('month')->pluck('status', 'month')->all());
     }
 
     /** The latest locked month ("Y-m"), or null when no month is locked. */
     public static function latestLocked(): ?string
     {
-        $month = self::query()->orderByDesc('month')->value('month');
-
-        return $month === null ? null : (string) $month;
+        return self::lockedOf(self::rows()->orderByDesc('month')->pluck('status', 'month')->all())[0] ?? null;
     }
 
     /**
@@ -141,12 +138,13 @@ final class PayrollLock
 
         [$low, $high] = $from <= $to ? [$from, $to] : [$to, $from];
 
-        $month = self::query()
+        $rows = self::rows()
             ->whereBetween('month', [substr($low, 0, 7), substr($high, 0, 7)])
             ->orderBy('month')
-            ->value('month');
+            ->pluck('status', 'month')
+            ->all();
 
-        return $month === null ? null : (string) $month;
+        return self::lockedOf($rows)[0] ?? null;
     }
 
     /** "Payroll for November 2026 is approved, so this can no longer change." */
@@ -159,7 +157,8 @@ final class PayrollLock
 
     /**
      * Runs in a locked status; with a shared lock (SELECT ... LOCK IN SHARE MODE / FOR SHARE) inside a transaction.
-     * Public for tests only.
+     * Public for tests (and one refusal label in SaveSalaryProfile). The readers above do NOT use it: they read by
+     * month only through rows() and filter the status in PHP (see rows()).
      *
      * @internal
      *
@@ -174,6 +173,47 @@ final class PayrollLock
         }
 
         return $query;
+    }
+
+    /**
+     * Every run row (whatever its status) for the readers above: they select by month only (equality, list or range on
+     * the unique month index) and filter the status in PHP. A `status in (...)` condition in SQL could let MariaDB read
+     * through the status index and never share-lock a draft row, so an approval of that draft would not wait for the
+     * reader. Shared lock inside a transaction, as query().
+     */
+    private static function rows(): QueryBuilder
+    {
+        $query = DB::table((new PayrollRun)->getTable());
+
+        if (DB::transactionLevel() > 0) {
+            $query->sharedLock();
+        }
+
+        return $query;
+    }
+
+    private static function isLockedStatus(mixed $status): bool
+    {
+        return is_string($status) && in_array($status, (array) config('hrm.payroll.locked_statuses'), true);
+    }
+
+    /**
+     * The months of these rows whose status is locked, in the rows' order.
+     *
+     * @param  array<int|string, mixed>  $statusByMonth  month => status
+     * @return list<string>
+     */
+    private static function lockedOf(array $statusByMonth): array
+    {
+        $locked = [];
+
+        foreach ($statusByMonth as $month => $status) {
+            if (self::isLockedStatus($status)) {
+                $locked[] = (string) $month;
+            }
+        }
+
+        return $locked;
     }
 
     private static function assertMonth(mixed $month): void

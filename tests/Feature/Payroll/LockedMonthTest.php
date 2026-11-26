@@ -4,6 +4,9 @@ use App\Actions\Attendance\ApplyManualCorrection;
 use App\Actions\Employees\ChangeEmployeeStatus;
 use App\Actions\Employees\UpdateEmployee;
 use App\Actions\Leave\HolidayLeaveRefund;
+use App\Actions\Leave\WeeklyOffLeaveRefund;
+use App\Http\Controllers\HolidayController;
+use App\Http\Requests\HolidayRequest;
 use App\Models\Attendance;
 use App\Models\AttendanceCorrection;
 use App\Models\Device;
@@ -21,6 +24,7 @@ use App\Support\Leave\LeaveDays;
 use App\Support\PayrollLock;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\ValidationException;
 
@@ -231,25 +235,27 @@ describe('correction buttons', function () {
 // ---------------------------------------------------------------- rebuild marks
 
 describe('rebuild marks', function () {
-    it('flags December rows only after a shift edit', function () {
-        // Today in November with November locked (artificial, but it proves the rows are filtered, not just the date).
-        $this->travelTo(CarbonImmutable::parse('2026-11-30 14:00:00', 'Asia/Karachi'));
+    it('flags only days from today on after a shift edit, without reading the payroll lock', function () {
+        // Days from the current attendance day on can never be in a locked month (approval refuses a month that has
+        // not ended), so the shift paths take no shared lock on payroll_runs: that would close the cycle
+        // shift row -> payroll_runs vs run write -> employees of that shift.
         lmLock();
         $e = lmEmployee();
         $nov = lmRow($e, '2026-11-30', ['closed' => false]);
-        $dec = lmRow($e, '2026-12-01', ['closed' => false]);
+        $today = lmRow($e, '2026-12-03', ['closed' => false]);
 
-        expect(RebuildMarks::forShift(Shift::default()))->toBe(1)
+        DB::enableQueryLog();
+        expect(RebuildMarks::forShift(Shift::default()))->toBe(1);
+        Attendance::query()->whereKey($today->id)->update(['needs_rebuild' => false]);
+        expect(RebuildMarks::forEmployee($e->id))->toBe(1);
+        Attendance::query()->whereKey($today->id)->update(['needs_rebuild' => false]);
+        expect(RebuildMarks::forEmployeesWithoutShift())->toBe(1);
+        $sql = implode(' ; ', array_column(DB::getQueryLog(), 'query'));
+        DB::disableQueryLog();
+
+        expect($sql)->not->toContain('payroll_runs')
             ->and($nov->fresh()->needs_rebuild)->toBeFalse()
-            ->and($dec->fresh()->needs_rebuild)->toBeTrue();
-
-        Attendance::query()->whereKey($dec->id)->update(['needs_rebuild' => false]);
-        expect(RebuildMarks::forEmployee($e->id))->toBe(1)
-            ->and($nov->fresh()->needs_rebuild)->toBeFalse();
-
-        Attendance::query()->whereKey($dec->id)->update(['needs_rebuild' => false]);
-        expect(RebuildMarks::forEmployeesWithoutShift())->toBe(1)
-            ->and($nov->fresh()->needs_rebuild)->toBeFalse();
+            ->and($today->fresh()->needs_rebuild)->toBeTrue();
     });
 
     it('flags nothing on a locked holiday date', function () {
@@ -328,6 +334,35 @@ describe('rebuilder', function () {
             ->and($row->fresh()->needs_rebuild)->toBeFalse();
     });
 
+    it('stores a punch for a locked date with no row, and creates no attendance row there', function () {
+        lmLock();
+        $e = lmEmployee(['device_user_id' => '502']);
+        $device = Device::factory()->create();
+
+        app(PunchIngestor::class)->ingest($device, "502\t2026-11-20 09:00:00\t0\t1\n502\t2026-12-01 09:00:00\t0\t1\n", null);
+
+        expect(DevicePunch::query()->where('employee_id', $e->id)->count())->toBe(2)
+            ->and(lmFind($e, '2026-11-20'))->toBeNull()
+            ->and(lmFind($e, '2026-12-01')?->needs_rebuild)->toBeTrue();
+    });
+
+    it('relinks punches on a locked date without creating or flagging its day', function () {
+        lmLock();
+        $e = lmEmployee();
+        $nov = lmRow($e, '2026-11-19', ['status' => 'absent', 'clock_in' => null, 'clock_out' => null, 'worked_minutes' => 0, 'closed' => false]);
+        $device = Device::factory()->create();
+        // Unknown punches under machine ID 503 (nobody had it yet).
+        app(PunchIngestor::class)->ingest($device, "503\t2026-11-20 09:00:00\t0\t1\n503\t2026-11-19 09:00:00\t0\t1\n503\t2026-12-01 09:00:00\t0\t1\n", null);
+
+        $e->forceFill(['device_user_id' => '503'])->save();
+        app(PunchIngestor::class)->relink($e->fresh(), null);
+
+        expect(DevicePunch::query()->where('employee_id', $e->id)->count())->toBe(3)
+            ->and(lmFind($e, '2026-11-20'))->toBeNull()
+            ->and($nov->fresh()->needs_rebuild)->toBeFalse()
+            ->and(lmFind($e, '2026-12-01')?->needs_rebuild)->toBeTrue();
+    });
+
     it('writes nothing for a locked date in an explicit range rebuild, and creates no row there', function () {
         lmLock();
         $e = lmEmployee();
@@ -340,6 +375,35 @@ describe('rebuilder', function () {
         expect(lmDecided($nov))->toBe($before)
             ->and(lmFind($e, '2026-11-19'))->toBeNull()
             ->and(lmFind($e, '2026-12-01'))->not->toBeNull();
+    });
+
+    it('re-checks the lock before finalising manual rows and the safety net when the month is approved mid-close', function () {
+        // closeDay() read November unlocked; the approval commits while the day is being processed (simulated: the
+        // run is approved right after the close inserts its first row). finaliseManual and the safety-net updates
+        // re-read the lock in their own transaction and leave the day alone.
+        $run = payrollRun('2026-11');
+        lmEmployee();
+        $manual = lmRow(lmEmployee(), '2026-11-27', [
+            'is_manual' => true, 'closed' => false, 'status' => 'present',
+            'clock_in' => '2026-11-27 09:00:00', 'clock_out' => '2026-11-27 18:00:00',
+        ]);
+        $approved = false;
+        $after = [];
+
+        DB::listen(function ($query) use ($run, &$approved, &$after): void {
+            if ($approved) {
+                $after[] = $query->sql;
+            } elseif (str_contains($query->sql, 'into "attendances"')) {
+                $approved = true;
+                DB::table('payroll_runs')->where('id', $run->id)->update(['status' => 'approved']);
+            }
+        });
+
+        app(AttendanceRebuilder::class)->closeDay('2026-11-27');
+
+        expect($approved)->toBeTrue()
+            ->and($manual->fresh()->closed)->toBeFalse()
+            ->and(collect($after)->filter(fn (string $sql) => str_starts_with($sql, 'update "attendances"'))->values()->all())->toBe([]);
     });
 
     it('does nothing when closing a locked date, and the backfill skips locked days', function () {
@@ -402,6 +466,43 @@ describe('holidays', function () {
     });
 });
 
+describe('holiday rename', function () {
+    it('allows renaming a holiday on a locked date when its date stays the same', function () {
+        $nov = Holiday::query()->create(['name' => 'Iqbal Day', 'date' => '2026-11-09']);
+        lmLock();
+        $admin = userWithRole('admin');
+
+        $this->actingAs($admin)->from('/leave/holidays')
+            ->put("/leave/holidays/{$nov->id}", ['name' => 'Allama Iqbal Day', 'date' => '2026-11-09'])
+            ->assertSessionHasNoErrors();
+
+        expect($nov->fresh()->name)->toBe('Allama Iqbal Day')
+            ->and($nov->fresh()->date->format('Y-m-d'))->toBe('2026-11-09');
+
+        // A date change inside the locked month is still refused.
+        $this->actingAs($admin)->from('/leave/holidays')
+            ->put("/leave/holidays/{$nov->id}", ['name' => 'Allama Iqbal Day', 'date' => '2026-11-10'])
+            ->assertSessionHasErrors(['date' => LM_MESSAGE]);
+        expect($nov->fresh()->date->format('Y-m-d'))->toBe('2026-11-09');
+    });
+
+    it('refuses a "rename" that would move a holiday someone else moved out of the locked month back into it', function () {
+        // The page was read while the holiday sat on 2026-11-09; meanwhile it was moved to December. Saving the page
+        // with the old date unchanged would move it back into November: refused.
+        $holiday = Holiday::query()->create(['name' => 'Iqbal Day', 'date' => '2026-11-09']);
+        lmLock();
+        $bound = $holiday->fresh();
+        Holiday::query()->whereKey($holiday->id)->update(['date' => '2026-12-09']);
+        $request = HolidayRequest::create('/', 'PUT', ['name' => 'Iqbal Day', 'date' => '2026-11-09']);
+        $request->setUserResolver(fn () => userWithRole('admin'));
+        $request->setContainer(app())->setRedirector(app('redirect'))->validateResolved();
+
+        expect(fn () => app(HolidayController::class)->update($request, $bound, app(HolidayLeaveRefund::class)))
+            ->toThrow(ValidationException::class, LM_MESSAGE);
+        expect($holiday->fresh()->date->format('Y-m-d'))->toBe('2026-12-09');
+    });
+});
+
 // ---------------------------------------------------------------- employment dates
 
 describe('employment dates', function () {
@@ -454,6 +555,53 @@ describe('employment dates', function () {
         expect($e->fresh()->status)->toBe('probation');
     });
 
+    it('allows a last working day on the last day of a locked month, and refuses one before it', function () {
+        // The window is [joining date, last working day], an open end being 9999-12-31. Setting the last working day
+        // to 2026-11-30 changes only days from December on (the person still works all of November): allowed. Setting
+        // it to 2026-10-31 removes November from the window: refused.
+        lmLock();
+        $admin = userWithRole('admin');
+        $status = app(ChangeEmployeeStatus::class);
+
+        $e = lmEmployee();
+        $status->handle($e, 'resigned', '2026-11-30', $admin);
+        expect($e->fresh()->status)->toBe('resigned')
+            ->and($e->fresh()->last_working_day->format('Y-m-d'))->toBe('2026-11-30');
+
+        $other = lmEmployee();
+        try {
+            $status->handle($other, 'resigned', '2026-10-31', $admin);
+            $this->fail('A last working day before the locked month was accepted.');
+        } catch (ValidationException $ex) {
+            expect($ex->errors())->toBe(['last_working_day' => [LM_MESSAGE]]);
+        }
+        expect($other->fresh()->last_working_day)->toBeNull();
+
+        // Moved from 2026-11-30 to December: November keeps every day, allowed. Back from December to 2026-11-30:
+        // also allowed (only December days change).
+        $status->handle($e, 'resigned', '2026-12-10', $admin);
+        $status->handle($e, 'resigned', '2026-11-30', $admin);
+        expect($e->fresh()->last_working_day->format('Y-m-d'))->toBe('2026-11-30');
+    });
+
+    it('judges a joining date move by the days it changes', function () {
+        lmLock();
+        $admin = userWithRole('admin');
+
+        // 2026-12-01 to 2026-11-30 adds 2026-11-30: refused. 2026-11-30 to 2026-12-01 would remove it: refused.
+        $dec = lmEmployee(['joining_date' => '2026-12-01']);
+        expect(fn () => app(UpdateEmployee::class)->handle($dec, ['joining_date' => '2026-11-30'], $admin, false))
+            ->toThrow(ValidationException::class, LM_MESSAGE);
+        $nov = lmEmployee(['joining_date' => '2026-11-30']);
+        expect(fn () => app(UpdateEmployee::class)->handle($nov, ['joining_date' => '2026-12-01'], $admin, false))
+            ->toThrow(ValidationException::class, LM_MESSAGE);
+
+        // 2026-12-02 to 2026-12-01 changes only 2026-12-01: allowed.
+        $later = lmEmployee(['joining_date' => '2026-12-02']);
+        app(UpdateEmployee::class)->handle($later, ['joining_date' => '2026-12-01'], $admin, false);
+        expect($later->fresh()->joining_date->format('Y-m-d'))->toBe('2026-12-01');
+    });
+
     it('shows the refusal on the status form', function () {
         lmLock();
         $e = lmEmployee();
@@ -475,7 +623,7 @@ describe('leave', function () {
         $this->actingAs($user)->from('/my/leaves')->post('/leave/requests', [
             'leave_type_id' => leaveType('Annual')->id, 'from_date' => '2026-11-23', 'to_date' => '2026-11-24', 'half' => null,
             'reason' => 'Family wedding out of town.',
-        ])->assertSessionHasErrors(['from_date' => 'Payroll for November 2026 is locked, so leave cannot be added in that month.']);
+        ])->assertSessionHasErrors(['from_date' => LM_MESSAGE]);
     });
 
     it('refuses approving leave in a locked month', function () {
@@ -488,7 +636,7 @@ describe('leave', function () {
 
         $this->actingAs($hr)->from('/leave/requests')
             ->put("/leave/requests/{$request->id}/final-decide", ['decision' => 'approve', 'note' => null])
-            ->assertSessionHas('error', 'Payroll for November 2026 is locked; leave in it cannot be approved.');
+            ->assertSessionHas('error', LM_MESSAGE);
     });
 
     it('cancels no day of approved leave in a locked month', function () {
@@ -502,6 +650,25 @@ describe('leave', function () {
             ->assertSessionHas('error', 'No day of this leave can be cancelled any more.');
 
         expect(LeaveRequest::query()->find($request->id)->status)->toBe('approved');
+    });
+
+    it('keeps the leave days of a locked month when weekly offs change', function () {
+        // Monday and Tuesday become weekly offs. The person's last closed day is 2026-11-10, so the refund recounts
+        // from 2026-11-11: the November leave (locked) keeps both days; the December leave loses both and is cancelled.
+        $e = lmEmployee();
+        lmRow($e, '2026-11-10', ['closed' => true]);
+        $nov = approvedLeave($e, '2026-11-23', '2026-11-24');
+        $dec = approvedLeave($e, '2026-12-07', '2026-12-08');
+        lmLock();
+        $shift = Shift::default();
+        $shift->update(['weekly_offs' => ['monday', 'tuesday', 'saturday', 'sunday']]);
+
+        app(WeeklyOffLeaveRefund::class)->forShift($shift->fresh(), userWithRole('admin'));
+
+        expect(LeaveDay::query()->where('leave_request_id', $nov->id)->count())->toBe(2)
+            ->and($nov->fresh()->status)->toBe('approved')
+            ->and(LeaveDay::query()->where('leave_request_id', $dec->id)->count())->toBe(0)
+            ->and($dec->fresh()->status)->toBe('cancelled');
     });
 
     it('refunds nothing for a holiday on a locked date', function () {

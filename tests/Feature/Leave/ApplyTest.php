@@ -164,7 +164,7 @@ it('refuses a past day in a locked payroll month', function () {
     });
 
     apApply($user, ['from_date' => '2026-10-26', 'to_date' => '2026-10-27'])
-        ->assertSessionHasErrors(['from_date' => 'Payroll for October 2026 is locked, so leave cannot be added in that month.']);
+        ->assertSessionHasErrors(['from_date' => 'Payroll for October 2026 is approved, so this can no longer change.']);
     apApply($user, ['from_date' => '2026-11-02', 'to_date' => '2026-11-03'])->assertSessionHasNoErrors();
 });
 
@@ -570,7 +570,7 @@ it('checks the payroll lock on counted days only: a locked weekend does not bloc
 
     // Fri 30 Oct counts: refused.
     apApply($user, ['from_date' => '2026-10-30', 'to_date' => '2026-10-30'])
-        ->assertSessionHasErrors(['from_date' => 'Payroll for October 2026 is locked, so leave cannot be added in that month.']);
+        ->assertSessionHasErrors(['from_date' => 'Payroll for October 2026 is approved, so this can no longer change.']);
 });
 
 it('refuses a half day over a pending full day', function () {

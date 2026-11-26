@@ -12,6 +12,7 @@ use App\Support\Attendance\RebuildMarks;
 use App\Support\Audit\Audit;
 use App\Support\EmployeeRoles;
 use App\Support\PayrollLock;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
@@ -28,13 +29,16 @@ use InvalidArgumentException;
  * The date rules (not before the joining date, at most a year ahead) are checked by the request; this class only
  * insists that the day exists where it must.
  *
- * Payroll lock: a last working day change whose old-to-new range touches a month with an approved or paid payroll run
- * is refused ([last_working_day] PayrollLock::message()); with no old day the new day's month is checked, when cleared
- * the old day's month. A status change that keeps the day touches no locked month (an approved month has ended, and
- * a leaver without a day loses only days from today on).
+ * Payroll lock: a last working day change is refused ([last_working_day] PayrollLock::message()) when a day it adds to
+ * or removes from the employment window ((earlier day, later day], no day counting as 9999-12-31) is in a month with an
+ * approved or paid payroll run. A status change that keeps the day touches no locked month (an approved month has
+ * ended, and a leaver without a day loses only days from today on).
  */
 class ChangeEmployeeStatus
 {
+    /** An employment window with no last working day ends here (for the payroll lock check). */
+    private const OPEN_END = '9999-12-31';
+
     /** Statuses that end a person's access. */
     public const DISABLING = Leavers::STATUSES;
 
@@ -98,13 +102,17 @@ class ChangeEmployeeStatus
                 return $current;
             }
 
-            // A last working day set, moved or cleared across a month whose payroll is approved would change that month:
-            // refused. Set from none: the new day's month; cleared: the old day's month; moved: every month between.
-            // After the employee row lock (lock order: employee, then payroll_runs shared, then attendance and leave).
+            // A last working day set, moved or cleared changes the employment window on the days (earlier, later], an
+            // open end counting as 9999-12-31: refused when one of them is in a month whose payroll is approved (so a
+            // last working day on the last day of an approved month is fine, one before it is not). After the employee
+            // row lock (lock order: employee, then payroll_runs shared, then attendance and leave).
             $oldDay = EmployeeWriter::auditValue($current->last_working_day);
 
             if ($oldDay !== $day) {
-                $locked = PayrollLock::rangeTouchesLocked((string) ($oldDay ?? $day), (string) ($day ?? $oldDay));
+                $from = (string) ($oldDay ?? self::OPEN_END);
+                $to = (string) ($day ?? self::OPEN_END);
+                [$low, $high] = $from <= $to ? [$from, $to] : [$to, $from];
+                $locked = PayrollLock::rangeTouchesLocked(CarbonImmutable::createFromFormat('!Y-m-d', $low)->addDay()->format('Y-m-d'), $high);
 
                 if ($locked !== null) {
                     throw ValidationException::withMessages(['last_working_day' => PayrollLock::message($locked)]);

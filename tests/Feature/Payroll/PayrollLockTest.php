@@ -114,7 +114,60 @@ it('sends MariaDB a plain top-level select with the share lock, never an exists(
 
     expect($sent[0]['query'])
         // pretend() logs the query with its bindings filled in.
-        ->toBe("select `id` from `payroll_runs` where `status` in ('approved', 'paid') and `month` = '2026-11' limit 1 lock in share mode");
+        ->toBe("select `status` from `payroll_runs` where `month` = '2026-11' limit 1 lock in share mode");
+});
+
+it('picks the run rows by month only and filters the status in PHP, so a draft row is share-locked too', function () {
+    // On MariaDB a `status in (...)` condition could let the optimiser read through the status index and skip the
+    // draft row, so a concurrent approval of that draft would not wait for this read. Every reader must select by
+    // month (equality, list or range on the unique month index) and lock every row it reads.
+    $connection = DB::connection();
+    $sqlite = $connection->getQueryGrammar();
+    $connection->setQueryGrammar(new MySqlGrammar($connection));
+
+    try {
+        $sent = $connection->pretend(function () {
+            PayrollLock::isLocked('2026-11');
+            PayrollLock::lockedMonths(['2026-10', '2026-11']);
+            PayrollLock::firstLocked(['2026-11-30', '2026-12-01']);
+            PayrollLock::latestLocked();
+            PayrollLock::rangeTouchesLocked('2026-10-01', '2026-12-31');
+        });
+    } finally {
+        $connection->setQueryGrammar($sqlite);
+    }
+
+    expect($sent)->toHaveCount(5);
+
+    foreach (array_column($sent, 'query') as $sql) {
+        $where = str_contains($sql, ' where ') ? substr($sql, strpos($sql, ' where ')) : '';
+
+        expect($sql)->toEndWith(' lock in share mode')
+            ->and($where)->not->toContain('status');
+    }
+
+    expect(array_column($sent, 'query'))->toBe([
+        "select `status` from `payroll_runs` where `month` = '2026-11' limit 1 lock in share mode",
+        "select `status`, `month` from `payroll_runs` where `month` in ('2026-10', '2026-11') order by `month` asc lock in share mode",
+        "select `status`, `month` from `payroll_runs` where `month` in ('2026-11', '2026-12') order by `month` asc lock in share mode",
+        'select `status`, `month` from `payroll_runs` order by `month` desc lock in share mode',
+        "select `status`, `month` from `payroll_runs` where `month` between '2026-10' and '2026-12' order by `month` asc lock in share mode",
+    ]);
+});
+
+it('gives the same answers when drafts sit between locked months', function () {
+    payrollRun('2026-09', 'paid');
+    payrollRun('2026-10');
+    payrollRun('2026-11', 'approved');
+    payrollRun('2026-12');
+
+    expect(PayrollLock::isLocked('2026-10'))->toBeFalse()
+        ->and(PayrollLock::isLocked('2026-11'))->toBeTrue()
+        ->and(PayrollLock::lockedMonths(['2026-12', '2026-10', '2026-11', '2026-09']))->toBe(['2026-09', '2026-11'])
+        ->and(PayrollLock::firstLocked(['2026-12-01', '2026-10-31']))->toBeNull()
+        ->and(PayrollLock::latestLocked())->toBe('2026-11')
+        ->and(PayrollLock::rangeTouchesLocked('2026-10-01', '2026-10-31'))->toBeNull()
+        ->and(PayrollLock::rangeTouchesLocked('2026-10-01', '2026-12-31'))->toBe('2026-11');
 });
 
 it('says why a locked month cannot change', function () {

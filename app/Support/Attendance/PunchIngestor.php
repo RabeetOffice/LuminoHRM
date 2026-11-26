@@ -6,6 +6,7 @@ use App\Models\Attendance;
 use App\Models\Device;
 use App\Models\DevicePunch;
 use App\Models\Employee;
+use App\Support\PayrollLock;
 use Carbon\CarbonImmutable;
 use DateTimeImmutable;
 use DateTimeZone;
@@ -26,6 +27,9 @@ use RuntimeException;
  * The device row is locked first, so two uploads from the same machine run one after the other.
  *
  * A day row created here has status null ("pending calculation") and needs_rebuild = true; the rebuild decides it.
+ *
+ * Payroll lock: a day in a month whose payroll is approved or paid is never created or flagged here (one
+ * PayrollLock::lockedMonths read per ingest / relink); its punches are still stored or relinked.
  */
 class PunchIngestor
 {
@@ -120,9 +124,17 @@ class PunchIngestor
 
             // Same order as AttendanceRebuilder's locks (employee, then date), so the two cannot deadlock (M-3).
             ksort($days);
+            // Days in an approved payroll month get no row and no flag (the punches above are stored all the same).
+            $allDates = [];
+
+            foreach ($days as $dates) {
+                $allDates += $dates;
+            }
+
+            $lockedMonths = self::lockedMonthsOf(array_map('strval', array_keys($allDates)));
 
             foreach ($days as $employeeId => $dates) {
-                $dates = array_keys($dates);
+                $dates = self::withoutLocked(array_map('strval', array_keys($dates)), $lockedMonths);
                 sort($dates);
                 $this->markDays($employeeId, $dates, true);
             }
@@ -193,8 +205,10 @@ class PunchIngestor
             }
 
             // Attached days get a row if they have none; a detached day only has its existing row flagged (the
-            // employee may have no punch left there, so a pending row is not created for it).
+            // employee may have no punch left there, so a pending row is not created for it). Days in an approved
+            // payroll month are neither created nor flagged (the punches are relinked all the same).
             $all = array_values(array_unique([...$detached, ...$attached]));
+            $all = self::withoutLocked($all, self::lockedMonthsOf($all));
             sort($all);
             $this->markDays($employeeId, array_values(array_intersect($all, $attached)), true);
             $this->markDays($employeeId, array_values(array_diff($all, $attached)), false);
@@ -339,6 +353,30 @@ class PunchIngestor
             ->where('is_manual', false)
             ->where('needs_rebuild', false)
             ->update(['needs_rebuild' => true, 'updated_at' => $now]);
+    }
+
+    /**
+     * The locked payroll months among these dates' months: one PayrollLock read (none for no dates). Inside the
+     * transaction it share-locks payroll_runs before markDays() touches attendance rows.
+     *
+     * @param  list<string>  $dates  "Y-m-d"
+     * @return array<string, int> locked "Y-m" => index
+     */
+    private static function lockedMonthsOf(array $dates): array
+    {
+        $months = array_values(array_unique(array_map(fn (string $d): string => substr($d, 0, 7), $dates)));
+
+        return $months === [] ? [] : array_flip(PayrollLock::lockedMonths($months));
+    }
+
+    /**
+     * @param  list<string>  $dates  "Y-m-d"
+     * @param  array<string, int>  $locked  from lockedMonthsOf()
+     * @return list<string>
+     */
+    private static function withoutLocked(array $dates, array $locked): array
+    {
+        return $locked === [] ? $dates : array_values(array_filter($dates, fn (string $d): bool => ! isset($locked[substr($d, 0, 7)])));
     }
 
     /**
