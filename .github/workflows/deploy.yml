@@ -1,0 +1,142 @@
+name: deploy
+
+# Every push to main: checks and tests, then build the release, then upload it to
+# hrm.luminocrm.online with the Hostinger CLI. On the server, cron.sh (every minute) checks
+# release.manifest, then runs migrate, hrm:sync-access and the caches, exactly as after a manual
+# deploy (docs/deploy.md). A failing check or test stops the run before anything is uploaded.
+#
+# One-time setup (docs/deploy.md, "GitHub auto-deploy"):
+#   GitHub > Settings > Environments > production > secret HOSTINGER_API_TOKEN
+#   (an hPanel API token of the Hostinger account that hosts hrm.luminocrm.online).
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Only show what would be uploaded (nothing goes live)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  SITE_DOMAIN: hrm.luminocrm.online
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP 8.4 (same as the server)
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring, intl, gd, zip, fileinfo, pdo_sqlite, sqlite3, bcmath
+          tools: composer:v2
+          coverage: none
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          composer install --no-interaction --no-progress --prefer-dist
+          npm ci
+          cp .env.example .env
+          php artisan key:generate --ansi
+
+      - name: Build front-end assets
+        run: npm run build
+
+      - name: Checks and tests
+        run: |
+          npm run check
+          npm run types:check
+          npm test
+          php artisan config:clear --ansi
+          vendor/bin/pint --parallel --test
+          vendor/bin/phpstan analyse --no-progress
+          php artisan test
+
+      - name: Stage the release
+        id: stage
+        run: |
+          rm -f .env
+          bash scripts/deploy-stage.sh
+          # build/deploy is git-ignored, and the uploader leaves out git-ignored files:
+          # upload from a folder outside the repository.
+          mv build/deploy "$RUNNER_TEMP/release"
+
+      - name: Install the Hostinger CLI
+        env:
+          HOSTINGER_VERSION: ${{ vars.HOSTINGER_CLI_VERSION }}
+          HOSTINGER_INSTALL_DIR: ${{ runner.temp }}/hostinger-bin
+        run: |
+          curl -fsSL https://github.com/hostinger/api-cli/releases/latest/download/install.sh | sh
+          echo "$HOSTINGER_INSTALL_DIR" >> "$GITHUB_PATH"
+          "$HOSTINGER_INSTALL_DIR/hostinger" version
+
+      - name: Plan the upload (dry run) and check nothing needed is skipped
+        env:
+          HOSTINGER_API_TOKEN: ${{ secrets.HOSTINGER_API_TOKEN }}
+          HOSTINGER_NONINTERACTIVE: '1'
+        run: |
+          if [ -z "$HOSTINGER_API_TOKEN" ]; then
+            echo "::error::Secret HOSTINGER_API_TOKEN is not set on the production environment (see docs/deploy.md)."
+            exit 1
+          fi
+          hostinger up "$RUNNER_TEMP/release" --domain "$SITE_DOMAIN" --dry-run --format json | tee "$RUNNER_TEMP/plan.json"
+          python3 scripts/check-upload-plan.py "$RUNNER_TEMP/plan.json" "$RUNNER_TEMP/release/deploy/hostinger/release.manifest"
+
+      - name: Upload to hrm.luminocrm.online
+        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
+        env:
+          HOSTINGER_API_TOKEN: ${{ secrets.HOSTINGER_API_TOKEN }}
+          HOSTINGER_NONINTERACTIVE: '1'
+        run: hostinger up "$RUNNER_TEMP/release" --domain "$SITE_DOMAIN" --yes --format json | tee "$RUNNER_TEMP/deploy.json"
+
+      - name: Check the live site serves the new release
+        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
+        run: |
+          # Any hashed file from the new build proves the new files are live.
+          asset="$(python3 -c "import json;m=json.load(open('public/build/manifest.json'));print(next(v['file'] for v in m.values() if v.get('isEntry')))")"
+          for i in $(seq 1 20); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' "https://$SITE_DOMAIN/build/$asset" || true)"
+            login="$(curl -s -o /dev/null -w '%{http_code}' "https://$SITE_DOMAIN/login" || true)"
+            echo "try $i: asset $code, login $login"
+            if [ "$code" = 200 ] && [ "$login" = 200 ]; then
+              echo "Live: release ${{ steps.stage.outputs.release_id }}"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::The site did not serve the new release within 5 minutes. Read deploy/hostinger/status.txt on the server."
+          exit 1
+
+      - name: Remove the staging directory
+        if: always()
+        run: rm -rf build/deploy "$RUNNER_TEMP/release"
