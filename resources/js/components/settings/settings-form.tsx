@@ -29,7 +29,16 @@ function sameValue(a: unknown, b: unknown): boolean {
         ? true
         : typeof a !== 'object' &&
               typeof b !== 'object' &&
-              String(a ?? '') === String(b ?? '');
+              primitiveText(a) === primitiveText(b);
+}
+
+/** Text of a typed value (string, number, boolean); empty for null, undefined and anything else. */
+function primitiveText(value: unknown): string {
+    return typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean'
+        ? String(value)
+        : '';
 }
 
 /**

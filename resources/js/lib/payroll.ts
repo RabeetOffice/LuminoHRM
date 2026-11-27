@@ -123,9 +123,9 @@ export type TaxBase = 'gross_taxable' | 'basic';
 
 /** How a profile's tax reads: "5% of gross taxable", "5.25% of basic", "Rs 2,000 fixed", "None". */
 export function taxLabel(
-    mode: TaxMode | string,
+    mode: string,
     value: number,
-    base: TaxBase | string | null,
+    base: string | null,
 ): string {
     if (mode === 'fixed') {
         return `${formatMoney(value)} fixed`;
