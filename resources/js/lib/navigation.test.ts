@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'vitest';
-import { activeHref, filterNavigation, navigation } from '@/config/navigation';
+import {
+    activeHref,
+    filterNavigation,
+    navigation,
+    withBadge,
+} from '@/config/navigation';
 import type { NavGroup } from '@/config/navigation';
 import { toUrl } from '@/lib/utils';
 
@@ -49,7 +54,13 @@ test('manager never sees Payroll, Settings, Users or Audit Log', () => {
     const titles = JSON.stringify(
         filterNavigation(navigation, perms, '', full),
     );
-    for (const t of ['Payroll', 'Settings', 'Users & Roles', 'Audit Log']) {
+    for (const t of [
+        'Payroll',
+        'Settings',
+        'Users & Roles',
+        'Audit Log',
+        'Updates',
+    ]) {
         expect(titles).not.toContain(t);
     }
 });
@@ -136,6 +147,7 @@ describe('ready flag', () => {
             'Settings',
             'Users & Roles',
             'Audit Log',
+            'Updates',
         ]);
         expect(r[6].items.map((i) => i.title)).toEqual([
             'My Profile',
@@ -587,6 +599,7 @@ describe('soon entries (default)', () => {
             'Settings',
             'Users & Roles',
             'Audit Log',
+            'Updates',
             'My Profile',
             'My Attendance',
             'My Leaves',
@@ -828,5 +841,44 @@ describe('performance', () => {
         );
         expect(activeHref('/performance/cycles/3')).toBeUndefined();
         expect(activeHref('/my/reviews')).toBe('/my/reviews');
+    });
+});
+
+describe('updates', () => {
+    const titles = (perms: string[]) =>
+        filterNavigation(navigation, perms).flatMap((g) =>
+            g.items.map((i) => i.title),
+        );
+
+    test('is ready for Admins only (settings.manage)', () => {
+        const entry = filterNavigation(navigation, ['settings.manage'])
+            .flatMap((g) => g.items)
+            .find((i) => i.title === 'Updates');
+        expect(entry?.soon).toBe(false);
+        expect(toUrl(entry?.href ?? '')).toBe('/system/updates');
+        expect(titles(['settings.attendance-leave'])).not.toContain('Updates');
+        expect(titles(['users.manage', 'audit.view'])).not.toContain('Updates');
+        expect(titles([])).not.toContain('Updates');
+    });
+
+    test('withBadge puts the New badge on Updates and takes it away again', () => {
+        const marked = withBadge(navigation, 'Updates', 'New');
+        const find = (groups: NavGroup[]) =>
+            filterNavigation(groups, ['settings.manage'])
+                .flatMap((g) => g.items)
+                .find((i) => i.title === 'Updates');
+
+        expect(find(marked)?.badge).toBe('New');
+        expect(find(navigation)?.badge).toBeUndefined();
+        expect(
+            find(withBadge(marked, 'Updates', undefined))?.badge,
+        ).toBeUndefined();
+        // Nothing else gets a badge, and the source list is untouched.
+        expect(
+            marked
+                .flatMap((g) => g.items)
+                .filter((i) => i.badge !== undefined)
+                .map((i) => i.title),
+        ).toEqual(['Updates']);
     });
 });

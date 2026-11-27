@@ -4,7 +4,8 @@
  * Runs deploy/hostinger/cron.sh against a throw-away layout:
  *   <tmp>/domains/site/public_html/{artisan stub, deploy/hostinger/cron.sh}
  *   <tmp>/domains/site/shared   (created by the script)
- * PHP_BIN points at a stub that records the artisan commands it is given.
+ * PHP_BIN points at a stub that records the artisan commands it is given. hrm:install-state answers STUB_STATE
+ * (default "fresh"), hrm:pending-migrations answers STUB_PENDING (default 0).
  */
 function shAvailable(): bool
 {
@@ -39,6 +40,14 @@ if [ "$1" = "$FAIL_ON" ]; then
 fi
 if [ "$1" = "hrm:sync-access" ]; then
     echo "access_sync roles=4 permissions=25 admin=${STUB_ADMIN:-created}"
+    exit 0
+fi
+if [ "$1" = "hrm:install-state" ]; then
+    echo "${STUB_STATE:-fresh}"
+    exit 0
+fi
+if [ "$1" = "hrm:pending-migrations" ]; then
+    echo "${STUB_PENDING:-0}"
     exit 0
 fi
 echo "stub ok: $1"
@@ -166,18 +175,20 @@ it('generates the key when empty and runs the post-deploy commands once per rele
     expect(cronCalls($this->sharedDir))->toBe([
         'key:generate --force',
         'config:clear',
+        'hrm:install-state',
         'migrate --force',
         'hrm:sync-access',
         'config:cache',
         'route:cache',
         'view:cache',
         'schedule:run',
+        'hrm:pending-migrations',
     ])->and(trim(file_get_contents($this->sharedDir.'/release.done')))->toBe('abc123-20261123T100000Z');
 
     // same release again: only the scheduler runs
     unlink($this->sharedDir.'/calls.txt');
     runCron($this->appDir, $this->stub, $this->sharedDir);
-    expect(cronCalls($this->sharedDir))->toBe(['schedule:run']);
+    expect(cronCalls($this->sharedDir))->toBe(['schedule:run', 'hrm:pending-migrations']);
 
     // never leaks env values into the log
     expect(file_get_contents($this->sharedDir.'/storage/logs/cron.log'))->not->toContain('supersecret');
@@ -203,7 +214,7 @@ it('runs the post-deploy commands again for a new release id', function () {
     writeRelease($this->appDir, 'r2');
     runCron($this->appDir, $this->stub, $this->sharedDir);
 
-    expect(cronCalls($this->sharedDir))->toBe(['config:clear', 'migrate --force', 'hrm:sync-access', 'config:cache', 'route:cache', 'view:cache', 'schedule:run'])
+    expect(cronCalls($this->sharedDir))->toBe(['config:clear', 'hrm:install-state', 'migrate --force', 'hrm:sync-access', 'config:cache', 'route:cache', 'view:cache', 'schedule:run', 'hrm:pending-migrations'])
         ->and(trim(file_get_contents($this->sharedDir.'/release.done')))->toBe('r2');
 });
 
@@ -215,13 +226,13 @@ it('leaves release.done unwritten when a step fails, logs the output and retries
     runCron($this->appDir, $this->stub, $this->sharedDir, ['FAIL_ON' => 'route:cache']);
 
     expect(is_file($this->sharedDir.'/release.done'))->toBeFalse()
-        ->and(cronCalls($this->sharedDir))->toBe(['config:clear', 'migrate --force', 'hrm:sync-access', 'config:cache', 'route:cache', 'schedule:run'])
+        ->and(cronCalls($this->sharedDir))->toBe(['config:clear', 'hrm:install-state', 'migrate --force', 'hrm:sync-access', 'config:cache', 'route:cache', 'schedule:run', 'hrm:pending-migrations'])
         ->and(file_get_contents($this->sharedDir.'/storage/logs/cron.log'))->toContain('boom from route:cache');
 
     // next minute, the fault is gone: the whole sequence runs again and succeeds
     unlink($this->sharedDir.'/calls.txt');
     runCron($this->appDir, $this->stub, $this->sharedDir);
-    expect(cronCalls($this->sharedDir))->toBe(['config:clear', 'migrate --force', 'hrm:sync-access', 'config:cache', 'route:cache', 'view:cache', 'schedule:run'])
+    expect(cronCalls($this->sharedDir))->toBe(['config:clear', 'hrm:install-state', 'migrate --force', 'hrm:sync-access', 'config:cache', 'route:cache', 'view:cache', 'schedule:run', 'hrm:pending-migrations'])
         ->and(trim(file_get_contents($this->sharedDir.'/release.done')))->toBe('r1');
 });
 
@@ -262,7 +273,7 @@ function readyEnv(object $t): void
     file_put_contents($t->sharedDir.'/.env', "APP_KEY=base64:x\n");
 }
 
-const FULL_RUN = ['config:clear', 'migrate --force', 'hrm:sync-access', 'config:cache', 'route:cache', 'view:cache', 'schedule:run'];
+const FULL_RUN = ['config:clear', 'hrm:install-state', 'migrate --force', 'hrm:sync-access', 'config:cache', 'route:cache', 'view:cache', 'schedule:run', 'hrm:pending-migrations'];
 
 it('does not trigger while one late file is missing and reports the missing count', function () {
     readyEnv($this);
@@ -291,7 +302,7 @@ it('needs two consecutive complete runs, triggers exactly once, then only schedu
 
     unlink($this->sharedDir.'/calls.txt');
     runCron($this->appDir, $this->stub, $this->sharedDir, ['CONFIRM_RUNS' => '2']);
-    expect(cronCalls($this->sharedDir))->toBe(['schedule:run']);
+    expect(cronCalls($this->sharedDir))->toBe(['schedule:run', 'hrm:pending-migrations']);
 });
 
 it('treats a CRLF manifest like an LF one, including paths with spaces', function () {
@@ -361,7 +372,7 @@ it('never consults the manifest for an already-completed release (scheduler and 
     unlink($this->appDir.'/deploy/hostinger/release.manifest');
     unlink($this->appDir.'/vendor/symfony/deep/pkg/late.php');
     runCron($this->appDir, $this->stub, $this->sharedDir);
-    expect(cronCalls($this->sharedDir))->toBe(['schedule:run']);
+    expect(cronCalls($this->sharedDir))->toBe(['schedule:run', 'hrm:pending-migrations']);
 
     // .env edited afterwards: config rebuilt without any manifest
     unlink($this->sharedDir.'/calls.txt');
@@ -655,7 +666,7 @@ it('treats a failing hrm:sync-access as a post-deploy failure and retries', func
     runCron($this->appDir, $this->stub, $this->sharedDir, ['FAIL_ON' => 'hrm:sync-access']);
 
     expect(is_file($this->sharedDir.'/release.done'))->toBeFalse()
-        ->and(cronCalls($this->sharedDir))->toBe(['config:clear', 'migrate --force', 'hrm:sync-access'])
+        ->and(cronCalls($this->sharedDir))->toBe(['config:clear', 'hrm:install-state', 'migrate --force', 'hrm:sync-access'])
         ->and(readStatus($this->appDir)['state'])->toBe('post_deploy_failed');
 });
 
@@ -747,3 +758,79 @@ it('keeps the scheduler stopped while migrate or hrm:sync-access fails', functio
         ->and(readStatus($this->appDir)['state'])->toBe('post_deploy_failed')
         ->and(file_get_contents($this->sharedDir.'/storage/logs/cron.log'))->toContain('schedule:run skipped');
 })->with([['migrate', 'migrate'], ['hrm:sync-access', 'access']]);
+
+// Updates screen (27 Nov): on an installed system a deploy never changes the database; an Admin applies the waiting
+// changes with "Update system". Only a fresh install migrates and creates the first Admin by itself.
+const INSTALLED_RUN = ['config:clear', 'hrm:install-state', 'config:cache', 'route:cache', 'view:cache', 'schedule:run', 'hrm:pending-migrations'];
+
+it('never migrates an installed system, still caches and schedules, and reports the waiting changes', function () {
+    readyEnv($this);
+    writeRelease($this->appDir, 'r1');
+
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['STUB_STATE' => 'installed', 'STUB_PENDING' => '3']);
+
+    $s = readStatus($this->appDir);
+    expect(cronCalls($this->sharedDir))->toBe(INSTALLED_RUN)
+        ->and(trim(file_get_contents($this->sharedDir.'/release.done')))->toBe('r1')
+        ->and($s['state'])->toBe('ok')
+        ->and($s['pending_migrations'])->toBe('3')
+        ->and($s['last_migrate'])->toBe('')
+        ->and(cronLog($this->sharedDir))->toContain('installed system: database changes are not applied here');
+
+    // The next minutes only schedule and count; the waiting changes never block the scheduler.
+    unlink($this->sharedDir.'/calls.txt');
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['STUB_STATE' => 'installed', 'STUB_PENDING' => '3']);
+    expect(cronCalls($this->sharedDir))->toBe(['schedule:run', 'hrm:pending-migrations'])
+        ->and(readStatus($this->appDir)['pending_migrations'])->toBe('3');
+});
+
+it('migrates and syncs access by itself on a fresh install and reports pending_migrations', function () {
+    readyEnv($this);
+    writeRelease($this->appDir, 'r1');
+
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['STUB_STATE' => 'fresh', 'STUB_PENDING' => '0']);
+
+    expect(cronCalls($this->sharedDir))->toBe(FULL_RUN)
+        ->and(readStatus($this->appDir)['pending_migrations'])->toBe('0')
+        ->and(readStatus($this->appDir)['last_migrate'])->toMatch('/^\d{4}-/');
+});
+
+it('does not migrate an installed system when a new env seed arrives', function () {
+    readyEnv($this);
+    writeRelease($this->appDir, 'r1');
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['STUB_STATE' => 'installed']);
+    unlink($this->sharedDir.'/calls.txt');
+
+    writeSeed($this->appDir, "APP_KEY=base64:k2\nHRM_DEVICE_SERIALS=SN1\nDB_PASSWORD=p\n");
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['STUB_STATE' => 'installed']);
+
+    expect(cronCalls($this->sharedDir))->toBe(INSTALLED_RUN)
+        ->and(file_get_contents($this->sharedDir.'/.env'))->toContain('HRM_DEVICE_SERIALS=SN1');
+});
+
+it('stops and retries when the install state cannot be read, and keeps the scheduler stopped', function (array $env, string $detail) {
+    readyEnv($this);
+    writeRelease($this->appDir, 'r1');
+
+    runCron($this->appDir, $this->stub, $this->sharedDir, $env);
+
+    $s = readStatus($this->appDir);
+    expect(cronCalls($this->sharedDir))->toBe(['config:clear', 'hrm:install-state'])
+        ->and(is_file($this->sharedDir.'/release.done'))->toBeFalse()
+        ->and($s['state'])->toBe('post_deploy_failed')
+        ->and($s['detail'])->toBe($detail)
+        ->and($s['pending_migrations'])->toBe('')
+        ->and(cronLog($this->sharedDir))->toContain('schedule:run skipped');
+})->with([
+    'command fails' => [['FAIL_ON' => 'hrm:install-state'], 'artisan hrm:install-state failed (release r1)'],
+    'no answer' => [['STUB_STATE' => 'maybe'], 'artisan hrm:install-state gave no answer (release r1)'],
+]);
+
+it('keeps only digits of the pending count', function () {
+    readyEnv($this);
+    writeRelease($this->appDir, 'r1');
+
+    runCron($this->appDir, $this->stub, $this->sharedDir, ['STUB_STATE' => 'installed', 'STUB_PENDING' => '2; rm -rf /']);
+
+    expect(readStatus($this->appDir)['pending_migrations'])->toBe('');
+});

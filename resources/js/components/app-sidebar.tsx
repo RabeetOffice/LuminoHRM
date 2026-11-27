@@ -11,16 +11,27 @@ import {
     SidebarMenuButton,
     SidebarMenuItem,
 } from '@/components/ui/sidebar';
-import { filterNavigation, navigation } from '@/config/navigation';
+import { filterNavigation, navigation, withBadge } from '@/config/navigation';
 import { dashboard } from '@/routes';
 
 export function AppSidebar() {
     const [query, setQuery] = useState('');
-    const { permissions } = usePage().props.auth;
+    const { auth, updateFlag } = usePage().props;
+    const permissions = auth.permissions;
+    const updateWaiting = updateFlag?.available === true;
 
     const groups = useMemo(
-        () => filterNavigation(navigation, permissions, query),
-        [permissions, query],
+        () =>
+            filterNavigation(
+                withBadge(
+                    navigation,
+                    'Updates',
+                    updateWaiting ? 'New' : undefined,
+                ),
+                permissions,
+                query,
+            ),
+        [permissions, query, updateWaiting],
     );
 
     return (

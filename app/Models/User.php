@@ -27,6 +27,7 @@ use Spatie\Permission\Traits\HasRoles;
  * @property int|null $employee_id
  * @property CarbonInterface|null $email_verified_at
  * @property string $password
+ * @property bool $must_change_password true while the password is one somebody else chose (the first Admin's); every page then leads to /first-login/password
  * @property string|null $two_factor_secret
  * @property string|null $two_factor_recovery_codes
  * @property Carbon|null $two_factor_confirmed_at
@@ -105,6 +106,7 @@ class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'is_active' => 'boolean',
+            'must_change_password' => 'boolean',
             'last_login_at' => 'datetime',
             'two_factor_confirmed_at' => 'datetime',
         ];

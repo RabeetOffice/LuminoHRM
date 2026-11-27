@@ -4,6 +4,7 @@ namespace App\Http\Middleware;
 
 use App\Support\Branding;
 use App\Support\EmployeeRoles;
+use App\Support\System\SystemUpdater;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 
@@ -63,6 +64,9 @@ class HandleInertiaRequests extends Middleware
                 // Neutral notices ("No change."): shown as an info toast.
                 'info' => fn () => $request->session()->get('info'),
             ],
+            // Admins only (settings.manage): whether "Update system" has something to apply, for the sidebar's
+            // "New" badge on Updates. Cached for a minute; false on a server whose tables do not exist yet.
+            'updateFlag' => fn () => $request->user()?->can('settings.manage') ? SystemUpdater::flag() : null,
             'sidebarOpen' => ! $request->hasCookie('sidebar_state') || $request->cookie('sidebar_state') === 'true',
         ];
     }

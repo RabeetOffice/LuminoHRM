@@ -5,6 +5,7 @@ import {
     CalendarClock,
     CalendarDays,
     CalendarRange,
+    CircleArrowUp,
     Clock,
     DoorClosed,
     DoorOpen,
@@ -43,6 +44,7 @@ import {
     resignation as myResignation,
 } from '@/routes/my';
 import { index as organizationIndex } from '@/routes/organization';
+import { index as updatesIndex } from '@/routes/system/updates';
 import { index as usersIndex } from '@/routes/users';
 
 /**
@@ -67,6 +69,8 @@ export type NavItem = {
      * sidebar renders it greyed out with a "Soon" badge and no link.
      */
     soon?: boolean;
+    /** A short pill after the title, e.g. "New" on Updates while an update is waiting. Set with `withBadge`. */
+    badge?: string;
 };
 
 export type NavGroup = { label: string; items: NavItem[] };
@@ -257,6 +261,13 @@ export const navigation: NavGroup[] = [
                 icon: ScrollText,
                 permission: 'audit.view',
             },
+            {
+                // What changed in each version, and "Update system" (Admin only).
+                title: 'Updates',
+                href: updatesIndex(),
+                icon: CircleArrowUp,
+                permission: 'settings.manage',
+            },
         ],
     },
     {
@@ -401,6 +412,36 @@ export function filterNavigation(
             items: filterItems(group.items, held, needle, mode, false),
         }))
         .filter((group) => group.items.length > 0);
+}
+
+/**
+ * Returns `groups` with `badge` on every entry titled `title` (top level or
+ * child), or without one when `badge` is undefined. The input is not changed.
+ */
+export function withBadge(
+    groups: NavGroup[],
+    title: string,
+    badge: string | undefined,
+): NavGroup[] {
+    const mark = (items: NavItem[]): NavItem[] =>
+        items.map((item) => {
+            const children = item.children ? mark(item.children) : undefined;
+            const next: NavItem = children
+                ? { ...item, children }
+                : { ...item };
+
+            if (item.title === title) {
+                if (badge === undefined) {
+                    delete next.badge;
+                } else {
+                    next.badge = badge;
+                }
+            }
+
+            return next;
+        });
+
+    return groups.map((group) => ({ ...group, items: mark(group.items) }));
 }
 
 /**

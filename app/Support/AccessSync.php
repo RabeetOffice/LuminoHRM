@@ -5,6 +5,7 @@ namespace App\Support;
 use App\Models\User;
 use App\Support\Audit\Audit;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\PermissionRegistrar;
@@ -87,6 +88,10 @@ class AccessSync
             $user = new User(['name' => 'Administrator', 'email' => $email, 'password' => $password]);
             $user->email_verified_at = now();
             $user->is_active = true;
+            // The password lives in an env seed: it is temporary, and the first sign-in asks for the Admin's own.
+            if (Schema::hasColumn('users', 'must_change_password')) {
+                $user->must_change_password = true;
+            }
             $user->save();
             $user->assignRole('admin');
 

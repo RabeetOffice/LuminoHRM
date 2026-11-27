@@ -23,6 +23,10 @@ import { toUrl } from '@/lib/utils';
 const soonPill =
     'ml-auto shrink-0 rounded-full bg-neutral-100 px-1.5 py-px text-[10px] leading-4 font-medium text-neutral-500 group-data-[collapsible=icon]:hidden dark:bg-neutral-500/20 dark:text-neutral-400';
 
+// A badge such as "New" on Updates: the accent colour, hidden on the icon rail.
+const badgePill =
+    'ml-auto shrink-0 rounded-full bg-primary/15 px-1.5 py-px text-[10px] leading-4 font-semibold text-brand-ink group-data-[collapsible=icon]:hidden';
+
 // aria-disabled in the kit adds pointer-events-none and a 50% fade; a Soon row
 // keeps pointer events (for the tooltip) and has no hover or press highlight.
 const soonRow =
@@ -102,6 +106,11 @@ export function NavMain({ groups, expandAll = false }: Props) {
                                         >
                                             {item.icon && <item.icon />}
                                             <span>{item.title}</span>
+                                            {item.badge && (
+                                                <span className={badgePill}>
+                                                    {item.badge}
+                                                </span>
+                                            )}
                                         </Link>
                                     </SidebarMenuButton>
                                 </SidebarMenuItem>

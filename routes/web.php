@@ -12,6 +12,7 @@ use App\Http\Controllers\Attendance\MyAttendanceController;
 use App\Http\Controllers\Attendance\PunchController;
 use App\Http\Controllers\Attendance\ShiftController;
 use App\Http\Controllers\AuditLogController;
+use App\Http\Controllers\Auth\FirstLoginPasswordController;
 use App\Http\Controllers\BrandingMediaController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DepartmentController;
@@ -54,6 +55,7 @@ use App\Http\Controllers\Performance\ReviewListController;
 use App\Http\Controllers\Settings\AssetCategoryController;
 use App\Http\Controllers\Settings\DeviceController;
 use App\Http\Controllers\Settings\HrmSettingsController;
+use App\Http\Controllers\System\UpdatesController;
 use App\Http\Controllers\UserController;
 use App\Support\Branding;
 use Illuminate\Support\Facades\Route;
@@ -66,6 +68,13 @@ Route::get('media/branding/{filename}', BrandingMediaController::class)
     ->where('filename', Branding::FILENAME_PATTERN)
     ->withoutMiddleware('web')
     ->name('media.branding');
+
+// First sign-in with a password somebody else chose (the first Admin's, from the env seed). EnsurePasswordChanged sends
+// every other page here until the person has picked their own.
+Route::middleware('auth')->prefix('first-login')->name('first-login.')->controller(FirstLoginPasswordController::class)->group(function () {
+    Route::get('password', 'show')->name('password');
+    Route::put('password', 'update')->middleware('throttle:6,1')->name('password.update');
+});
 
 Route::middleware(['auth', 'verified'])->group(function () {
     // The dashboard's figures are worked out for the viewer (DashboardController); a figure they may not have is absent.
@@ -491,6 +500,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::put('{user}', [UserController::class, 'update'])->name('update');
         Route::patch('{user}/active', [UserController::class, 'toggle'])->name('toggle');
         Route::post('{user}/send-reset', [UserController::class, 'sendReset'])->name('send-reset');
+    });
+
+    // System > Updates (Admin): what changed in each version, and "Update system", which backs up the database and applies
+    // the waiting database changes. New code arrives by itself on every push; its database changes wait for this button.
+    Route::middleware('can:settings.manage')->prefix('system/updates')->name('system.updates.')->controller(UpdatesController::class)->group(function () {
+        Route::get('/', 'index')->name('index');
+        Route::post('/', 'run')->middleware('throttle:6,1')->name('run');
     });
 
     // Audit log: read-only. There is no route to change or delete an entry.

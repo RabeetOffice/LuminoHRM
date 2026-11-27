@@ -39,7 +39,7 @@ function dlPerson(array $attrs = []): Employee
 /** The dashboard's own props (shared props left out). */
 function dlProps($response): array
 {
-    return array_diff_key($response->inertiaProps(), array_flip(['auth', 'app', 'flash', 'errors', 'name', 'quote', 'sidebarOpen']));
+    return array_diff_key($response->inertiaProps(), array_flip(['auth', 'app', 'flash', 'errors', 'name', 'quote', 'sidebarOpen', 'updateFlag']));
 }
 
 /**

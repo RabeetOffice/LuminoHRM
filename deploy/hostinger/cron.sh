@@ -11,14 +11,23 @@
 #   3. generates APP_KEY if it is empty;
 #   4. after a deploy (release.txt differs from shared/release.done, or .env is
 #      newer than release.done) AND the uploaded tree is complete (see below):
-#      config:clear (so migrate sees the current shared/.env, not a stale cached
-#      config), migrate, hrm:sync-access (roles, permissions, first Admin from
-#      HRM_ADMIN_*; reads the freshly cleared config, so it runs BEFORE config:cache and
-#      sees a newly seeded env), config:cache, route:cache, view:cache. The .env-newer-
-#      than-release.done path runs this same full sequence;
-#   5. artisan schedule:run.
-#   (Step 5 runs once migrate and hrm:sync-access succeeded for the release, even if a cache
-#   command failed; that failure is still reported as post_deploy_failed and retried each minute.)
+#      config:clear (so artisan sees the current shared/.env, not a stale cached
+#      config), hrm:install-state, then
+#        - FRESH install only (no migration has run yet, or no account exists yet):
+#          migrate --force and hrm:sync-access (roles, permissions, first Admin from
+#          HRM_ADMIN_*; reads the freshly cleared config, so it runs BEFORE config:cache
+#          and sees a newly seeded env), so the first deploy creates the tables and the
+#          first Admin by itself;
+#        - INSTALLED system: no migrate and no access sync. Database changes wait for an
+#          Admin to click "Update system" (System > Updates), which backs up the database
+#          first, then runs migrate and hrm:sync-access;
+#      then config:cache, route:cache, view:cache. The .env-newer-than-release.done path
+#      runs this same sequence (so a newly installed seed never migrates an installed system);
+#   5. artisan schedule:run (also while database changes are waiting);
+#   6. artisan hrm:pending-migrations: the count goes to status.txt as pending_migrations.
+#   (Step 5 runs once the install state is known (installed) or migrate and hrm:sync-access
+#   succeeded (fresh), even if a cache command failed; that failure is still reported as
+#   post_deploy_failed and retried each minute.)
 # Everything is appended to shared/storage/logs/cron.log. Nothing is printed
 # (cron would mail it) and env values are never echoed.
 #
@@ -252,6 +261,7 @@ write_status() {
         echo "access=$st_access"
         echo "last_backup=$st_bk"
         echo "last_backup_ok=$st_bk_ok"
+        echo "pending_migrations=$PENDING_COUNT"
     } > "$st_tmp" && mv -f "$st_tmp" "$SCRIPT_DIR/status.txt"
     # Only the lines this script wrote itself: they start with a UTC timestamp.
     grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z ' "$LOG_FILE" 2>/dev/null | tail -n 40 > "$SCRIPT_DIR/status.log.tmp.$$" \
@@ -277,6 +287,7 @@ main() {
     STATE=ok
     DETAIL=
     SEED_NOTE=
+    PENDING_COUNT=
     env_changed=0
 
     # 1. Shared layout (idempotent). shared/ itself is private (it holds .env); the
@@ -380,11 +391,37 @@ main() {
 
     if [ "$need" = 1 ]; then
         log "post-deploy for release $release"
-        core_ok=0   # set once migrate and hrm:sync-access have both succeeded
-        for cmd in "config:clear" "migrate --force" "hrm:sync-access" "config:cache" "route:cache" "view:cache"; do
+        core_ok=0   # fresh install: set once migrate and hrm:sync-access succeeded; installed: once the state is known
+        install_state=''
+        ran_migrate=0
+        for cmd in "config:clear" "hrm:install-state" "migrate --force" "hrm:sync-access" "config:cache" "route:cache" "view:cache"; do
+            # An installed system never changes its database here: an Admin applies the waiting
+            # changes with "Update system" (System > Updates), after a backup.
+            if [ "$install_state" = installed ]; then
+                case "$cmd" in "migrate --force"|"hrm:sync-access") continue ;; esac
+            fi
             # shellcheck disable=SC2086
             if artisan $cmd; then
+                if [ "$cmd" = "hrm:install-state" ]; then
+                    install_state=$(grep -m1 -E '^(fresh|installed)$' "$OUT_FILE" | tr -cd 'a-z')
+                    if [ -z "$install_state" ]; then
+                        STATE=post_deploy_failed
+                        DETAIL="artisan hrm:install-state gave no answer (release $release)"
+                        log "FAILED: artisan hrm:install-state gave no answer (release $release stays pending, will retry)"
+                        log_output
+                        post_deploy_ok=0
+                        sched_ok=0
+                        break
+                    fi
+                    log "ok: artisan hrm:install-state ($install_state)"
+                    if [ "$install_state" = installed ]; then
+                        core_ok=1
+                        log "installed system: database changes are not applied here; they wait for Update system"
+                    fi
+                    continue
+                fi
                 log "ok: artisan $cmd"
+                [ "$cmd" = "migrate --force" ] && ran_migrate=1
                 if [ "$cmd" = "hrm:sync-access" ]; then
                     # One line of [a-z0-9 =_] (no email, no password); sanitise anyway.
                     access_line=$(grep -m1 '^access_sync ' "$OUT_FILE" | tr -cd 'a-z0-9 =_' | cut -c1-120)
@@ -399,22 +436,25 @@ main() {
                 log_output
                 post_deploy_ok=0
                 # A failing cache command must not stop the queue drain and backups: the schema and
-                # access data are current once migrate and hrm:sync-access have succeeded.
+                # access data are current once migrate and hrm:sync-access have succeeded (fresh
+                # install) or once the system is known to be installed.
                 [ "$core_ok" = 1 ] || sched_ok=0
                 break
             fi
         done
         if [ "$post_deploy_ok" = 1 ]; then
             echo "$release" > "$DONE_FILE"
-            date -u '+%Y-%m-%dT%H:%M:%SZ' > "$SHARED/last_migrate"
+            # last_migrate: when this script last ran migrate itself (fresh installs only).
+            [ "$ran_migrate" = 1 ] && date -u '+%Y-%m-%dT%H:%M:%SZ' > "$SHARED/last_migrate"
             DETAIL="release $release done"
             rm -f "$PENDING_FILE"
             log "release $release done"
         fi
     fi
 
-    # 5. Scheduler. Skipped while the upload is incomplete or migrate / hrm:sync-access failed (tree or
-    #    schema may be stale). A failing config:cache, route:cache or view:cache does not stop it; those are
+    # 5. Scheduler. Skipped while the upload is incomplete, the install state cannot be read, or (fresh
+    #    install) migrate / hrm:sync-access failed (tree or schema may be stale). Waiting database changes
+    #    on an installed system do not stop it. A failing config:cache, route:cache or view:cache does not stop it; those are
     #    retried every minute and reported as post_deploy_failed.
     if [ "$sched_ok" = 1 ]; then
         if artisan schedule:run; then
@@ -426,7 +466,13 @@ main() {
             log_output
         fi
     else
-        log "schedule:run skipped (upload incomplete, or migrate or access sync failing)"
+        log "schedule:run skipped (upload incomplete, or the install state, migrate or access sync failing)"
+    fi
+
+    # 6. Database changes waiting for "Update system", for status.txt (pending_migrations=<n>). Digits
+    #    only; empty when it cannot be counted. Never changes anything and never stops the scheduler.
+    if [ "$sched_ok" = 1 ] && artisan hrm:pending-migrations; then
+        PENDING_COUNT=$(grep -m1 -E '^[0-9]+$' "$OUT_FILE" | tr -cd '0-9' | cut -c1-6)
     fi
 
     exit 0

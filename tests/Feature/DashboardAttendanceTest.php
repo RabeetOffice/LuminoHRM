@@ -45,7 +45,7 @@ function daLate(Employee $e, string $date, string $in, int $minutes): Attendance
 /** The dashboard's own props (shared props such as auth and app left out). */
 function daProps($response): array
 {
-    return array_diff_key($response->inertiaProps(), array_flip(['auth', 'app', 'flash', 'errors', 'name', 'quote', 'sidebarOpen']));
+    return array_diff_key($response->inertiaProps(), array_flip(['auth', 'app', 'flash', 'errors', 'name', 'quote', 'sidebarOpen', 'updateFlag']));
 }
 
 /** The trend counts as [date => [status => count]]. */

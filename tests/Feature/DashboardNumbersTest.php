@@ -49,7 +49,7 @@ function dnProps($response): array
 /** The page's own props (shared props such as auth and app left out). */
 function dnPageProps($response): array
 {
-    return array_diff_key(dnProps($response), array_flip(['auth', 'app', 'flash', 'errors', 'name', 'quote', 'sidebarOpen']));
+    return array_diff_key(dnProps($response), array_flip(['auth', 'app', 'flash', 'errors', 'name', 'quote', 'sidebarOpen', 'updateFlag']));
 }
 
 /**

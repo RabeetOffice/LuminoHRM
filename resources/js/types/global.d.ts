@@ -25,6 +25,12 @@ declare module '@inertiajs/core' {
                 error: string | null;
                 info: string | null;
             };
+            /** Admins only (settings.manage), else null: whether "Update system" has something to apply. */
+            updateFlag: {
+                available: boolean;
+                version: string;
+                pending: number;
+            } | null;
             sidebarOpen: boolean;
             [key: string]: unknown;
         };

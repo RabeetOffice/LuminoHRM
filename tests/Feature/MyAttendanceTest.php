@@ -224,7 +224,7 @@ it('never sends raw dates or someone else in any prop', function () {
     maRow($me, '2026-11-23');
 
     $props = $this->actingAs($user)->get('/my/attendance')->assertOk()->inertiaProps();
-    $json = json_encode(array_diff_key($props, array_flip(['auth', 'app', 'flash', 'errors', 'name', 'quote', 'sidebarOpen'])));
+    $json = json_encode(array_diff_key($props, array_flip(['auth', 'app', 'flash', 'errors', 'name', 'quote', 'sidebarOpen', 'updateFlag'])));
 
     expect($json)->not->toMatch('/\d{4}-\d{2}-\d{2}T\d{2}:/');
 });

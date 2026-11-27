@@ -6,7 +6,8 @@ There is no SSH and no Node on the server. The routine is therefore:
 
 1. build everything locally into a clean directory (`scripts/deploy.ps1`),
 2. upload that directory into the site's document root (the uploader tool),
-3. let one cron entry finish the job on the server (migrate, cache, scheduler).
+3. let one cron entry finish the job on the server (caches, scheduler; on a fresh install also migrate),
+4. on an installed system, an Admin applies the database changes with **Update system** (see "Updates").
 
 Nothing secret is ever in the repository or in the uploaded directory.
 
@@ -37,7 +38,8 @@ only change `docs/` or `*.md` files are skipped). Step 3 is unchanged: cron.sh o
    uploads nothing. Check that it is green before relying on pushes.
 
 Progress and results: GitHub → Actions → deploy. After a run, `deploy/hostinger/status.txt` on the
-server shows `state=ok` once cron.sh has migrated. `scripts\deploy.ps1` plus a manual upload still
+server shows `state=ok` once cron.sh has finished the post-deploy step, and `pending_migrations=<n>` the database
+changes waiting for an Admin on System > Updates. `scripts\deploy.ps1` plus a manual upload still
 works, and is the only way to stage an env seed (`-SeedEnvFile`).
 
 ## Prerequisites (local machine)
@@ -121,10 +123,17 @@ hour is over). The reply to the caller never changes. Registered machines are ne
    every file listed in it (all staged files) must exist, on two consecutive cron runs (state in
    `shared/release.pending`; file timestamps are not used). Until then `cron.log` says
    `upload still in progress: <reason>` (for example `3 of 8331 files missing, first: ...`) and nothing runs,
-   including the scheduler. Then it runs
-   `config:clear`, `migrate --force`, `hrm:sync-access`, `config:cache`, `route:cache`, `view:cache`, and only
-   then records the release in `shared/release.done`. On failure it logs the
-   command output and retries every minute.
+   including the scheduler. Then it runs `config:clear` and `hrm:install-state`, and
+   - on an **installed** system (the normal case): `config:cache`, `route:cache`, `view:cache`. It does **not**
+     run `migrate` or `hrm:sync-access`: the new code is live, its database changes wait for an Admin
+     (see "Updates" below);
+   - on a **fresh** install only (no migration has run yet, or no account exists yet): `migrate --force`,
+     `hrm:sync-access`, then the three cache commands (see "First deploy").
+
+   Only then it records the release in `shared/release.done`. On failure it logs the command output and retries
+   every minute.
+5. If `status.txt` shows `pending_migrations` above 0, sign in as an Admin, open **System > Updates** and click
+   **Update system**. The scheduler keeps running while changes wait.
 
 ### The cron entry
 
@@ -140,8 +149,10 @@ One entry, every minute (set once, in hPanel > Advanced > Cron Jobs):
 `shared/.env` exists; generates `APP_KEY` if it is empty; runs the post-deploy
 step when `release.txt` differs from `shared/release.done` (or when
 `shared/.env` is newer than `release.done`, because config is cached); then runs
-`artisan schedule:run`. The scheduler is skipped while the upload is incomplete or while `migrate` or
-`hrm:sync-access` is failing; if only a cache command (`config:cache`, `route:cache`, `view:cache`) fails, it still
+`artisan schedule:run`, then `artisan hrm:pending-migrations` (the count goes to `status.txt`). The scheduler is
+skipped while the upload is incomplete, while `hrm:install-state` fails (database unreachable), or on a fresh
+install while `migrate` or `hrm:sync-access` is failing; waiting database changes on an installed system never stop
+it; if only a cache command (`config:cache`, `route:cache`, `view:cache`) fails, it still
 runs (so the queue drain and backups continue), the release stays pending, the cache command is retried every
 minute and `status.txt` reports `post_deploy_failed` with that command. Output goes
 to `shared/storage/logs/cron.log`, which is rotated at about 1 MB (one `.1` backup).
@@ -209,7 +220,10 @@ act globally until `HRM_TRUSTED_PROXIES` is set.
    staged). The seed is under `deploy/`, which `.htaccess` denies over HTTP; it is also
    gone from the server within a minute of arriving.
 5. Within a minute `cron.sh` generates `APP_KEY` into `shared/.env`, runs the
-   post-deploy step (migrations create the tables) and records the release.
+   post-deploy step and records the release. `hrm:install-state` answers `fresh` (no migration has run, or no
+   account exists yet), so this one time `cron.sh` runs `migrate --force` itself (the tables are created) and
+   `hrm:sync-access` (roles, permissions and the first Admin). From then on the system is `installed` and
+   deploys never change the database by themselves.
 6. Check the deploy (below).
 
 ## Changing a production setting
@@ -217,15 +231,17 @@ act globally until `HRM_TRUSTED_PROXIES` is set.
 `shared/.env` can only be changed through the seed. Edit your local env file (outside the repo), run
 `scripts\deploy.ps1 -SeedEnvFile <that file>` and upload. `cron.sh` replaces `shared/.env`; if the seed's
 `APP_KEY` is empty the existing key is kept (a non-empty `APP_KEY` replaces it, which logs everyone out
-and invalidates encrypted data, so normally leave it empty). The config cache is rebuilt in the same run.
+and invalidates encrypted data, so normally leave it empty). The config cache is rebuilt in the same run; on an
+installed system that rebuild never migrates (database changes still wait for Update system).
 A seed is only staged when `-SeedEnvFile` is passed, so routine deploys never touch `shared/.env`
 (note that a deploy replaces the document root, and with it any seed from an earlier upload).
 
 ## Creating the first Admin
 
-Production runs no seeder and has no shell, so the first Admin is created by the post-deploy step
-(`artisan hrm:sync-access`, which runs right after `migrate --force` and before `config:cache`, on every
-post-deploy including the "shared/.env newer than release.done" rebuild):
+Production runs no seeder and has no shell, so the first Admin is created by the post-deploy step of a fresh
+install (`artisan hrm:sync-access`, which runs right after `migrate --force` and before `config:cache`; a fresh
+install is one with no migrations or no account yet, so it also covers a first seed that arrives after the
+tables were made):
 
 1. Put `HRM_ADMIN_EMAIL` and `HRM_ADMIN_PASSWORD` in your local env file (outside the repo) and deploy it with
    `scripts\deploy.ps1 -SeedEnvFile <that file>`; upload.
@@ -233,9 +249,32 @@ post-deploy including the "shared/.env newer than release.done" rebuild):
    means the Admin exists. Other values: `admin=exists` (an admin already exists), `skipped_no_env`,
    `skipped_invalid_email`, `skipped_email_in_use` (the email belongs to a non-admin account, which is never
    taken over; use another email). The line never contains the email or password.
-3. Deploy again with a seed that no longer has `HRM_ADMIN_PASSWORD`, and change the password after first sign-in.
+3. Sign in with that email and password. The account is marked "must change password": every page leads to
+   **Welcome — choose your own password** until a new password is set (the change is audited, other sessions
+   are signed out). Then deploy again with a seed that no longer has `HRM_ADMIN_PASSWORD`.
 
-The same command also repairs roles and permissions if they ever drift from `config/hrm.php`.
+The same command also repairs roles and permissions if they ever drift from `config/hrm.php`; on an installed
+system "Update system" runs it after the database changes.
+
+## Updates (installed system)
+
+New code goes live on every push, but database changes wait for an Admin (`settings.manage`):
+
+1. When code with waiting database changes (or a new version at the top of `resources/changelog.php`) is on the
+   server, Admins see a **New** badge on **System > Updates** in the menu.
+2. The screen shows the version that is ready, the list of waiting database changes, "What's new" for every
+   version (New / Improved / Fixed / Removed, with "Waiting to be applied" and "Installed" marks) and the update
+   history (last 8, each with its step-by-step details).
+3. **Update system** (asks for the Admin's password when the database will change) runs, inside the request:
+   a backup with `hrm:backup-database` (if it fails nothing is changed, and "Update without a backup" is offered,
+   again behind the password); `migrate --force`; `hrm:sync-access`; clearing the config, route, view and event
+   caches and rebuilding the config and route caches when they were built; and records the version. Every step is
+   logged in the `deployments` table and the result is in the audit log (area "System").
+4. `status.txt` shows `pending_migrations=0` within a minute.
+
+Every change people can see adds a line to `resources/changelog.php` (raise the last number for fixes, the middle
+one for features). `artisan hrm:pending-migrations` prints the waiting count; `artisan hrm:install-state` prints
+`fresh` or `installed`.
 
 ## Reading the server state
 
@@ -244,7 +283,9 @@ file API (denied over HTTP, rewritten every minute, removed by the next deploy u
 
 - `deploy/hostinger/status.txt`: `time`, `release`, `release_done`, `state`
   (`waiting_for_env`, `upload_in_progress`, `post_deploy_failed`, `ok`), `detail`, `env_present`,
-  `app_key_set`, `php`, `proc_open`, `last_migrate`, `access` (result line of the last `hrm:sync-access`),
+  `app_key_set`, `php`, `proc_open`, `last_migrate` (the last time `cron.sh` itself migrated: fresh installs only),
+  `access` (result line of the last `hrm:sync-access` run by `cron.sh`), `pending_migrations` (database changes
+  waiting for Update system; empty when they could not be counted),
   `last_backup` (time of the last SUCCESSFUL backup, empty if none yet) and `last_backup_ok` (result of the latest attempt: `yes`, `no` or `unknown`). No secrets and no command output.
 - `deploy/hostinger/status.log`: the last 40 lines `cron.sh` wrote itself (raw artisan output is not copied;
   for that, `shared/storage/logs/cron.log` is the full log).
@@ -266,9 +307,9 @@ file API (denied over HTTP, rewritten every minute, removed by the next deploy u
 
 There are no server-side releases to switch between. To roll back, check out the
 previous good commit, run `scripts\deploy.ps1` again and upload. The new
-`release.txt` triggers the post-deploy step again. Migrations are not reversed
-automatically: if a bad release ran a migration, restore the database from backup or
-write a new forward migration.
+`release.txt` triggers the post-deploy step again (which never migrates an installed system). Migrations are not
+reversed automatically: if Update system ran a bad migration, restore the database from the backup it took first
+(`shared/storage/app/private/backups/`, see `docs/backup-restore.md`) or write a new forward migration.
 
 ## Troubleshooting
 
