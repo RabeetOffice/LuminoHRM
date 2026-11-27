@@ -124,14 +124,15 @@ hour is over). The reply to the caller never changes. Registered machines are ne
    `shared/release.pending`; file timestamps are not used). Until then `cron.log` says
    `upload still in progress: <reason>` (for example `3 of 8331 files missing, first: ...`) and nothing runs,
    including the scheduler. Then it runs `config:clear` and `hrm:install-state`, and
-   - on an **installed** system (the normal case): `config:cache`, `route:cache`, `view:cache`. It does **not**
-     run `migrate` or `hrm:sync-access`: the new code is live, its database changes wait for an Admin
-     (see "Updates" below);
-   - on a **fresh** install only (no migration has run yet, or no account exists yet): `migrate --force`,
-     `hrm:sync-access`, then the three cache commands (see "First deploy").
+    - on an **installed** system (the normal case): `config:cache`, `route:cache`, `view:cache`. It does **not**
+      run `migrate` or `hrm:sync-access`: the new code is live, its database changes wait for an Admin
+      (see "Updates" below);
+    - on a **fresh** install only (no migration has run yet, or no account exists yet): `migrate --force`,
+      `hrm:sync-access`, then the three cache commands (see "First deploy").
 
-   Only then it records the release in `shared/release.done`. On failure it logs the command output and retries
-   every minute.
+    Only then it records the release in `shared/release.done`. On failure it logs the command output and retries
+    every minute.
+
 5. If `status.txt` shows `pending_migrations` above 0, sign in as an Admin, open **System > Updates** and click
    **Update system**. The scheduler keeps running while changes wait.
 
