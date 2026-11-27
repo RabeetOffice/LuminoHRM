@@ -10,6 +10,36 @@ There is no SSH and no Node on the server. The routine is therefore:
 
 Nothing secret is ever in the repository or in the uploaded directory.
 
+## GitHub auto-deploy (every push to main)
+
+`.github/workflows/deploy.yml` does steps 1 and 2 on GitHub for every push to `main` (pushes that
+only change `docs/` or `*.md` files are skipped). Step 3 is unchanged: cron.sh on the server.
+
+1. Installs the dependencies, builds the front end, then runs `vp check`, `tsc`, Vitest, Pint,
+   PHPStan and the Pest suite. Any failure stops the run; nothing is uploaded.
+2. `scripts/deploy-stage.sh` (the Linux twin of `deploy.ps1`) builds the same release directory
+   with `release.txt` and `release.manifest`. It never stages an env seed: secrets do not go
+   through GitHub.
+3. Installs the Hostinger CLI and runs `hostinger up --dry-run`. `scripts/check-upload-plan.py`
+   fails the run if the plan would skip a file the release needs, or treat the site as Node.js.
+4. `hostinger up --domain hrm.luminocrm.online --yes` replaces the document root.
+5. Waits up to five minutes for the new build's script and `/login` to return 200.
+
+**One-time setup (owner):**
+
+1. hPanel → API (`https://hpanel.hostinger.com/api`) of the account that hosts the site
+   (`u882878513`): create an API token.
+2. GitHub → the LuminoHRM repository → Settings → Environments → New environment `production` →
+   Add environment secret `HOSTINGER_API_TOKEN` = that token.
+3. Optional: under the same environment, "Required reviewers" makes every deploy wait for your
+   click. Optional repository variable `HOSTINGER_CLI_VERSION` pins the CLI version (default: latest).
+4. Actions → deploy → Run workflow with "Only show what would be uploaded" ticked: a dry run that
+   uploads nothing. Check that it is green before relying on pushes.
+
+Progress and results: GitHub → Actions → deploy. After a run, `deploy/hostinger/status.txt` on the
+server shows `state=ok` once cron.sh has migrated. `scripts\deploy.ps1` plus a manual upload still
+works, and is the only way to stage an env seed (`-SeedEnvFile`).
+
 ## Prerequisites (local machine)
 
 - PHP 8.4 at `C:\php84\php.exe` (the `php` on PATH is a different version and is not used).
