@@ -5,6 +5,7 @@ namespace App\Support\Exits;
 use App\Http\Requests\Settings\ExitRequest;
 use App\Models\Resignation;
 use App\Support\Branding;
+use App\Support\Payroll\PayslipPdf;
 use Barryvdh\DomPDF\Facade\Pdf;
 
 /**
@@ -60,7 +61,7 @@ final class ExperienceLetter
             $logoUri = $mime === null ? null : "data:{$mime};base64,".base64_encode((string) Branding::disk()->get((string) $path));
         }
 
-        $logoUri ??= \App\Support\Payroll\PayslipPdf::defaultLogoDataUri();
+        $logoUri ??= PayslipPdf::defaultLogoDataUri();
 
         return Pdf::loadView('pdf.experience-letter', ['l' => [
             'company' => trim((string) settings('company.name', '')),

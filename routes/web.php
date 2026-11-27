@@ -1,7 +1,15 @@
 <?php
 
+use App\Http\Controllers\Assets\AssetController;
+use App\Http\Controllers\Assets\AssetExportController;
+use App\Http\Controllers\Assets\AssetImportController;
+use App\Http\Controllers\Assets\AssignmentController;
+use App\Http\Controllers\Assets\MyAssetController;
+use App\Http\Controllers\Attendance\CorrectionController;
 use App\Http\Controllers\Attendance\DailyController;
 use App\Http\Controllers\Attendance\MonthlyController;
+use App\Http\Controllers\Attendance\MyAttendanceController;
+use App\Http\Controllers\Attendance\PunchController;
 use App\Http\Controllers\Attendance\ShiftController;
 use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\BrandingMediaController;
@@ -13,10 +21,38 @@ use App\Http\Controllers\EmployeeExportController;
 use App\Http\Controllers\EmployeeFileController;
 use App\Http\Controllers\EmployeeImportController;
 use App\Http\Controllers\EmployeeLinkController;
+use App\Http\Controllers\Exits\ClearanceController;
+use App\Http\Controllers\Exits\ExitController;
+use App\Http\Controllers\Exits\ExitDocumentController;
+use App\Http\Controllers\Exits\MyResignationController;
+use App\Http\Controllers\Exits\SettlementController;
 use App\Http\Controllers\HolidayController;
+use App\Http\Controllers\Leave\BalanceController;
+use App\Http\Controllers\Leave\BalanceImportController;
+use App\Http\Controllers\Leave\CalendarController;
+use App\Http\Controllers\Leave\LeaveApplicationController;
+use App\Http\Controllers\Leave\LeaveRequestController;
 use App\Http\Controllers\Leave\LeaveTypeController;
+use App\Http\Controllers\Leave\MyLeaveController;
+use App\Http\Controllers\MyPayslipController;
 use App\Http\Controllers\MyProfileController;
 use App\Http\Controllers\OrganizationChartController;
+use App\Http\Controllers\Payroll\LoanController;
+use App\Http\Controllers\Payroll\OpeningFiguresController;
+use App\Http\Controllers\Payroll\OpeningImportController;
+use App\Http\Controllers\Payroll\PayrollExportController;
+use App\Http\Controllers\Payroll\PayrollItemController;
+use App\Http\Controllers\Payroll\PayrollRunController;
+use App\Http\Controllers\Payroll\PayslipController;
+use App\Http\Controllers\Payroll\SalaryProfileController;
+use App\Http\Controllers\Payroll\TaxReportController;
+use App\Http\Controllers\Performance\CycleController;
+use App\Http\Controllers\Performance\KpiController;
+use App\Http\Controllers\Performance\MyReviewController;
+use App\Http\Controllers\Performance\ReviewController;
+use App\Http\Controllers\Performance\ReviewListController;
+use App\Http\Controllers\Settings\AssetCategoryController;
+use App\Http\Controllers\Settings\DeviceController;
 use App\Http\Controllers\Settings\HrmSettingsController;
 use App\Http\Controllers\UserController;
 use App\Support\Branding;
@@ -39,29 +75,29 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('my/profile', [MyProfileController::class, 'show'])->name('my.profile');
 
     // My Attendance: the signed-in person's own month (no person in the URL; an empty state when not linked).
-    Route::get('my/attendance', [\App\Http\Controllers\Attendance\MyAttendanceController::class, 'show'])->name('my.attendance');
+    Route::get('my/attendance', [MyAttendanceController::class, 'show'])->name('my.attendance');
 
     // My Leaves: the signed-in person's own balances and requests (no person in the URL; an empty state when not linked).
-    Route::get('my/leaves', [\App\Http\Controllers\Leave\MyLeaveController::class, 'show'])->name('my.leaves');
+    Route::get('my/leaves', [MyLeaveController::class, 'show'])->name('my.leaves');
 
     // My Assets: the signed-in person's own assets (every role; the account's own employee record only).
-    Route::get('my/assets', [\App\Http\Controllers\Assets\MyAssetController::class, 'show'])->name('my.assets');
+    Route::get('my/assets', [MyAssetController::class, 'show'])->name('my.assets');
 
     // My Reviews: the signed-in person's own reviews (every role; the account's own employee record only, no person in the URL).
-    Route::get('my/reviews', [\App\Http\Controllers\Performance\MyReviewController::class, 'show'])->name('my.reviews');
+    Route::get('my/reviews', [MyReviewController::class, 'show'])->name('my.reviews');
 
     // My Resignation: the signed-in person's own exit (every role; no person in the URL). Resign, and withdraw before the final
     // approval. The statement and letter downloads are registered with the exit documents below.
-    Route::get('my/resignation', [\App\Http\Controllers\Exits\MyResignationController::class, 'show'])->name('my.resignation');
-    Route::post('my/resignation', [\App\Http\Controllers\Exits\MyResignationController::class, 'store'])->name('my.resignation.store');
-    Route::post('my/resignation/{resignation}/withdraw', [\App\Http\Controllers\Exits\MyResignationController::class, 'withdraw'])->whereNumber('resignation')->name('my.resignation.withdraw');
+    Route::get('my/resignation', [MyResignationController::class, 'show'])->name('my.resignation');
+    Route::post('my/resignation', [MyResignationController::class, 'store'])->name('my.resignation.store');
+    Route::post('my/resignation/{resignation}/withdraw', [MyResignationController::class, 'withdraw'])->whereNumber('resignation')->name('my.resignation.withdraw');
 
     // My Payslips: the signed-in person's own payslips of approved / paid runs (any other item id = 403).
-    Route::get('my/payslips', [\App\Http\Controllers\MyPayslipController::class, 'index'])->name('my.payslips');
-    Route::get('my/payslips/{item}', [\App\Http\Controllers\MyPayslipController::class, 'download'])->whereNumber('item')->name('my.payslips.download');
+    Route::get('my/payslips', [MyPayslipController::class, 'index'])->name('my.payslips');
+    Route::get('my/payslips/{item}', [MyPayslipController::class, 'download'])->whereNumber('item')->name('my.payslips.download');
 
     // Payroll > Payslips: every payslip of approved / paid runs (Admin / HR; a draft's or excluded line = 404).
-    Route::prefix('payroll/payslips')->name('payroll.payslips.')->controller(\App\Http\Controllers\Payroll\PayslipController::class)->group(function () {
+    Route::prefix('payroll/payslips')->name('payroll.payslips.')->controller(PayslipController::class)->group(function () {
         Route::middleware('can:payroll.view')->group(function () {
             Route::get('/', 'index')->name('index');
             Route::get('{item}', 'download')->whereNumber('item')->name('download');
@@ -71,7 +107,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     // Applying for leave (own record, or on behalf by HR / Admin), its live preview, the attachment and cancelling while
     // open: any signed-in user; LeaveApplicationController / ApplyForLeave check the rights (out of reach = 403).
-    Route::prefix('leave/requests')->name('leave.requests.')->controller(\App\Http\Controllers\Leave\LeaveApplicationController::class)->group(function () {
+    Route::prefix('leave/requests')->name('leave.requests.')->controller(LeaveApplicationController::class)->group(function () {
         Route::post('/', 'store')->middleware('throttle:30,1,leave-apply')->name('store');
         Route::get('preview', 'preview')->middleware('throttle:60,1,leave-preview')->name('preview');
         Route::get('{leaveRequest}/attachment', 'attachment')->whereNumber('leaveRequest')->name('attachment');
@@ -79,7 +115,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     });
 
     // Overview > Calendar: holidays, approved leave (scoped by LeaveRouting) and birthdays, for every signed-in user.
-    Route::get('calendar', [\App\Http\Controllers\Leave\CalendarController::class, 'index'])->name('calendar');
+    Route::get('calendar', [CalendarController::class, 'index'])->name('calendar');
 
     // Departments & Designations. Authorisation is enforced here, on the server.
     Route::middleware('can:org.manage')->prefix('organization')->group(function () {
@@ -172,7 +208,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     });
 
     // Performance > KPIs (Admin, HR). Phase 6b adds cycles and reviews beside it.
-    Route::middleware('can:performance.manage')->prefix('performance/kpis')->name('performance.kpis.')->controller(\App\Http\Controllers\Performance\KpiController::class)->group(function () {
+    Route::middleware('can:performance.manage')->prefix('performance/kpis')->name('performance.kpis.')->controller(KpiController::class)->group(function () {
         Route::get('/', 'index')->name('index');
         Route::post('/', 'store')->name('store');
         Route::put('{kpi}', 'update')->whereNumber('kpi')->name('update');
@@ -181,7 +217,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     // Performance > a review's workflow (signed in only: ReviewAccess decides, 403 otherwise; each action re-checks the actor
     // under its locks). Static performance/reviews/... routes go above these.
-    Route::prefix('performance/reviews/{review}')->name('performance.reviews.')->controller(\App\Http\Controllers\Performance\ReviewController::class)->group(function () {
+    Route::prefix('performance/reviews/{review}')->name('performance.reviews.')->controller(ReviewController::class)->group(function () {
         Route::get('/', 'show')->whereNumber('review')->name('show');
         Route::put('self', 'selfDraft')->whereNumber('review')->name('self-draft');
         Route::post('self/submit', 'selfSubmit')->whereNumber('review')->name('self-submit');
@@ -197,7 +233,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     });
 
     // Performance > review cycles (Admin, HR): open, add people, change the due date, close. Task 4 adds the pages.
-    Route::middleware('can:performance.manage')->prefix('performance/cycles')->name('performance.cycles.')->controller(\App\Http\Controllers\Performance\CycleController::class)->group(function () {
+    Route::middleware('can:performance.manage')->prefix('performance/cycles')->name('performance.cycles.')->controller(CycleController::class)->group(function () {
         Route::post('/', 'store')->name('store');
         Route::post('{cycle}/people', 'people')->whereNumber('cycle')->name('people');
         Route::put('{cycle}/due-date', 'dueDate')->whereNumber('cycle')->name('due-date');
@@ -206,11 +242,11 @@ Route::middleware(['auth', 'verified'])->group(function () {
     });
 
     // Performance > Reviews: HR and Admin see the cycles, a manager the team list (checked in the controller, 403 otherwise).
-    Route::get('performance/reviews', [\App\Http\Controllers\Performance\ReviewListController::class, 'index'])->name('performance.reviews.index');
+    Route::get('performance/reviews', [ReviewListController::class, 'index'])->name('performance.reviews.index');
 
     // Exit > Resignations & Clearance. The list and the page are for exit.clearance and exit.approve-team (the controller checks and
     // scopes with ExitRouting: 403 for an id out of scope); each write re-checks the actor under its locks. Static paths first.
-    Route::controller(\App\Http\Controllers\Exits\ExitController::class)->name('exit.')->group(function () {
+    Route::controller(ExitController::class)->name('exit.')->group(function () {
         Route::get('exit', 'index')->name('index');
         Route::get('exit/employee-options', 'employeeOptions')->name('employee-options');
         Route::post('exit', 'store')->name('store');
@@ -219,9 +255,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::put('exit/{resignation}/last-day', 'lastDay')->whereNumber('resignation')->name('last-day');
         Route::post('exit/{resignation}/cancel', 'cancel')->whereNumber('resignation')->name('cancel');
     });
-    Route::put('exit/clearance/{clearance}', [\App\Http\Controllers\Exits\ClearanceController::class, 'update'])->middleware('can:exit.clearance')->whereNumber('clearance')->name('exit.clearance.update');
+    Route::put('exit/clearance/{clearance}', [ClearanceController::class, 'update'])->middleware('can:exit.clearance')->whereNumber('clearance')->name('exit.clearance.update');
     // Final settlement writes: exit.clearance and payroll.view (Admin, HR); the actions check SettlementAccess.
-    Route::middleware(['can:exit.clearance', 'can:payroll.view'])->controller(\App\Http\Controllers\Exits\SettlementController::class)->group(function () {
+    Route::middleware(['can:exit.clearance', 'can:payroll.view'])->controller(SettlementController::class)->group(function () {
         Route::post('exit/{resignation}/settlement', 'prepare')->whereNumber('resignation')->name('exit.settlement.prepare');
         Route::prefix('exit/settlements/{settlement}')->where(['settlement' => '[0-9]+'])->name('exit.settlements.')->group(function () {
             Route::post('recalculate', 'recalculate')->name('recalculate');
@@ -234,15 +270,15 @@ Route::middleware(['auth', 'verified'])->group(function () {
     });
 
     // Assets: the register's writes (Task 4 adds the pages). Add, edit and status: Admin and HR; delete: Admin only.
-    Route::middleware('can:assets.assign')->prefix('assets')->name('assets.')->controller(\App\Http\Controllers\Assets\AssetController::class)->group(function () {
+    Route::middleware('can:assets.assign')->prefix('assets')->name('assets.')->controller(AssetController::class)->group(function () {
         Route::post('/', 'store')->name('store');
         Route::put('{asset}', 'update')->whereNumber('asset')->name('update');
         Route::post('{asset}/status', 'status')->whereNumber('asset')->name('status');
     });
-    Route::delete('assets/{asset}', [\App\Http\Controllers\Assets\AssetController::class, 'destroy'])->middleware('can:assets.manage')->whereNumber('asset')->name('assets.destroy');
+    Route::delete('assets/{asset}', [AssetController::class, 'destroy'])->middleware('can:assets.manage')->whereNumber('asset')->name('assets.destroy');
 
     // Assets: hand-overs (Admin, HR). No route edits an assignment's dates or holder, and none deletes one.
-    Route::middleware('can:assets.assign')->prefix('assets')->name('assets.')->controller(\App\Http\Controllers\Assets\AssignmentController::class)->group(function () {
+    Route::middleware('can:assets.assign')->prefix('assets')->name('assets.')->controller(AssignmentController::class)->group(function () {
         Route::post('{asset}/assign', 'assign')->whereNumber('asset')->name('assign');
         Route::post('assignments/{assignment}/return', 'return')->whereNumber('assignment')->name('assignments.return');
         Route::patch('assignments/{assignment}/note', 'note')->whereNumber('assignment')->name('assignments.note');
@@ -250,40 +286,40 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     // Assets: the list (Admin, HR: everything; Manager: what their team holds, read-only; checked in the controller) and
     // the asset page (Admin, HR). Static `assets/...` paths come before `assets/{asset}`.
-    Route::get('assets', [\App\Http\Controllers\Assets\AssetController::class, 'index'])->name('assets.index');
-    Route::get('assets/employee-options', [\App\Http\Controllers\Assets\AssetController::class, 'employeeOptions'])->middleware('can:assets.assign')->name('assets.employee-options');
+    Route::get('assets', [AssetController::class, 'index'])->name('assets.index');
+    Route::get('assets/employee-options', [AssetController::class, 'employeeOptions'])->middleware('can:assets.assign')->name('assets.employee-options');
     // The Assignments list (Admin, HR: all; Manager: their team, read-only; checked in the controller).
-    Route::get('assets/assignments', [\App\Http\Controllers\Assets\AssignmentController::class, 'index'])->name('assets.assignments.index');
+    Route::get('assets/assignments', [AssignmentController::class, 'index'])->name('assets.assignments.index');
     // The register import (template -> upload -> preview -> run) and export (Admin, HR).
     Route::middleware('can:assets.assign')->prefix('assets')->name('assets.')->group(function () {
-        Route::prefix('import')->name('import')->controller(\App\Http\Controllers\Assets\AssetImportController::class)->group(function () {
+        Route::prefix('import')->name('import')->controller(AssetImportController::class)->group(function () {
             Route::get('/', 'show');
             Route::get('template', 'template')->name('.template');
             Route::post('preview', 'upload')->name('.preview');
             Route::post('run', 'run')->name('.run');
         });
-        Route::get('export', \App\Http\Controllers\Assets\AssetExportController::class)->name('export');
+        Route::get('export', AssetExportController::class)->name('export');
     });
-    Route::get('assets/{asset}', [\App\Http\Controllers\Assets\AssetController::class, 'show'])->middleware('can:assets.assign')->whereNumber('asset')->name('assets.show');
+    Route::get('assets/{asset}', [AssetController::class, 'show'])->middleware('can:assets.assign')->whereNumber('asset')->name('assets.show');
 
     // Attendance > Raw Punches: every punch the machines sent (Admin, HR). Giving an unknown machine user ID to an
     // employee also needs attendance.edit (and employees.manage, checked in the controller): it is an employee update.
-    Route::get('attendance/punches', [\App\Http\Controllers\Attendance\PunchController::class, 'index'])
+    Route::get('attendance/punches', [PunchController::class, 'index'])
         ->middleware('can:attendance.view-all')->name('attendance.punches');
-    Route::post('attendance/punches/assign', [\App\Http\Controllers\Attendance\PunchController::class, 'assign'])
+    Route::post('attendance/punches/assign', [PunchController::class, 'assign'])
         ->middleware('can:attendance.edit')->name('attendance.punches.assign');
 
     // Attendance > Correction Requests. The list: view-all (everyone's) or view-team (own and direct reports'), checked
     // in the controller. Submitting: any signed-in user, for their own record. Who decides which step and who may cancel
     // is checked by CorrectionRouting (403 outside scope); HR's step also needs attendance.edit.
     Route::prefix('attendance/corrections')->name('attendance.corrections.')->group(function () {
-        Route::get('/', [\App\Http\Controllers\Attendance\CorrectionController::class, 'index'])->name('index');
-        Route::post('/', [\App\Http\Controllers\Attendance\CorrectionController::class, 'store'])->name('store');
-        Route::put('{correction}/manager-decide', [\App\Http\Controllers\Attendance\CorrectionController::class, 'managerDecide'])
+        Route::get('/', [CorrectionController::class, 'index'])->name('index');
+        Route::post('/', [CorrectionController::class, 'store'])->name('store');
+        Route::put('{correction}/manager-decide', [CorrectionController::class, 'managerDecide'])
             ->whereNumber('correction')->name('manager-decide');
-        Route::put('{correction}/hr-decide', [\App\Http\Controllers\Attendance\CorrectionController::class, 'hrDecide'])
+        Route::put('{correction}/hr-decide', [CorrectionController::class, 'hrDecide'])
             ->whereNumber('correction')->middleware('can:attendance.edit')->name('hr-decide');
-        Route::post('{correction}/cancel', [\App\Http\Controllers\Attendance\CorrectionController::class, 'cancel'])
+        Route::post('{correction}/cancel', [CorrectionController::class, 'cancel'])
             ->whereNumber('correction')->name('cancel');
     });
 
@@ -309,14 +345,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // decides which step is LeaveRouting's (403 outside scope). Ids are numeric, so Task 5's static "preview" route
     // under the same prefix never matches here.
     Route::prefix('leave/requests')->name('leave.requests.')->group(function () {
-        Route::get('/', [\App\Http\Controllers\Leave\LeaveRequestController::class, 'index'])->name('index');
-        Route::get('{leaveRequest}', [\App\Http\Controllers\Leave\LeaveRequestController::class, 'show'])
+        Route::get('/', [LeaveRequestController::class, 'index'])->name('index');
+        Route::get('{leaveRequest}', [LeaveRequestController::class, 'show'])
             ->whereNumber('leaveRequest')->name('show');
-        Route::put('{leaveRequest}/manager-decide', [\App\Http\Controllers\Leave\LeaveRequestController::class, 'managerDecide'])
+        Route::put('{leaveRequest}/manager-decide', [LeaveRequestController::class, 'managerDecide'])
             ->whereNumber('leaveRequest')->name('manager-decide');
-        Route::put('{leaveRequest}/final-decide', [\App\Http\Controllers\Leave\LeaveRequestController::class, 'finalDecide'])
+        Route::put('{leaveRequest}/final-decide', [LeaveRequestController::class, 'finalDecide'])
             ->whereNumber('leaveRequest')->middleware('can:leave.approve-all')->name('final-decide');
-        Route::post('{leaveRequest}/cancel-approved', [\App\Http\Controllers\Leave\LeaveRequestController::class, 'cancelApproved'])
+        Route::post('{leaveRequest}/cancel-approved', [LeaveRequestController::class, 'cancelApproved'])
             ->whereNumber('leaveRequest')->middleware('can:leave.approve-all')->name('cancel-approved');
     });
 
@@ -324,15 +360,15 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // controller, scoped by EmployeeAccess), HR's edit of a balance row (LeaveRouting::mayAdminister, 403), the .xlsx,
     // and the go-live opening-balance import (HR / Admin). Static URLs before the numeric edit route.
     Route::prefix('leave/balances')->name('leave.balances.')->group(function () {
-        Route::get('/', [\App\Http\Controllers\Leave\BalanceController::class, 'index'])->name('index');
+        Route::get('/', [BalanceController::class, 'index'])->name('index');
 
         Route::middleware('can:leave.approve-all')->group(function () {
-            Route::get('export', [\App\Http\Controllers\Leave\BalanceController::class, 'export'])->name('export');
-            Route::get('import', [\App\Http\Controllers\Leave\BalanceImportController::class, 'show'])->name('import');
-            Route::get('import/template', [\App\Http\Controllers\Leave\BalanceImportController::class, 'template'])->name('import.template');
-            Route::post('import/preview', [\App\Http\Controllers\Leave\BalanceImportController::class, 'upload'])->name('import.preview');
-            Route::post('import/run', [\App\Http\Controllers\Leave\BalanceImportController::class, 'run'])->name('import.run');
-            Route::put('{employee}/{type}/{year}', [\App\Http\Controllers\Leave\BalanceController::class, 'update'])
+            Route::get('export', [BalanceController::class, 'export'])->name('export');
+            Route::get('import', [BalanceImportController::class, 'show'])->name('import');
+            Route::get('import/template', [BalanceImportController::class, 'template'])->name('import.template');
+            Route::post('import/preview', [BalanceImportController::class, 'upload'])->name('import.preview');
+            Route::post('import/run', [BalanceImportController::class, 'run'])->name('import.run');
+            Route::put('{employee}/{type}/{year}', [BalanceController::class, 'update'])
                 ->whereNumber(['employee', 'type'])->where('year', '\d{4}')->name('update');
         });
     });
@@ -341,22 +377,22 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // edit whose salary is PayrollAccess::mayEditSalary in SaveSalaryProfile, 403). A profile of someone else is 404.
     Route::prefix('payroll/salary-profiles')->name('payroll.salary-profiles.')->group(function () {
         Route::middleware('can:payroll.view')->group(function () {
-            Route::get('/', [\App\Http\Controllers\Payroll\SalaryProfileController::class, 'index'])->name('index');
-            Route::get('{employee}', [\App\Http\Controllers\Payroll\SalaryProfileController::class, 'show'])->whereNumber('employee')->name('show');
+            Route::get('/', [SalaryProfileController::class, 'index'])->name('index');
+            Route::get('{employee}', [SalaryProfileController::class, 'show'])->whereNumber('employee')->name('show');
         });
 
         Route::middleware('can:payroll.run')->group(function () {
-            Route::post('{employee}', [\App\Http\Controllers\Payroll\SalaryProfileController::class, 'store'])->whereNumber('employee')->name('store');
-            Route::put('{employee}/{profile}', [\App\Http\Controllers\Payroll\SalaryProfileController::class, 'update'])
+            Route::post('{employee}', [SalaryProfileController::class, 'store'])->whereNumber('employee')->name('store');
+            Route::put('{employee}/{profile}', [SalaryProfileController::class, 'update'])
                 ->whereNumber(['employee', 'profile'])->name('update');
-            Route::delete('{employee}/{profile}', [\App\Http\Controllers\Payroll\SalaryProfileController::class, 'destroy'])
+            Route::delete('{employee}/{profile}', [SalaryProfileController::class, 'destroy'])
                 ->whereNumber(['employee', 'profile'])->name('destroy');
         });
     });
 
     // Payroll > Loans & Advances: Admin / HR only (payroll.view reads, payroll.run writes, payroll.approve cancels; whose
     // loan a user may change is PayrollAccess::mayEditSalary in SaveLoan / LoanActions, 403).
-    Route::prefix('payroll/loans')->name('payroll.loans.')->controller(\App\Http\Controllers\Payroll\LoanController::class)->group(function () {
+    Route::prefix('payroll/loans')->name('payroll.loans.')->controller(LoanController::class)->group(function () {
         Route::middleware('can:payroll.view')->group(function () {
             Route::get('/', 'index')->name('index');
             Route::get('{loan}', 'show')->whereNumber('loan')->name('show');
@@ -376,17 +412,17 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // Payroll > Opening Figures: opening tax per person and tax year (form), and the go-live imports of opening tax and
     // opening loans ({kind} tax | loans). Static URLs before the numeric edit route.
     Route::prefix('payroll/opening')->name('payroll.opening.')->group(function () {
-        Route::get('/', [\App\Http\Controllers\Payroll\OpeningFiguresController::class, 'index'])->middleware('can:payroll.view')->name('index');
+        Route::get('/', [OpeningFiguresController::class, 'index'])->middleware('can:payroll.view')->name('index');
 
         Route::middleware('can:payroll.run')->group(function () {
             Route::prefix('import/{kind}')->where(['kind' => 'tax|loans'])->name('import')
-                ->controller(\App\Http\Controllers\Payroll\OpeningImportController::class)->group(function () {
+                ->controller(OpeningImportController::class)->group(function () {
                     Route::get('/', 'show');
                     Route::get('template', 'template')->name('.template');
                     Route::post('preview', 'upload')->name('.preview');
                     Route::post('run', 'run')->name('.run');
                 });
-            Route::put('{employee}/{taxYear}', [\App\Http\Controllers\Payroll\OpeningFiguresController::class, 'update'])
+            Route::put('{employee}/{taxYear}', [OpeningFiguresController::class, 'update'])
                 ->whereNumber('employee')->where('taxYear', '\d{4}')->name('update');
         });
     });
@@ -394,7 +430,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // Payroll > Payroll Runs: the list, generating a month, the run page and its actions, and the lines' drawer and
     // inputs. Admin / HR only (payroll.view reads, payroll.run writes, payroll.approve approves; the actions check who
     // may edit whose line and who may approve, 403). A line, adjustment or loan of another run / person is 404.
-    Route::prefix('payroll/runs')->name('payroll.runs.')->controller(\App\Http\Controllers\Payroll\PayrollRunController::class)->group(function () {
+    Route::prefix('payroll/runs')->name('payroll.runs.')->controller(PayrollRunController::class)->group(function () {
         Route::middleware('can:payroll.view')->group(function () {
             Route::get('/', 'index')->name('index');
             Route::get('{run}', 'show')->whereNumber('run')->name('show');
@@ -411,7 +447,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     });
 
     Route::prefix('payroll/runs/{run}/items/{item}')->name('payroll.items.')->whereNumber(['run', 'item'])->scopeBindings()
-        ->controller(\App\Http\Controllers\Payroll\PayrollItemController::class)->group(function () {
+        ->controller(PayrollItemController::class)->group(function () {
             Route::get('/', 'show')->middleware('can:payroll.view')->name('show');
 
             Route::middleware('can:payroll.run')->group(function () {
@@ -425,27 +461,27 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     // Payroll downloads and the yearly tax report (Admin / HR only). The bank sheet is for approved / paid runs (a draft
     // is 404 in the controller); the summary is for any run.
-    Route::get('payroll/runs/{run}/bank-sheet', [\App\Http\Controllers\Payroll\PayrollExportController::class, 'bankSheet'])
+    Route::get('payroll/runs/{run}/bank-sheet', [PayrollExportController::class, 'bankSheet'])
         ->whereNumber('run')->middleware('can:payroll.run')->name('payroll.runs.bank-sheet');
-    Route::get('payroll/runs/{run}/summary', [\App\Http\Controllers\Payroll\PayrollExportController::class, 'summary'])
+    Route::get('payroll/runs/{run}/summary', [PayrollExportController::class, 'summary'])
         ->whereNumber('run')->middleware('can:payroll.view')->name('payroll.runs.summary-export');
     Route::middleware('can:payroll.view')->prefix('payroll/tax-report')->name('payroll.tax-report')
-        ->controller(\App\Http\Controllers\Payroll\TaxReportController::class)->group(function () {
+        ->controller(TaxReportController::class)->group(function () {
             Route::get('/', 'index');
             Route::get('export', 'export')->name('.export');
         });
 
     // Exit documents (Phase 6c). Admin / HR: the settlement statement (exit.clearance + payroll.view) and the experience letter
     // (exit.clearance). The employee's own copies are under my/resignation (the controller insists the exit is theirs).
-    Route::get('exit/settlements/{settlement}/statement', [\App\Http\Controllers\Exits\ExitDocumentController::class, 'statement'])
+    Route::get('exit/settlements/{settlement}/statement', [ExitDocumentController::class, 'statement'])
         ->whereNumber('settlement')->middleware(['can:exit.clearance', 'can:payroll.view'])->name('exit.settlements.statement');
-    Route::post('exit/{resignation}/letter', [\App\Http\Controllers\Exits\ExitDocumentController::class, 'issue'])
+    Route::post('exit/{resignation}/letter', [ExitDocumentController::class, 'issue'])
         ->whereNumber('resignation')->middleware('can:exit.clearance')->name('exit.letter.issue');
-    Route::get('exit/{resignation}/letter', [\App\Http\Controllers\Exits\ExitDocumentController::class, 'letter'])
+    Route::get('exit/{resignation}/letter', [ExitDocumentController::class, 'letter'])
         ->whereNumber('resignation')->middleware('can:exit.clearance')->name('exit.letter');
-    Route::get('my/resignation/{resignation}/statement', [\App\Http\Controllers\Exits\ExitDocumentController::class, 'myStatement'])
+    Route::get('my/resignation/{resignation}/statement', [ExitDocumentController::class, 'myStatement'])
         ->whereNumber('resignation')->name('my.resignation.statement');
-    Route::get('my/resignation/{resignation}/letter', [\App\Http\Controllers\Exits\ExitDocumentController::class, 'myLetter'])
+    Route::get('my/resignation/{resignation}/letter', [ExitDocumentController::class, 'myLetter'])
         ->whereNumber('resignation')->name('my.resignation.letter');
 
     // Users and roles. No delete route: accounts are disabled, never removed.
@@ -467,7 +503,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
             ->middleware(['can:settings.manage', 'throttle:5,1'])
             ->name('email.test');
         // Settings > ZKTeco Device (Admin). Registered before the {group} route.
-        Route::middleware('can:settings.manage')->prefix('devices')->name('devices.')->controller(\App\Http\Controllers\Settings\DeviceController::class)->group(function () {
+        Route::middleware('can:settings.manage')->prefix('devices')->name('devices.')->controller(DeviceController::class)->group(function () {
             Route::get('/', 'index')->name('index');
             Route::post('/', 'store')->name('store');
             Route::put('{device}', 'update')->whereNumber('device')->name('update');
@@ -476,7 +512,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::post('{device}/resend', 'resend')->whereNumber('device')->name('resend');
         });
         // Settings > Asset categories (Admin, HR). Registered before the {group} route.
-        Route::middleware('can:assets.assign')->prefix('asset-categories')->name('asset-categories.')->controller(\App\Http\Controllers\Settings\AssetCategoryController::class)->group(function () {
+        Route::middleware('can:assets.assign')->prefix('asset-categories')->name('asset-categories.')->controller(AssetCategoryController::class)->group(function () {
             Route::get('/', 'index')->name('index');
             Route::post('/', 'store')->name('store');
             Route::put('{category}', 'update')->whereNumber('category')->name('update');

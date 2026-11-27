@@ -1,14 +1,14 @@
 <?php
 
+use App\Actions\Employees\ManageEmployeeFiles;
 use App\Models\Department;
 use App\Models\Designation;
 use App\Models\Employee;
 use App\Models\EmployeeDocument;
 use App\Models\User;
-use App\Actions\Employees\ManageEmployeeFiles;
-use App\Support\PhotoNotProcessable;
 use App\Support\EmployeeFiles;
 use App\Support\EmployeeRoles;
+use App\Support\PhotoNotProcessable;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Http\UploadedFile;
