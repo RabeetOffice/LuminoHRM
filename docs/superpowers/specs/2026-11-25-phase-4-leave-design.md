@@ -104,10 +104,10 @@ Chosen: **B**, because it matches Phase 3 (one row per person per day, rules fro
 
 - `AttendanceRebuilder` sets `DayInput::onLeave` from `leave_days` for that employee and date (full day), and a new half-day input for half-day leave.
 - **Half-day leave (owner decided 2026-11-25):** the other half is judged with the shift's half-day threshold as the required hours; lateness and early departure are not counted that day. The attendance row keeps `leave_half` (am / pm) and its status describes the worked half:
-  - worked minutes >= half-day threshold: status `present`; counts as 0.5 leave + 0.5 present, no deduction;
-  - fewer minutes, or no punches once the day is closed: status `absent`; counts as 0.5 leave + 0.5 absent, so payroll deducts half a day. The two short cases are treated the same;
-  - on an open day (today) with no punches yet, it waits like any open day.
-  Monthly totals, the grid symbol (a half-leave mark next to the worked-half symbol), the Excel export and dashboard counts all use these halves; payroll reads the same figures in Phase 5.
+    - worked minutes >= half-day threshold: status `present`; counts as 0.5 leave + 0.5 present, no deduction;
+    - fewer minutes, or no punches once the day is closed: status `absent`; counts as 0.5 leave + 0.5 absent, so payroll deducts half a day. The two short cases are treated the same;
+    - on an open day (today) with no punches yet, it waits like any open day.
+      Monthly totals, the grid symbol (a half-leave mark next to the worked-half symbol), the Excel export and dashboard counts all use these halves; payroll reads the same figures in Phase 5.
 - **Punches on a full leave day:** the day stays `on_leave`; times and worked minutes are recorded (calculator already does this). HR cancels the leave if the person really worked.
 - **Manual days win:** a day HR corrected by hand is not overwritten by approval or cancellation; it appears in a "needs attention" note on the request so HR can decide. Manual corrections cannot set `on_leave` (unchanged from Phase 3).
 - **Backdated approval** marks closed days for rebuild; closed non-manual days are recalculated with their stored rule snapshot and become `on_leave`. Days before `attendance.start_date` get no attendance row change.

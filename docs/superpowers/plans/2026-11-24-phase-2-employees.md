@@ -43,23 +43,23 @@
 
 ## File map
 
-| Path | Responsibility |
-|---|---|
-| `app/Support/ListQuery.php` | Shared list helpers: search escaping, per-page, page clamp redirect |
-| `database/migrations/*_create_employees_tables.php` | `employees`, `employee_contacts`, `employee_bank_accounts`, `employee_documents`, `users.employee_id`, `departments.head_employee_id` |
-| `app/Models/Employee.php` (+ `EmployeeContact`, `EmployeeBankAccount`, `EmployeeDocument`) | Records, relations, casts, audit allow-list |
-| `app/Support/EmployeeCode.php` | Next `LD-0001` code, race-safe |
-| `app/Support/EmployeeAccess.php` | Who may see/edit which employee and which field groups |
-| `app/Http/Resources/EmployeeListResource.php`, `EmployeeProfileResource.php` | The only way an employee reaches page props |
-| `app/Actions/Employees/CreateEmployee.php`, `UpdateEmployee.php`, `ChangeEmployeeStatus.php` | Writes, each in one transaction with its audit entry |
-| `app/Http/Controllers/EmployeeController.php` | List, create, edit, show, status, delete |
-| `app/Http/Controllers/EmployeeFileController.php` | Photo and document upload, download, removal |
-| `app/Http/Controllers/EmployeeImportController.php`, `EmployeeExportController.php` | Excel in and out |
-| `app/Imports/EmployeesImport.php`, `app/Exports/EmployeesExport.php`, `EmployeeTemplateExport.php` | Sheet definitions |
-| `app/Http/Controllers/OrganizationChartController.php` | Chart data |
-| `app/Http/Controllers/MyProfileController.php` | The signed-in person's own record |
-| `resources/js/pages/employees/{index,form,show,import}.tsx`, `organization-chart/index.tsx`, `my/profile.tsx` | Pages |
-| `resources/js/components/hrm/{avatar,field-list,form-tabs,org-chart-node,view-toggle}.tsx` | Reusable pieces |
+| Path                                                                                                          | Responsibility                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `app/Support/ListQuery.php`                                                                                   | Shared list helpers: search escaping, per-page, page clamp redirect                                                                   |
+| `database/migrations/*_create_employees_tables.php`                                                           | `employees`, `employee_contacts`, `employee_bank_accounts`, `employee_documents`, `users.employee_id`, `departments.head_employee_id` |
+| `app/Models/Employee.php` (+ `EmployeeContact`, `EmployeeBankAccount`, `EmployeeDocument`)                    | Records, relations, casts, audit allow-list                                                                                           |
+| `app/Support/EmployeeCode.php`                                                                                | Next `LD-0001` code, race-safe                                                                                                        |
+| `app/Support/EmployeeAccess.php`                                                                              | Who may see/edit which employee and which field groups                                                                                |
+| `app/Http/Resources/EmployeeListResource.php`, `EmployeeProfileResource.php`                                  | The only way an employee reaches page props                                                                                           |
+| `app/Actions/Employees/CreateEmployee.php`, `UpdateEmployee.php`, `ChangeEmployeeStatus.php`                  | Writes, each in one transaction with its audit entry                                                                                  |
+| `app/Http/Controllers/EmployeeController.php`                                                                 | List, create, edit, show, status, delete                                                                                              |
+| `app/Http/Controllers/EmployeeFileController.php`                                                             | Photo and document upload, download, removal                                                                                          |
+| `app/Http/Controllers/EmployeeImportController.php`, `EmployeeExportController.php`                           | Excel in and out                                                                                                                      |
+| `app/Imports/EmployeesImport.php`, `app/Exports/EmployeesExport.php`, `EmployeeTemplateExport.php`            | Sheet definitions                                                                                                                     |
+| `app/Http/Controllers/OrganizationChartController.php`                                                        | Chart data                                                                                                                            |
+| `app/Http/Controllers/MyProfileController.php`                                                                | The signed-in person's own record                                                                                                     |
+| `resources/js/pages/employees/{index,form,show,import}.tsx`, `organization-chart/index.tsx`, `my/profile.tsx` | Pages                                                                                                                                 |
+| `resources/js/components/hrm/{avatar,field-list,form-tabs,org-chart-node,view-toggle}.tsx`                    | Reusable pieces                                                                                                                       |
 
 ---
 
@@ -69,6 +69,7 @@
 **Tests:** `tests/Unit/EmployeeCodeTest.php`, `tests/Unit/EmployeeAccessTest.php`, `tests/Feature/Employees/SchemaTest.php`, `tests/Unit/ListQueryTest.php`.
 
 **Interfaces — Produces:**
+
 - `employees`: `id`, `employee_code` (unique), `device_user_id` (nullable, unique), `first_name`, `last_name`, `photo_path` (nullable), `email` (unique), `phone` (nullable), `dob` (nullable date), `gender` (nullable: `male|female|other`), `cnic` (nullable, unique, 13 digits), `department_id` (FK restrict), `designation_id` (FK restrict), `manager_id` (nullable, self FK, null on delete), `joining_date` (date), `probation_end_date` (nullable date), `employment_type` (`full_time|part_time|contract|intern`), `status` (`active|probation|inactive|resigned|terminated`), `last_working_day` (nullable date), timestamps. Indexes on `status`, `department_id`, `designation_id`, `manager_id`. No `shift_id` yet (Phase 3 adds it).
 - `employee_contacts`: `employee_id` (unique FK cascade), `address` (text, nullable), `emergency_name`, `emergency_phone` (nullable).
 - `employee_bank_accounts`: `employee_id` (unique FK cascade), `bank_name`, `account_title`, `account_number` (nullable strings).
@@ -77,9 +78,9 @@
 - `Employee`: `full_name` accessor; relations `department`, `designation`, `manager`, `reports`, `contact`, `bankAccount`, `documents`, `user`; scopes `status(string)`, `search(string)` (name, code, email).
 - `EmployeeCode::next(): string` — inside a transaction with a lock; `LD-0001` on an empty table; next after the highest numeric suffix.
 - `EmployeeAccess` (constructed for a `User`):
-  - `scope(Builder $q): Builder` — all for `employees.view-all`; direct reports plus self for `employees.view-team` without view-all; self only otherwise; nothing for a user with no employee record and no view permission.
-  - `canView(Employee $e): bool`, `canManage(): bool`, `canDelete(Employee $e): bool`.
-  - `fieldGroups(Employee $e): array` — subset of `['basic','employment','contact','banking','documents','identity']` where `identity` = CNIC + DOB. view-all: all six. Manager viewing a report: `basic`, `employment` only. Self: all six (own data), read-only.
+    - `scope(Builder $q): Builder` — all for `employees.view-all`; direct reports plus self for `employees.view-team` without view-all; self only otherwise; nothing for a user with no employee record and no view permission.
+    - `canView(Employee $e): bool`, `canManage(): bool`, `canDelete(Employee $e): bool`.
+    - `fieldGroups(Employee $e): array` — subset of `['basic','employment','contact','banking','documents','identity']` where `identity` = CNIC + DOB. view-all: all six. Manager viewing a report: `basic`, `employment` only. Self: all six (own data), read-only.
 - `ListQuery`: `escapeLike(string): string`, `perPage(Request): int`, `page(Request, string $key): int`, `clampRedirect(Request, array $paginators): ?RedirectResponse`, `stringParam(Request, string $key): string`.
 - Test helper `employeeFor(User $user, array $attrs = []): Employee` and `userWithRole()` unchanged.
 - `config('hrm.employees.statuses')`, `.employment_types`, `.genders`, `.document_types`.
@@ -111,6 +112,7 @@
 **Tests:** `tests/Feature/Employees/EmployeeWriteTest.php`, `tests/Unit/ManagerLoopTest.php`.
 
 **Form (one page, five tabs, one Save; a tab with an error shows a red dot and the first one opens):**
+
 - **Basic:** first name, last name, photo, employee code (auto; editable by Admin), work email, phone, date of birth, gender, CNIC.
 - **Employment:** department, designation (filtered by department), reporting manager (searchable, excludes self and own subordinates), joining date, probation end date, employment type, status, machine user ID, role (default Employee; Admin may pick any, HR may pick Employee or Manager only).
 - **Contact:** address, emergency contact name and phone.

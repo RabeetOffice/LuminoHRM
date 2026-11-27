@@ -23,25 +23,25 @@
 - All Phase 0–2 Global Constraints still apply (PHP at `C:\php84\php.exe`; no shell-outs; product name "Lumino HRM"; the reference product's name never in code or copy; reserved URL prefixes; never ports 8000 or 8173; never stop a process you did not start; commit by explicit path).
 - **One time authority.** Punch times are the machine's local wall-clock times and are stored exactly as received, as naive `DATETIME` values (no zone conversion on the way in or out). "Which calendar day is it" and "now" for attendance come from `settings('company.timezone')` (default `Asia/Karachi`) through one helper, `AttendanceClock`. The handshake's `TimeZone=` value is derived from that zone's current UTC offset. Nothing in attendance uses the browser's zone or raw `now()`.
 - **Naive date and time values (rules after the Task 1 review).** `date` columns (`NaiveDate`) and `clock_in` / `clock_out` / `punch_time` (`NaiveDateTime`) are naive; their values serialise as `Y-m-d` / `Y-m-d H:i:s`, and a DateTime written to them is first converted to the company zone.
-  - Query date columns with `->onDate($d)` / `->betweenDates($from, $to)` (Attendance, Holiday, AttendanceCorrection; inclusive) or with `Y-m-d` strings; never `where('date', $carbon)` or `whereBetween('date', [$carbon, ...])` (Laravel binds a Carbon as `Y-m-d H:i:s`; SQLite then misses the day).
-  - Never call `setTimezone()` on a value read from these casts: its wall clock is the fact; the company-zone label is only for comparing with `AttendanceClock::now()`.
-  - Compute durations from the cast values consistently (two cast values, or a cast value and `AttendanceClock`), never mixing in raw `now()` or a value in another zone.
+    - Query date columns with `->onDate($d)` / `->betweenDates($from, $to)` (Attendance, Holiday, AttendanceCorrection; inclusive) or with `Y-m-d` strings; never `where('date', $carbon)` or `whereBetween('date', [$carbon, ...])` (Laravel binds a Carbon as `Y-m-d H:i:s`; SQLite then misses the day).
+    - Never call `setTimezone()` on a value read from these casts: its wall clock is the fact; the company-zone label is only for comparing with `AttendanceClock::now()`.
+    - Compute durations from the cast values consistently (two cast values, or a cast value and `AttendanceClock`), never mixing in raw `now()` or a value in another zone.
 - **A punch is stored once and acknowledged only after it is stored.** Unique key (`device_id`, `device_user_id`, `punch_time`). A re-sent punch is not an error and counts as acknowledged. If the database write fails, the reply is not `OK`, so the machine re-sends.
 - **Ingest stays cheap and separate.** The `/iclock` routes keep no session, cookies, CSRF or auth, and reply in plain text exactly as in Phase 0 for every existing test. Ingest writes punches and a "needs rebuild" marker; it never computes attendance.
 - **Manual wins.** A day with `is_manual = true` is never overwritten by a rebuild. Clearing the manual flag is an explicit action.
 - **Permissions (already seeded, no new names):** `attendance.view-all` (admin, hr), `attendance.view-team` (admin, hr, manager), `attendance.edit` (admin, hr), `settings.manage` (admin: device settings), `settings.attendance-leave` (admin, hr: attendance rules, already built). Everyone sees their own attendance. A Manager sees direct reports only (`EmployeeAccess`).
 - **Statuses** (exact values): `present`, `late`, `half_day`, `absent`, `on_leave`, `holiday`, `weekend`. Markers stored as minutes: `late_minutes`, `early_minutes`, `overtime_minutes`. `on_leave` is produced only when the Leave phase supplies approved leave; this phase leaves the hook and never produces it.
 - **Rules** (settings keys from Phase 1; shift values override the defaults per shift):
-  - First punch of the day = clock-in, last = clock-out, punches between are kept but ignored.
-  - Late: clock-in after shift start + grace minutes. `late_minutes` = minutes after shift start.
-  - Early departure: clock-out before shift end. `early_minutes` = minutes before shift end.
-  - Half day: worked hours below the shift's half-day threshold.
-  - Overtime: minutes worked after shift end, recorded only when at least `attendance.overtime_min_minutes`.
-  - One punch only: clock-out missing. Counts as Present (or Late), `needs_attention = true`, flagged only once the day has been closed.
-  - No punches on a working day: Absent, set by the nightly close, never for today.
-  - Weekly off day or holiday: status `weekend` / `holiday`; if punches exist the times are recorded and all worked minutes count as overtime.
-  - Attendance-exempt employee: Present on every working day, no late/early/absent, punches still recorded if any.
-  - No record before the joining date or after the last working day; none for `inactive`, `resigned`, `terminated` employees after the status change date.
+    - First punch of the day = clock-in, last = clock-out, punches between are kept but ignored.
+    - Late: clock-in after shift start + grace minutes. `late_minutes` = minutes after shift start.
+    - Early departure: clock-out before shift end. `early_minutes` = minutes before shift end.
+    - Half day: worked hours below the shift's half-day threshold.
+    - Overtime: minutes worked after shift end, recorded only when at least `attendance.overtime_min_minutes`.
+    - One punch only: clock-out missing. Counts as Present (or Late), `needs_attention = true`, flagged only once the day has been closed.
+    - No punches on a working day: Absent, set by the nightly close, never for today.
+    - Weekly off day or holiday: status `weekend` / `holiday`; if punches exist the times are recorded and all worked minutes count as overtime.
+    - Attendance-exempt employee: Present on every working day, no late/early/absent, punches still recorded if any.
+    - No record before the joining date or after the last working day; none for `inactive`, `resigned`, `terminated` employees after the status change date.
 - **Status precedence for one day:** manual > holiday > weekend > (exempt → present) > punches → half_day / late / present > absent.
 - Night shifts crossing midnight are out of scope: a shift's end must be after its start on the same day.
 - Money: none. Payroll reads `attendances` in Phase 5.
@@ -61,20 +61,20 @@
 ## Shared interfaces (added by the Task 3 fix round)
 
 - **New attendance settings** (backend defaults in `config('hrm.defaults.attendance')`, validated in `AttendanceRequest`; Settings screen inputs still to come):
-  - `attendance.start_date`: `"Y-m-d"` or `null` (default `null`). Null means attendance has not started, so no punch-less row (absent, weekend, holiday or exempt present) is created and existing punch-less non-manual rows are removed. Days with punches are still decided. Once it is set, punch-less rows are created from the start date on. **Rows dated before the start date that have punches exist and are kept** (moving the start date later, or setting it in the future, never deletes them; only punch-less automatic rows before it are removed): screens, totals, reports and payroll must treat the start date as the first counted day (filter date >= attendance.start_date when it is set).
-  - `attendance.duplicate_punch_minutes`: integer 0–60 (default `5`). Punches less than this many minutes after the previous RAW punch form one cluster (a chain of taps is one cluster). The first punch of the first cluster is the clock-in, the last punch of the last cluster the clock-out (17:58 + 18:01 at clock-out gives 18:01). `0` turns this off.
-  - `attendance.day_cutoff_time`: `"H:i"` from `00:00` to `06:00` (default `"04:00"`). A punch before the cutoff belongs to the previous calendar day, as that day's possible clock-out. It must stay at least 2 hours before the earliest shift start (validated on both sides: saving a shift requires start >= cutoff + 2 h; saving a changed cutoff requires cutoff <= earliest shift start - 2 h).
+    - `attendance.start_date`: `"Y-m-d"` or `null` (default `null`). Null means attendance has not started, so no punch-less row (absent, weekend, holiday or exempt present) is created and existing punch-less non-manual rows are removed. Days with punches are still decided. Once it is set, punch-less rows are created from the start date on. **Rows dated before the start date that have punches exist and are kept** (moving the start date later, or setting it in the future, never deletes them; only punch-less automatic rows before it are removed): screens, totals, reports and payroll must treat the start date as the first counted day (filter date >= attendance.start_date when it is set).
+    - `attendance.duplicate_punch_minutes`: integer 0–60 (default `5`). Punches less than this many minutes after the previous RAW punch form one cluster (a chain of taps is one cluster). The first punch of the first cluster is the clock-in, the last punch of the last cluster the clock-out (17:58 + 18:01 at clock-out gives 18:01). `0` turns this off.
+    - `attendance.day_cutoff_time`: `"H:i"` from `00:00` to `06:00` (default `"04:00"`). A punch before the cutoff belongs to the previous calendar day, as that day's possible clock-out. It must stay at least 2 hours before the earliest shift start (validated on both sides: saving a shift requires start >= cutoff + 2 h; saving a changed cutoff requires cutoff <= earliest shift start - 2 h).
 - **Null status = pending.** `attendances.status` null means the row is waiting to be calculated: a bare row created by punch ingestion. The rebuild always decides or removes it. The close never leaves one behind, except a day that cannot be decided; that row stays open with `needs_attention = true`.
 - **Derive a punch's day with `AttendanceClock::attendanceDateFor($naiveDateTime)`.** Bulk callers use `AttendanceClock::dayOf($time, $clock->dayCutoff())`. Never use the date part of the punch time. `DevicePunch` (on save) and `PunchIngestor` already store `punch_date` this way, so group punches by `punch_date`. Changing the cutoff setting does not re-derive stored punches, and the calculator no longer filters punches by a cutoff window: it trusts the punches it is given for the day. A cutoff change affects new punches only.
 - **`attendances.shift_rules`** (JSON, cast `array`) holds the rules a day was decided with: `shift_id`, `name`, `start_time`, `end_time`, `grace_minutes`, `half_day_hours`, `weekly_offs`, and (fix round 2) `overtime_min_minutes`, `duplicate_punch_minutes` and the employee's `attendance_exempt` at the time. A closed row is recalculated from this snapshot (an older snapshot without the last three keys takes their current values). A manual save writing `shift_rules` should include them too. Only `hrm:attendance-rebuild --from --to` applies the current rules and refreshes it.
 - **Task 5's manual save must set `closed` itself and write `shift_rules`,** because the rebuild and the close never touch a manual row.
 - **Calculator rules after the fix:**
-  - An open day is never a half day and never has early minutes.
-  - A single punch before the shift midpoint is the clock-in (the late rule applies). At or after the midpoint it is the clock-out. Either way the status is present or late, flagged once the day is closed. On a weekend or holiday it is never flagged.
-  - Exactly two kept punches less than 60 minutes apart on a working day: decided by the single-punch rule on the first punch (present or late, flagged once closed), never a half day.
-  - Overtime after the shift end is counted from max(shift end, clock-in), so it never exceeds worked minutes.
-  - A half day stores `late_minutes = 0`.
-  - Grace is compared in whole minutes, so 09:15:59 is on time with 15 minutes grace.
+    - An open day is never a half day and never has early minutes.
+    - A single punch before the shift midpoint is the clock-in (the late rule applies). At or after the midpoint it is the clock-out. Either way the status is present or late, flagged once the day is closed. On a weekend or holiday it is never flagged.
+    - Exactly two kept punches less than 60 minutes apart on a working day: decided by the single-punch rule on the first punch (present or late, flagged once closed), never a half day.
+    - Overtime after the shift end is counted from max(shift end, clock-in), so it never exceeds worked minutes.
+    - A half day stores `late_minutes = 0`.
+    - Grace is compared in whole minutes, so 09:15:59 is on time with 15 minutes grace.
 - **`AttendanceClock::attendanceToday()`** (`Y-m-d`) is the attendance day of now under the day cutoff (at 00:30 with the 04:00 cutoff it is still yesterday). It is the ONLY `today` for open/closed decisions and for "today" on attendance screens: a day is closed once it is before `attendanceToday()`. The hourly close (:30) closes only days before it, so a day is closed by the first run after the next morning's cutoff (04:30). Do not use `AttendanceClock::today()` for this.
 - **Corrected days and later punches (final fix round).** A corrected day is kept as entered; a later machine punch will not be added. Enter the clock-out too, or correct again later. (The correction dialog says this under the clock-in field when only a clock-in is entered on the current attendance day.)
 - **A single entered time keeps its role (final fix round).** `DayInput::singleRole` (`'in' | 'out' | null`): when a person entered exactly one time, `AttendanceRebuilder::decideEntered` passes which one it was. An entered clock-in alone is always the clock-in (late rule, no early minutes, needs attention on a closed working day); an entered clock-out alone is always the clock-out (never late). Machine punches (`null`) keep the shift-midpoint rule. Covers the Daily correction, correction-request approval and the close finalising an open manual row.
@@ -90,22 +90,22 @@
 
 ## File map
 
-| Path | Responsibility |
-|---|---|
-| `database/migrations/*_create_attendance_tables.php` | `shifts`, `devices`, `device_punches`, `device_commands`, `attendances`, `attendance_corrections`, `holidays`, `employees.shift_id`, `employees.attendance_exempt` |
-| `app/Models/{Shift,Device,DevicePunch,DeviceCommand,Attendance,AttendanceCorrection,Holiday}.php` | Records |
-| `app/Support/Attendance/AttendanceClock.php` | The one source of "today" and "now" in the company zone |
-| `app/Support/Attendance/DayCalculator.php` (+ `DayInput`, `DayResult`) | Pure day rules |
-| `app/Support/Attendance/AttendanceRebuilder.php` | Loads inputs, calls the calculator, writes `attendances` |
-| `app/Support/Attendance/PunchIngestor.php` | Parses ATTLOG lines, stores punches, marks days for rebuild |
-| `app/Http/Controllers/Iclock/IclockController.php` | Machine endpoints (extended) |
-| `app/Console/Commands/{RebuildAttendance,CloseAttendanceDay,SimulatePunches}.php` | Scheduled jobs and the local simulator |
-| `app/Http/Controllers/Attendance/{DailyController,MonthlyController,PunchController,ShiftController,CorrectionController,MyAttendanceController}.php` | Screens |
-| `app/Http/Controllers/Settings/DeviceController.php` | ZKTeco device settings |
-| `app/Http/Controllers/HolidayController.php` | Holiday calendar |
-| `app/Exports/MonthlyAttendanceExport.php` | Excel |
-| `resources/js/pages/attendance/{daily,monthly,punches,shifts,corrections}.tsx`, `my/attendance.tsx`, `holidays/index.tsx`, `hrm-settings/devices.tsx` | Pages |
-| `resources/js/components/attendance/*` | Status symbol, legend, day cell, correction dialog |
+| Path                                                                                                                                                  | Responsibility                                                                                                                                                     |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `database/migrations/*_create_attendance_tables.php`                                                                                                  | `shifts`, `devices`, `device_punches`, `device_commands`, `attendances`, `attendance_corrections`, `holidays`, `employees.shift_id`, `employees.attendance_exempt` |
+| `app/Models/{Shift,Device,DevicePunch,DeviceCommand,Attendance,AttendanceCorrection,Holiday}.php`                                                     | Records                                                                                                                                                            |
+| `app/Support/Attendance/AttendanceClock.php`                                                                                                          | The one source of "today" and "now" in the company zone                                                                                                            |
+| `app/Support/Attendance/DayCalculator.php` (+ `DayInput`, `DayResult`)                                                                                | Pure day rules                                                                                                                                                     |
+| `app/Support/Attendance/AttendanceRebuilder.php`                                                                                                      | Loads inputs, calls the calculator, writes `attendances`                                                                                                           |
+| `app/Support/Attendance/PunchIngestor.php`                                                                                                            | Parses ATTLOG lines, stores punches, marks days for rebuild                                                                                                        |
+| `app/Http/Controllers/Iclock/IclockController.php`                                                                                                    | Machine endpoints (extended)                                                                                                                                       |
+| `app/Console/Commands/{RebuildAttendance,CloseAttendanceDay,SimulatePunches}.php`                                                                     | Scheduled jobs and the local simulator                                                                                                                             |
+| `app/Http/Controllers/Attendance/{DailyController,MonthlyController,PunchController,ShiftController,CorrectionController,MyAttendanceController}.php` | Screens                                                                                                                                                            |
+| `app/Http/Controllers/Settings/DeviceController.php`                                                                                                  | ZKTeco device settings                                                                                                                                             |
+| `app/Http/Controllers/HolidayController.php`                                                                                                          | Holiday calendar                                                                                                                                                   |
+| `app/Exports/MonthlyAttendanceExport.php`                                                                                                             | Excel                                                                                                                                                              |
+| `resources/js/pages/attendance/{daily,monthly,punches,shifts,corrections}.tsx`, `my/attendance.tsx`, `holidays/index.tsx`, `hrm-settings/devices.tsx` | Pages                                                                                                                                                              |
+| `resources/js/components/attendance/*`                                                                                                                | Status symbol, legend, day cell, correction dialog                                                                                                                 |
 
 ---
 
@@ -115,6 +115,7 @@
 **Tests:** `tests/Feature/Attendance/SchemaTest.php`, `tests/Unit/Attendance/AttendanceClockTest.php`.
 
 **Interfaces — Produces:**
+
 - `shifts`: `id`, `name` (unique), `start_time` (TIME), `end_time` (TIME), `grace_minutes` (smallint), `half_day_hours` (decimal 4,2), `weekly_offs` (JSON array of lowercase day names), `is_default` (bool), timestamps. Exactly one default shift; a data migration creates "General" from the Phase 1 settings (`attendance.shift_start`, `shift_end`, `grace_minutes`, `half_day_hours`, `weekly_offs`). An employee with `shift_id` null uses the default shift.
 - `devices`: `id`, `name`, `serial_no` (unique), `is_active` (bool), `last_seen_at` (nullable datetime, app time), `last_stamp` (nullable string), `last_punch_at` (nullable naive datetime), timestamps.
 - `device_punches`: `id`, `device_id` (FK restrict), `device_user_id` (string 20), `employee_id` (nullable FK, null on delete), `punch_time` (naive DATETIME), `punch_date` (DATE, derived from `punch_time`, indexed), `verify_type` (nullable string 10), `status_code` (nullable string 10), `source` (`device|import|manual`), `created_at`. Unique (`device_id`, `device_user_id`, `punch_time`). Index (`employee_id`, `punch_date`), (`device_user_id`).
@@ -140,6 +141,7 @@
 **Tests:** extend `tests/Feature/Iclock/IclockEndpointsTest.php` (every Phase 0 test must still pass unchanged); add `tests/Feature/Iclock/PunchIngestTest.php`, `tests/Unit/Attendance/PunchIngestorTest.php`.
 
 **Interfaces — Produces:**
+
 - Device registration: a serial is accepted when an **active** `devices` row has it. Bootstrap: a serial listed in `HRM_DEVICE_SERIALS` with no row gets a row created on first contact (name "MB20 (<serial>)"). Unknown serials keep the Phase 0 rejection, cap and logging.
 - Handshake reply: same lines as Phase 0, except `ATTLOGStamp=` carries `devices.last_stamp` when set (else `None`), and `TimeZone=` comes from `AttendanceClock::utcOffsetHours()`.
 - `POST /iclock/cdata?table=ATTLOG`: `PunchIngestor::ingest(Device $device, string $body, ?string $stamp): IngestResult { int $stored, int $duplicates, int $skipped }` inside ONE transaction: parse each line (PIN, `Y-m-d H:i:s`, status, verify; extra fields ignored; malformed lines skipped and counted); insert-or-ignore on the unique key; set `employee_id` by matching `device_user_id` to `employees.device_user_id`; upsert `attendances(needs_rebuild = true)` rows for each affected employee-day (create a bare row when none exists; never touch other columns of an existing row); update `devices.last_seen_at`, `last_punch_at`, `last_stamp`. Reply `OK: <stored + duplicates>\n` only after commit. On any exception: roll back, reply `ERROR: retry\n` with HTTP 500-class status **as plain text**, log the exception class.
@@ -160,6 +162,7 @@
 **Tests:** `tests/Unit/Attendance/DayCalculatorTest.php` (table-driven), `tests/Feature/Attendance/RebuildTest.php`, `tests/Feature/Attendance/CloseDayTest.php`.
 
 **Interfaces — Produces:**
+
 - `DayInput` (readonly): `date`, `shiftStart`, `shiftEnd`, `graceMinutes`, `halfDayHours`, `weeklyOffs`, `isHoliday`, `isExempt`, `punches` (sorted list of naive datetimes), `closed` (bool: the day is over), `overtimeMinMinutes`, `onLeave` (bool, always false in this phase).
 - `DayResult` (readonly): `status`, `clockIn`, `clockOut`, `workedMinutes`, `lateMinutes`, `earlyMinutes`, `overtimeMinutes`, `needsAttention`.
 - `DayCalculator::calculate(DayInput): ?DayResult` — pure, no I/O, no clock. Returns null when there is nothing to record yet (an open working day with no punches).
@@ -223,6 +226,7 @@
 **Tests:** `tests/Feature/Attendance/PunchesTest.php`, `tests/Feature/Settings/DeviceSettingsTest.php`, `tests/Feature/Console/SimulatePunchesTest.php`.
 
 **Interfaces — Produces:**
+
 - `attendance.punches` (`GET /attendance/punches`; `attendance.view-all`): every punch, newest first, filters (date range, device, employee, "Unknown IDs only"), columns time, machine user id, employee (or an "Unknown" pill), device, verify type, source. `attendance.punches.assign` (`POST`; `attendance.edit`): set `device_user_id` on a chosen employee for an unknown id (through the employee update path, so relink and audit happen).
 - Settings → ZKTeco Device (`settings.manage`): list devices with status (online if `last_seen_at` within 5 minutes), last contact, last punch, punches today; add (name + serial), rename, activate/deactivate, remove (only when it has no punches); "Unknown user IDs" list with counts; "Sync log" = last 7 days of `device_logs` for the device (time, type, summary); "Re-send punches" queues the command `DATA QUERY ATTLOG StartTime=<from>\tEndTime=<to>` for a date range (max 31 days). A prune entry keeps `device_logs` for 7 days (rejected rows too).
 - `hrm:simulate-punches {--date=today} {--employees=all} {--late=10} {--absent=5} {--missing-out=3} {--serial=}`: **refuses to run unless `APP_ENV` is `local` or `testing`**. Builds realistic ATTLOG lines for employees that have a `device_user_id` (assigning sequential ids to those without, on request with `--assign-ids`) and POSTs them through the real `/iclock/cdata` handler in-process, so the whole path is exercised. Prints what it sent. `docs/attendance-local-testing.md` explains how to try attendance on localhost without the machine (simulate, then run `hrm:attendance-rebuild` and `hrm:attendance-close`), and how to point the real MB20 at a test server later.
@@ -252,6 +256,7 @@
 **Tests:** `tests/Feature/MyAttendanceTest.php`, `tests/Feature/DashboardAttendanceTest.php`, Vitest for chart data shaping.
 
 **Interfaces — Produces:**
+
 - `my.attendance` (`GET /my/attendance?month=`; any signed-in user with an employee record): month calendar of own days with the same symbols, a summary row (present, late, half day, absent, worked hours, late minutes), the day list with times, and "Request correction" on eligible days.
 - Dashboard (scoped like the employee count): tiles Present Today, Absent Today, Late Today with real numbers (today's provisional figures: Absent Today = people with no punch yet who are expected today, labelled "Not in yet" before the day closes); banner line "N present today · last punch received HH:MM"; cards "Late Arrivals Today" (name, clock-in, minutes late) and "Attendance, last 30 days" (stacked bars present/late/absent per day, from closed days); an Employee sees their own month summary instead of the company tiles.
 - Profile page: an "Attendance" tab (current month summary + link to the monthly grid filtered to that person) for viewers allowed to see that person's attendance.

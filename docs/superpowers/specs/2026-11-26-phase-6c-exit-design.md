@@ -85,12 +85,12 @@ How the final month is paid and frozen.
 
 - **Prepare** (`exit.clearance` and `PayrollAccess::mayEditSalary`): once the exit is approved; one settlement per exit. `month` = the month of the last working day. Draft only: HR adds or removes lines, may override the tax (amount and reason, as payroll), recalculates. Every edit recalculates.
 - **Calculation** (`SettlementCalculator`): `PayInputLoader::load($month, [$employee], [$id => ['window_to' => $lastWorkingDay, 'loans_in_full' => true, 'adjustments' => $lines, 'tax_override' => …]])` then `PayCalculator::calculate`. So: pay window max(joining date, 1st) to the last working day; earnings, fixed deductions and fixed tax prorated by calendar days of the month; absences, half days, lates, unpaid leave and overtime exactly as a run; tax mode of the profile in force on the last working day; percentage tax on the same base as a run.
-  - `window_to` (new, optional): the window end instead of the month end. `loans_in_full` (new, optional): each active loan's due amount is its whole remaining balance, skips ignored. Neither is ever passed by a payroll run, so runs do not change.
-  - **Leave encashment** (only when `settings('payroll.leave_encashment')`, default off): unused days = max(0, `remaining`) of the encashment leave type (`settings('payroll.encashment_leave_type_id')`; null = the type named "Annual", ignoring case; none found is a warning and no encashment) in the leave year of the last working day, read after the trim. Amount = `R(monthly gross of the profile in force on the last day × halves, 2 × basis days)`. Added as a taxable addition "Leave encashment (6.5 days)". Off: no line, and the breakdown says "Leave encashment is off".
-  - **HR lines** (up to 20): kind `bonus` (addition), `notice_shortfall` (deduction), `other` (addition or deduction); label (1 to 100), amount (whole rupees, 1 to 10,000,000), additions taxable yes by default.
-  - **Loans:** each active loan's remaining balance, oldest first, recovered up to what the net allows (the calculator's existing "installment reduced" rule); a shortfall is a warning "Loan balance Rs 10,155 is more than the settlement can recover; the rest stays on the loan." and stays on the loan.
-  - **Negative net is allowed:** the calculator's `negative_net` blocking is ignored for settlements; shown as "Owed by employee: Rs 4,200"; nothing is paid and no loan is recovered.
-  - The `PayResult` is stored as on a payroll line (`basic … net`, `breakdown`) plus `encashment_days` (halves), `encashment_amount`, `loan_shortfall`.
+    - `window_to` (new, optional): the window end instead of the month end. `loans_in_full` (new, optional): each active loan's due amount is its whole remaining balance, skips ignored. Neither is ever passed by a payroll run, so runs do not change.
+    - **Leave encashment** (only when `settings('payroll.leave_encashment')`, default off): unused days = max(0, `remaining`) of the encashment leave type (`settings('payroll.encashment_leave_type_id')`; null = the type named "Annual", ignoring case; none found is a warning and no encashment) in the leave year of the last working day, read after the trim. Amount = `R(monthly gross of the profile in force on the last day × halves, 2 × basis days)`. Added as a taxable addition "Leave encashment (6.5 days)". Off: no line, and the breakdown says "Leave encashment is off".
+    - **HR lines** (up to 20): kind `bonus` (addition), `notice_shortfall` (deduction), `other` (addition or deduction); label (1 to 100), amount (whole rupees, 1 to 10,000,000), additions taxable yes by default.
+    - **Loans:** each active loan's remaining balance, oldest first, recovered up to what the net allows (the calculator's existing "installment reduced" rule); a shortfall is a warning "Loan balance Rs 10,155 is more than the settlement can recover; the rest stays on the loan." and stays on the loan.
+    - **Negative net is allowed:** the calculator's `negative_net` blocking is ignored for settlements; shown as "Owed by employee: Rs 4,200"; nothing is paid and no loan is recovered.
+    - The `PayResult` is stored as on a payroll line (`basic … net`, `breakdown`) plus `encashment_days` (halves), `encashment_amount`, `loan_shortfall`.
 - **Worked example** (Phase 5's profile: basic 60,000, house rent 24,000 taxable, medical 6,000 not taxable, provident fund 3,000, tax 5% of gross taxable; November 2026, 30 days; calendar-days basis): last working day 18 November, one absent day, encashment on with 6.5 Annual days left, bonus 10,000, notice shortfall 5,000, loan remaining 80,000. Earned basic 36,000, house rent 14,400, medical 3,600; encashment R(90,000 × 13, 60) = 19,500; gross 54,000 + 19,500 + 10,000 = 83,500; attendance deduction R(90,000 × 2, 60) = 3,000 (taxable share 2,800); provident fund 1,800; tax R((50,400 − 2,800 + 19,500 + 10,000) × 500, 10,000) = 3,855; before loans 83,500 − 3,000 − 1,800 − 5,000 − 3,855 = 69,845; loan recovered 69,845, shortfall 10,155, **net 0**. With a loan of 20,000: net **49,845**. With encashment off and no loan or lines: 54,000 − 3,000 − 1,800 − R(47,600 × 500, 10,000) 2,380 = **46,820**.
 - **Approve** (`exit.manage`; not one's own settlement unless the sole active Admin, audited `own_settlement: true`). Blocking checks (listed on the panel, refused with the first): the last working day has passed (`attendanceToday()` after it); clearance complete; no salary profile in force; days of the final month up to the last day still missing, needing attention or being calculated; open leave requests touching the month; the month before the final month has no approved or paid run while payroll is live (any approved run exists) and the person was in it. Inside the transaction: employee row FOR UPDATE, resignation row, settlement row FOR UPDATE, loans FOR UPDATE by id; recalculate; if any figure differs from the stored one, save, commit and refuse "Figures changed since the last calculation. Review them and approve again."; else snapshot the company header and footer, write one `loan_repayments` row per recovered loan (`final_settlement_id`, month = settlement month), store the clearance `assets` tick, set `approved`, audit.
 - **Paid** (`exit.clearance`): approved → paid with a paid-on date (not in the future, not before approval); informational. With net 0 or below the button reads "Mark settled".
@@ -116,15 +116,15 @@ How the final month is paid and frozen.
 
 ### 5.9 Who sees what
 
-| | Admin | HR | Manager (direct reports) | Employee (own) |
-|---|---|---|---|---|
-| Resignations list | all | all | team | no (My Resignation) |
-| Exit request, flow, notice, notes | yes | yes | yes | yes |
-| Decide manager step | as reporting manager | as reporting manager | yes | no |
-| Final decision, record, change day, cancel | yes | yes (not own; Admin / HR people by Admin) | no | no |
-| Clearance | tick | tick | absent | items and ticks, read-only |
-| Settlement figures | all; approve | all; edit drafts | **never** (keys absent) | own statement once approved |
-| Experience letter | issue | issue | no | download once issued |
+|                                            | Admin                | HR                                        | Manager (direct reports) | Employee (own)              |
+| ------------------------------------------ | -------------------- | ----------------------------------------- | ------------------------ | --------------------------- |
+| Resignations list                          | all                  | all                                       | team                     | no (My Resignation)         |
+| Exit request, flow, notice, notes          | yes                  | yes                                       | yes                      | yes                         |
+| Decide manager step                        | as reporting manager | as reporting manager                      | yes                      | no                          |
+| Final decision, record, change day, cancel | yes                  | yes (not own; Admin / HR people by Admin) | no                       | no                          |
+| Clearance                                  | tick                 | tick                                      | absent                   | items and ticks, read-only  |
+| Settlement figures                         | all; approve         | all; edit drafts                          | **never** (keys absent)  | own statement once approved |
+| Experience letter                          | issue                | issue                                     | no                       | download once issued        |
 
 Out of scope ids are 403. Data a viewer may not see is absent from the props, not null.
 

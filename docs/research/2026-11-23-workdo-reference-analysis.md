@@ -8,31 +8,31 @@ Legend: **Observed** = seen directly in the demo. **Inferred** = concluded from 
 
 ## 1. How the reference is built
 
-| Item | Finding | Basis |
-|---|---|---|
-| Backend | Laravel | Observed: Ziggy route list, CSRF token, Debugbar routes |
-| Frontend | Inertia.js + React, built with Vite | Observed: `data-page` Inertia payload, `build/assets/app-*.js` |
-| UI kit | shadcn/ui on Tailwind CSS v4 | Observed: shadcn token names (`--sidebar`, `--card`, `--ring`, `--chart-1..5`) in oklch, `data-slot` / `data-sidebar` attributes |
-| Icons | Outline icon set, Lucide style | Inferred from appearance and shadcn defaults |
-| Size | 797 named routes, 24 top-level menu entries in 6 groups | Observed |
-| Product type | Multi-tenant SaaS (plans, coupons, companies, 20+ payment gateways) | Observed in route list |
+| Item         | Finding                                                             | Basis                                                                                                                            |
+| ------------ | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Backend      | Laravel                                                             | Observed: Ziggy route list, CSRF token, Debugbar routes                                                                          |
+| Frontend     | Inertia.js + React, built with Vite                                 | Observed: `data-page` Inertia payload, `build/assets/app-*.js`                                                                   |
+| UI kit       | shadcn/ui on Tailwind CSS v4                                        | Observed: shadcn token names (`--sidebar`, `--card`, `--ring`, `--chart-1..5`) in oklch, `data-slot` / `data-sidebar` attributes |
+| Icons        | Outline icon set, Lucide style                                      | Inferred from appearance and shadcn defaults                                                                                     |
+| Size         | 797 named routes, 24 top-level menu entries in 6 groups             | Observed                                                                                                                         |
+| Product type | Multi-tenant SaaS (plans, coupons, companies, 20+ payment gateways) | Observed in route list                                                                                                           |
 
 This matters because the existing Lumino doc chooses Blade + Alpine. The reference look comes from shadcn/ui, which is a React kit.
 
 ## 2. Design tokens (observed)
 
-| Token | Value |
-|---|---|
-| Accent / primary | `#10b77f` (rgb 16, 183, 127), user-selectable theme colour |
-| Font | Inter; base 16 px, controls and table text 14 px, weight 500 on buttons |
-| Radius | `0.625rem` (10 px) base; buttons 8 px |
-| Border | `oklch(92.2% 0 0)` light grey, 1 px |
-| Background / card | white; muted surfaces `oklch(97% 0 0)` |
-| Text | `oklch(14.5% 0 0)`; muted text `oklch(55.6% 0 0)` |
-| Destructive | `oklch(57.7% .245 27.325)` |
-| Shadow | very light, `0 1px 2px rgba(0,0,0,.05)` |
-| Sidebar | 272 px expanded, collapses to an icon rail; white with grey border |
-| Dark mode | full token set under `.dark` (background `oklch(14.5% 0 0)`) |
+| Token             | Value                                                                   |
+| ----------------- | ----------------------------------------------------------------------- |
+| Accent / primary  | `#10b77f` (rgb 16, 183, 127), user-selectable theme colour              |
+| Font              | Inter; base 16 px, controls and table text 14 px, weight 500 on buttons |
+| Radius            | `0.625rem` (10 px) base; buttons 8 px                                   |
+| Border            | `oklch(92.2% 0 0)` light grey, 1 px                                     |
+| Background / card | white; muted surfaces `oklch(97% 0 0)`                                  |
+| Text              | `oklch(14.5% 0 0)`; muted text `oklch(55.6% 0 0)`                       |
+| Destructive       | `oklch(57.7% .245 27.325)`                                              |
+| Shadow            | very light, `0 1px 2px rgba(0,0,0,.05)`                                 |
+| Sidebar           | 272 px expanded, collapses to an icon rail; white with grey border      |
+| Dark mode         | full token set under `.dark` (background `oklch(14.5% 0 0)`)            |
 
 ## 3. Layout patterns (observed)
 
@@ -47,27 +47,27 @@ This matters because the existing Lumino doc chooses Blade + Alpine. The referen
 
 ## 4. Module inventory vs Lumino v1
 
-| WorkDo area | Sub-pages seen in routes | Lumino v1 |
-|---|---|---|
-| Dashboard, Calendar | dashboard, calendar | Keep |
-| Employees, Org chart | employees (create, import, export), organization-chart | Keep |
-| Organization structure | branches, departments, designations, document-types | Keep departments and designations; branches not needed for one office |
-| Attendance | shifts, attendance-policies, attendance-records, attendance-regularizations, time-entries, biometric-attendance | Keep; see gaps below |
-| Leave | leave-types, leave-policies, leave-applications, leave-balances, holidays | Keep |
-| Payroll | salary-components, employee-salaries, payroll-runs, payslips | Keep, extended (tax modes, loans, late rule) |
-| Performance | indicator-categories, indicators, goal-types, employee-goals, review-cycles, employee-reviews | Keep, simplified to KPIs + reviews |
-| Assets | asset-types, assets, dashboard, depreciation report | Keep without depreciation |
-| Employee lifecycle | awards, promotions, resignations, terminations, warnings, trips, complaints, transfers | Only resignation / exit in v1 |
-| Users & roles | users, roles, permissions, login-history | Keep (four fixed roles) |
-| Settings | system, brand, email, working days, IP restriction, ZKTeco, NOC / experience certificate / joining letter templates, storage | Keep a trimmed set |
-| Recruitment | ~20 pages (jobs, candidates, interviews, offers, onboarding) | Out |
-| Training | programs, sessions, assessments | Out |
-| Meetings, Events, Zoom | 9 pages | Out |
-| Documents & contracts | contract templates, HR documents, acknowledgments | Out (employee document uploads only) |
-| Announcements | announcements + dashboard | Out for now; candidate for v1 (see below) |
-| Media library, landing page, custom pages, newsletters | | Out |
-| SaaS: plans, coupons, companies, referral, payment gateways | | Out (single company) |
-| Slack, Telegram, Twilio, ChatGPT, ReCaptcha, cookie, SEO settings; 16 languages | | Out |
+| WorkDo area                                                                     | Sub-pages seen in routes                                                                                                     | Lumino v1                                                             |
+| ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Dashboard, Calendar                                                             | dashboard, calendar                                                                                                          | Keep                                                                  |
+| Employees, Org chart                                                            | employees (create, import, export), organization-chart                                                                       | Keep                                                                  |
+| Organization structure                                                          | branches, departments, designations, document-types                                                                          | Keep departments and designations; branches not needed for one office |
+| Attendance                                                                      | shifts, attendance-policies, attendance-records, attendance-regularizations, time-entries, biometric-attendance              | Keep; see gaps below                                                  |
+| Leave                                                                           | leave-types, leave-policies, leave-applications, leave-balances, holidays                                                    | Keep                                                                  |
+| Payroll                                                                         | salary-components, employee-salaries, payroll-runs, payslips                                                                 | Keep, extended (tax modes, loans, late rule)                          |
+| Performance                                                                     | indicator-categories, indicators, goal-types, employee-goals, review-cycles, employee-reviews                                | Keep, simplified to KPIs + reviews                                    |
+| Assets                                                                          | asset-types, assets, dashboard, depreciation report                                                                          | Keep without depreciation                                             |
+| Employee lifecycle                                                              | awards, promotions, resignations, terminations, warnings, trips, complaints, transfers                                       | Only resignation / exit in v1                                         |
+| Users & roles                                                                   | users, roles, permissions, login-history                                                                                     | Keep (four fixed roles)                                               |
+| Settings                                                                        | system, brand, email, working days, IP restriction, ZKTeco, NOC / experience certificate / joining letter templates, storage | Keep a trimmed set                                                    |
+| Recruitment                                                                     | ~20 pages (jobs, candidates, interviews, offers, onboarding)                                                                 | Out                                                                   |
+| Training                                                                        | programs, sessions, assessments                                                                                              | Out                                                                   |
+| Meetings, Events, Zoom                                                          | 9 pages                                                                                                                      | Out                                                                   |
+| Documents & contracts                                                           | contract templates, HR documents, acknowledgments                                                                            | Out (employee document uploads only)                                  |
+| Announcements                                                                   | announcements + dashboard                                                                                                    | Out for now; candidate for v1 (see below)                             |
+| Media library, landing page, custom pages, newsletters                          |                                                                                                                              | Out                                                                   |
+| SaaS: plans, coupons, companies, referral, payment gateways                     |                                                                                                                              | Out (single company)                                                  |
+| Slack, Telegram, Twilio, ChatGPT, ReCaptcha, cookie, SEO settings; 16 languages |                                                                                                                              | Out                                                                   |
 
 ## 5. Gaps worth discussing
 

@@ -11,15 +11,15 @@ Status: hosting side proven; test with the real MB20 still to do.
 
 Tested from outside with `curl` against release `4e3b3d1-20261123T113949Z`:
 
-| Check | Result |
-|---|---|
-| `GET http://…/iclock/cdata?SN=<registered>&options=all` | 200, `text/plain`, option list, no redirect, no cookies |
-| `POST http://…/iclock/cdata?SN=<registered>&table=ATTLOG` with one punch line | 200, body `OK: 1` |
-| `GET http://…/iclock/getrequest?SN=<unknown>` | 403 |
-| `GET http://…/login` | 301 to HTTPS |
-| `GET https://…/login` | 200 |
-| `/.env`, `/deploy/hostinger/*` | 403 |
-| `/register` | 404 |
+| Check                                                                         | Result                                                  |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `GET http://…/iclock/cdata?SN=<registered>&options=all`                       | 200, `text/plain`, option list, no redirect, no cookies |
+| `POST http://…/iclock/cdata?SN=<registered>&table=ATTLOG` with one punch line | 200, body `OK: 1`                                       |
+| `GET http://…/iclock/getrequest?SN=<unknown>`                                 | 403                                                     |
+| `GET http://…/login`                                                          | 301 to HTTPS                                            |
+| `GET https://…/login`                                                         | 200                                                     |
+| `/.env`, `/deploy/hostinger/*`                                                | 403                                                     |
+| `/register`                                                                   | 404                                                     |
 
 ## How it was made to work
 

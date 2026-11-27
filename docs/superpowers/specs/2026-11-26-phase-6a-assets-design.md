@@ -59,13 +59,13 @@ Chosen: **B**. `assets.status = assigned` if and only if one open assignment exi
 
 ### 5.3 Who may do what
 
-| | Admin | HR | Manager | Employee |
-|---|---|---|---|---|
-| Create, edit assets, categories, import, export, assign, return, available / in repair | yes | yes | no | no |
-| Retire, bring back from retired, delete a never-assigned asset (`assets.manage`) | yes | no | no | no |
-| See cost | yes | yes | no | no |
-| All Assets, asset page, Assignments | all | all | no asset page; read-only list of what their team holds | no |
-| My Assets, own Assets tab | yes | yes | yes | yes |
+|                                                                                        | Admin | HR  | Manager                                                | Employee |
+| -------------------------------------------------------------------------------------- | ----- | --- | ------------------------------------------------------ | -------- |
+| Create, edit assets, categories, import, export, assign, return, available / in repair | yes   | yes | no                                                     | no       |
+| Retire, bring back from retired, delete a never-assigned asset (`assets.manage`)       | yes   | no  | no                                                     | no       |
+| See cost                                                                               | yes   | yes | no                                                     | no       |
+| All Assets, asset page, Assignments                                                    | all   | all | no asset page; read-only list of what their team holds | no       |
+| My Assets, own Assets tab                                                              | yes   | yes | yes                                                    | yes      |
 
 - A Manager's team is whatever `EmployeeAccess::scope` returns for them (as in Leave and Attendance): their own record plus their direct reports. Out of scope is simply not listed; an asset page of another person is 403.
 - The Assets tab on a profile is visible to whoever may open that profile; cost shows only with `assets.assign`.
@@ -132,13 +132,13 @@ Area `assets` (added to `Audit::AREAS`; section in `docs/audit-log.md`). Written
 
 ### 5.13 Locking summary
 
-| Action | Order |
-|---|---|
-| Assign, Return | employee row FOR UPDATE, then asset row FOR UPDATE |
-| Create | every asset row FOR UPDATE (the code scan), then the category row shared |
-| Edit, status change, delete | asset row FOR UPDATE (category row shared when the category changes) |
-| Category delete | category row FOR UPDATE, then the usage check |
-| Import run | one run at a time (cache lock); employees by id ascending, categories shared, assets by id ascending (every asset row when the file has new rows, so the code scans find them locked), then writes |
+| Action                      | Order                                                                                                                                                                                              |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Assign, Return              | employee row FOR UPDATE, then asset row FOR UPDATE                                                                                                                                                 |
+| Create                      | every asset row FOR UPDATE (the code scan), then the category row shared                                                                                                                           |
+| Edit, status change, delete | asset row FOR UPDATE (category row shared when the category changes)                                                                                                                               |
+| Category delete             | category row FOR UPDATE, then the usage check                                                                                                                                                      |
+| Import run                  | one run at a time (cache lock); employees by id ascending, categories shared, assets by id ascending (every asset row when the file has new rows, so the code scans find them locked), then writes |
 
 No path takes an asset row and then an employee row, so no cycle exists. Create and edit both take asset rows before the category. The import takes its categories before its assets; the only cycle left (an import or create waiting on a category rename that waits on an edit) is narrow, and MariaDB resolves it by rolling one back: every asset transaction runs `DB::transaction(fn, 3)`, so it is retried.
 

@@ -77,37 +77,133 @@ The design (section 7) lists them; each is marked "(default, owner may change)" 
 - **`App\Support\Payroll\Money`** (Task 1): `div(int $n, int $d): int`, `rupees(int $rupees): int` (× 100), `format(int $paisa): string`, `bp(string $percent): int` (`"5"`/`"5.25"` → 500/525; at most 2 decimals; 0–10000).
 - **`App\Support\PayrollLock`** (Task 1, real): `isLocked(string $month): bool`, `firstLocked(iterable $dates): ?string` (unchanged signature), `lockedMonths(array $months): list<string>` (one query), `latestLocked(): ?string`, `rangeTouchesLocked(string $from, string $to): ?string` (first locked `Y-m` between two `Y-m-d` dates inclusive, either order), `message(string $month): string` ("Payroll for November 2026 is approved, so this can no longer change.").
 - **Payroll lock in writes — lock order** (Task 6): the global order is **employee rows → `payroll_runs` (shared, the `PayrollLock` read) → attendance / holiday / leave rows**; the approval (Task 7) takes `payroll_runs` (for update) → loans and must take no row lock on employees, attendances, holidays, attendance corrections or leave rows (plain reads only), so no cycle exists. Never `latestLocked()` inside a write transaction. Where each Task 6 write reads the lock:
-  - `ApplyManualCorrection` (Daily save, request apply): first statement of its transaction, before the attendance row lock (and a plain pre-check before it for the message).
-  - `CorrectionRequests::submit`: after the employee row lock (its first statement, unchanged), through `CorrectionEligibility`; `decideAsHr` (approve): after the request row lock, before the attendance row lock.
-  - Daily reset: first statement, before the attendance row lock.
-  - `AttendanceRebuilder::process`: first statement of each batch transaction (`lockedMonths` over the batch's months), before the attendance row locks; `closeDay` / `daysWithMissingRows`: plain reads outside a transaction.
-  - `RebuildMarks::*`: one `lockedMonths` per call, before its UPDATE; when called inside an employee save it comes after the employee row lock. Exception (Task 6 fix round): the "from today" paths (`forShift`, `forEmployeesWithoutShift`, `forEmployee`) read no lock at all — their rows are dated from the current attendance day on, and approval refuses a month that has not ended, so they can never be in a locked month; this removes the shift-path cycle (shift row → `payroll_runs` vs run write → employees of that shift).
-  - `PunchIngestor::markDays` / relink: one `lockedMonths` per call; dates in a locked month get no row and no flag (the punch is still stored). `AttendanceRebuilder::finaliseManual` and the safety-net updates of `closeDay` re-read `lockedMonths` inside their transaction and skip a month approved meanwhile.
-  - All `PayrollLock` readers select `payroll_runs` rows by month only (equality, list or range on the unique `month` index) with `LOCK IN SHARE MODE` and filter the status in PHP, so a draft run row in the range is share-locked too and a concurrent approval of it waits for the reader.
-  - `HolidayController` store / update / destroy: first statement, before the holiday row lock. Known exception: the holiday refund (Phase 4 `HolidayLeaveRefund`) locks leave rows and then employee rows later in the same transaction, i.e. after `payroll_runs`. Two cycles remain, both through a holiday save that refunds leave: (1) holiday-with-refund (holds `payroll_runs` shared, wants employee X) vs generate / recalculate (holds the run's employees shared, wants the run row for update); (2) holiday-with-refund vs a per-employee writer (holds employee X, wants `payroll_runs` shared) while an approval waits for the run row for update (InnoDB queues the writer's shared request behind the waiting exclusive one). All run-level writes, the holiday save and the per-employee writers run in `DB::transaction(fn, 3)`; InnoDB detects either cycle, rolls one transaction back and it is retried — a deadlock error at worst after three tries, never a hang.
-  - `UpdateEmployee` (joining date) / `ChangeEmployeeStatus` (last working day): after the employee row lock, before any attendance / leave write.
+    - `ApplyManualCorrection` (Daily save, request apply): first statement of its transaction, before the attendance row lock (and a plain pre-check before it for the message).
+    - `CorrectionRequests::submit`: after the employee row lock (its first statement, unchanged), through `CorrectionEligibility`; `decideAsHr` (approve): after the request row lock, before the attendance row lock.
+    - Daily reset: first statement, before the attendance row lock.
+    - `AttendanceRebuilder::process`: first statement of each batch transaction (`lockedMonths` over the batch's months), before the attendance row locks; `closeDay` / `daysWithMissingRows`: plain reads outside a transaction.
+    - `RebuildMarks::*`: one `lockedMonths` per call, before its UPDATE; when called inside an employee save it comes after the employee row lock. Exception (Task 6 fix round): the "from today" paths (`forShift`, `forEmployeesWithoutShift`, `forEmployee`) read no lock at all — their rows are dated from the current attendance day on, and approval refuses a month that has not ended, so they can never be in a locked month; this removes the shift-path cycle (shift row → `payroll_runs` vs run write → employees of that shift).
+    - `PunchIngestor::markDays` / relink: one `lockedMonths` per call; dates in a locked month get no row and no flag (the punch is still stored). `AttendanceRebuilder::finaliseManual` and the safety-net updates of `closeDay` re-read `lockedMonths` inside their transaction and skip a month approved meanwhile.
+    - All `PayrollLock` readers select `payroll_runs` rows by month only (equality, list or range on the unique `month` index) with `LOCK IN SHARE MODE` and filter the status in PHP, so a draft run row in the range is share-locked too and a concurrent approval of it waits for the reader.
+    - `HolidayController` store / update / destroy: first statement, before the holiday row lock. Known exception: the holiday refund (Phase 4 `HolidayLeaveRefund`) locks leave rows and then employee rows later in the same transaction, i.e. after `payroll_runs`. Two cycles remain, both through a holiday save that refunds leave: (1) holiday-with-refund (holds `payroll_runs` shared, wants employee X) vs generate / recalculate (holds the run's employees shared, wants the run row for update); (2) holiday-with-refund vs a per-employee writer (holds employee X, wants `payroll_runs` shared) while an approval waits for the run row for update (InnoDB queues the writer's shared request behind the waiting exclusive one). All run-level writes, the holiday save and the per-employee writers run in `DB::transaction(fn, 3)`; InnoDB detects either cycle, rolls one transaction back and it is retried — a deadlock error at worst after three tries, never a hang.
+    - `UpdateEmployee` (joining date) / `ChangeEmployeeStatus` (last working day): after the employee row lock, before any attendance / leave write.
 - **Payroll lock order — run-level writes** (Task 1 fix round, ruling; Task 7 implements; supersedes the sentence above that the approval takes no row lock on employees): the order is **employee rows → `payroll_runs` row** everywhere. Per-employee writers (leave, attendance, salary profiles, loans) lock the employee row first and then call `PayrollLock` (shared). Run-level writes that insert, change or delete payroll lines (generate, recalculate, approve) FIRST take shared locks on all the run's employees in id order (`Employee::query()->whereIn('id', $ids)->orderBy('id')->sharedLock()->get(['id'])`), THEN `lockForUpdate()` the run row; the run row lock is the first statement after the employee locks (no plain read of the run before it: under REPEATABLE READ that fixes the snapshot). Never call `PayrollLock` (shared) and then `lockForUpdate()` the same run row in one transaction (upgrade deadlock). Avoid `latestLocked()` inside write transactions. `PayrollLock` reads are plain top-level `SELECT … LOCK IN SHARE MODE` (never `exists()`). Safety net in the models: `PayrollRun` status only moves draft → approved → paid and an approved/paid run is never deleted; an existing `PayrollItem` of an approved/paid run cannot be changed (except `payslip_path`, `payslip_generated_at`, `payslip_emailed_at`) or deleted, its run status read from the database, so the approval copies the bank snapshot onto the lines before setting the run to approved.
 - **`App\Support\Payroll\PayrollAccess`** (Task 1): `mayEditSalary(User $by, Employee $e): bool`, `mayApprove(User $by, PayrollRun $run): bool`, `approvesOwn(User $by, PayrollRun $run): bool`, `soleActiveAdmin(User $u): bool`.
 - **DTOs** (Task 1, `App\Support\Payroll\`, readonly, no logic beyond constructors and `toArray()`): `PayInput`, `ProfileSegment`, `PayComponent`, `LoanDue`, `PayAdjustment`, `OvertimeRule`, `PayResult`, `PayLine`. Shapes in Task 1. Task 2 produces `PayResult` from `PayInput`; Task 3 produces `PayInput`; Task 7 stores `PayResult`.
 - **Breakdown JSON** (`payroll_items.breakdown`, version 1; Task 2 writes it via `PayResult::breakdown`, Tasks 8–10 read it; never recomputed after approval):
 
 ```json
-{"version":1,
- "employee":{"id":7,"code":"LD-0007","name":"Sara Ahmed","department":"HR","designation":"Officer","joining_date":"2024-03-01"},
- "period":{"month":"2026-11","from":"2026-11-01","to":"2026-11-30","days_in_month":30,"days_paid":30,"basis":"calendar_days","basis_days":30},
- "segments":[{"profile_id":3,"from":"2026-11-01","to":"2026-11-30","days":30,"gross":9000000,"taxable_gross":8400000,"basic":6000000}],
- "earnings":[{"key":"basic","label":"Basic salary","amount":6000000,"taxable":true},
-             {"key":"allowance","label":"House rent","amount":2400000,"taxable":true},
-             {"key":"overtime","label":"Overtime (10 h)","amount":0,"taxable":true},
-             {"key":"addition","label":"Bonus","amount":0,"taxable":true,"adjustment_id":1}],
- "deductions":[{"key":"attendance","label":"Attendance (4.5 days)","amount":1350000},
-               {"key":"fixed","label":"Provident fund","amount":300000},
-               {"key":"adjustment","label":"Canteen","amount":0,"adjustment_id":2},
-               {"key":"loan","label":"Loan installment","amount":500000,"loan_id":4,"due":500000}],
- "tax":{"mode":"percentage","base":"gross_taxable","rate_bp":500,"taxable_pay":7140000,"amount":357000,"overridden":false,"override_reason":null},
- "attendance":{"counted_from":"2026-11-01","present":20,"late":5,"half_day":1,"absent":2,"on_leave":1,"unpaid_leave":1,"paid_leave":0,"off":8,"late_days_deducted":1,"deducted_halves":9,"overtime_minutes":0},
- "totals":{"gross":9000000,"attendance_deduction":1350000,"fixed_deductions":300000,"other_deductions":0,"loan_deduction":500000,"tax":357000,"net":6493000},
- "warnings":[{"key":"installment_reduced","message":"…"}]}
+{
+    "version": 1,
+    "employee": {
+        "id": 7,
+        "code": "LD-0007",
+        "name": "Sara Ahmed",
+        "department": "HR",
+        "designation": "Officer",
+        "joining_date": "2024-03-01"
+    },
+    "period": {
+        "month": "2026-11",
+        "from": "2026-11-01",
+        "to": "2026-11-30",
+        "days_in_month": 30,
+        "days_paid": 30,
+        "basis": "calendar_days",
+        "basis_days": 30
+    },
+    "segments": [
+        {
+            "profile_id": 3,
+            "from": "2026-11-01",
+            "to": "2026-11-30",
+            "days": 30,
+            "gross": 9000000,
+            "taxable_gross": 8400000,
+            "basic": 6000000
+        }
+    ],
+    "earnings": [
+        {
+            "key": "basic",
+            "label": "Basic salary",
+            "amount": 6000000,
+            "taxable": true
+        },
+        {
+            "key": "allowance",
+            "label": "House rent",
+            "amount": 2400000,
+            "taxable": true
+        },
+        {
+            "key": "overtime",
+            "label": "Overtime (10 h)",
+            "amount": 0,
+            "taxable": true
+        },
+        {
+            "key": "addition",
+            "label": "Bonus",
+            "amount": 0,
+            "taxable": true,
+            "adjustment_id": 1
+        }
+    ],
+    "deductions": [
+        {
+            "key": "attendance",
+            "label": "Attendance (4.5 days)",
+            "amount": 1350000
+        },
+        { "key": "fixed", "label": "Provident fund", "amount": 300000 },
+        {
+            "key": "adjustment",
+            "label": "Canteen",
+            "amount": 0,
+            "adjustment_id": 2
+        },
+        {
+            "key": "loan",
+            "label": "Loan installment",
+            "amount": 500000,
+            "loan_id": 4,
+            "due": 500000
+        }
+    ],
+    "tax": {
+        "mode": "percentage",
+        "base": "gross_taxable",
+        "rate_bp": 500,
+        "taxable_pay": 7140000,
+        "amount": 357000,
+        "overridden": false,
+        "override_reason": null
+    },
+    "attendance": {
+        "counted_from": "2026-11-01",
+        "present": 20,
+        "late": 5,
+        "half_day": 1,
+        "absent": 2,
+        "on_leave": 1,
+        "unpaid_leave": 1,
+        "paid_leave": 0,
+        "off": 8,
+        "late_days_deducted": 1,
+        "deducted_halves": 9,
+        "overtime_minutes": 0
+    },
+    "totals": {
+        "gross": 9000000,
+        "attendance_deduction": 1350000,
+        "fixed_deductions": 300000,
+        "other_deductions": 0,
+        "loan_deduction": 500000,
+        "tax": 357000,
+        "net": 6493000
+    },
+    "warnings": [{ "key": "installment_reduced", "message": "…" }]
+}
 ```
 
 - **`App\Events\PayrollRunApproved(int $runId)`** (Task 1): dispatched by Task 7 after the approval commits; Task 9 listens (payslips).
@@ -117,21 +213,21 @@ The design (section 7) lists them; each is marked "(default, owner may change)" 
 
 ## File map
 
-| Path | Responsibility |
-|---|---|
-| `database/migrations/2026_11_26_100000_create_payroll_tables.php` | All payroll tables |
-| `app/Models/{SalaryProfile,SalaryComponent,Loan,LoanRepayment,LoanSkip,OpeningBalance,PayrollRun,PayrollItem,PayrollAdjustment}.php` + factories | Records |
-| `app/Support/PayrollLock.php` | Real lock |
-| `app/Support/Payroll/{Money,PayrollAccess,PayInput,ProfileSegment,PayComponent,LoanDue,PayAdjustment,OvertimeRule,PayResult,PayLine}.php` | Core types |
-| `app/Support/Payroll/PayCalculator.php` | Every money rule (pure) |
-| `app/Support/Payroll/{PayInputLoader,PayrollRoster,RosterResult,WorkingDays}.php`, `LeaveLedger::unpaidByDate` | Inputs |
-| `app/Support/Payroll/{LoanSchedule,TaxYear}.php` | Loan projection, tax year maths |
-| `app/Support/Payroll/PayrollChecks.php` | Blocking checks and warnings |
-| `app/Actions/Payroll/{SaveSalaryProfile,SaveLoan,LoanActions,SaveOpeningBalance,GeneratePayrollRun,PayrollLineInputs,ApprovePayrollRun,MarkRunPaid,DeleteDraftRun}.php` | Writes |
-| `app/Http/Controllers/Payroll/*` | Screens |
-| `app/Jobs/Payroll/GeneratePayslip.php`, `app/Listeners/QueuePayslips.php`, `app/Support/Payroll/PayslipPdf.php`, `app/Mail/PayslipIssued.php`, `resources/views/pdf/payslip.blade.php` | Payslips |
-| `app/Exports/{BankSheetExport,PayrollSummaryExport,TaxReportExport,OpeningTaxTemplateExport,OpeningLoansTemplateExport}.php`, `app/Imports/{OpeningTaxImport,OpeningLoansImport}.php` | Excel |
-| `resources/js/pages/payroll/*`, `resources/js/pages/my/payslips.tsx`, `resources/js/components/payroll/*`, `resources/js/lib/payroll.ts` (+ test) | Pages |
+| Path                                                                                                                                                                                   | Responsibility                  |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `database/migrations/2026_11_26_100000_create_payroll_tables.php`                                                                                                                      | All payroll tables              |
+| `app/Models/{SalaryProfile,SalaryComponent,Loan,LoanRepayment,LoanSkip,OpeningBalance,PayrollRun,PayrollItem,PayrollAdjustment}.php` + factories                                       | Records                         |
+| `app/Support/PayrollLock.php`                                                                                                                                                          | Real lock                       |
+| `app/Support/Payroll/{Money,PayrollAccess,PayInput,ProfileSegment,PayComponent,LoanDue,PayAdjustment,OvertimeRule,PayResult,PayLine}.php`                                              | Core types                      |
+| `app/Support/Payroll/PayCalculator.php`                                                                                                                                                | Every money rule (pure)         |
+| `app/Support/Payroll/{PayInputLoader,PayrollRoster,RosterResult,WorkingDays}.php`, `LeaveLedger::unpaidByDate`                                                                         | Inputs                          |
+| `app/Support/Payroll/{LoanSchedule,TaxYear}.php`                                                                                                                                       | Loan projection, tax year maths |
+| `app/Support/Payroll/PayrollChecks.php`                                                                                                                                                | Blocking checks and warnings    |
+| `app/Actions/Payroll/{SaveSalaryProfile,SaveLoan,LoanActions,SaveOpeningBalance,GeneratePayrollRun,PayrollLineInputs,ApprovePayrollRun,MarkRunPaid,DeleteDraftRun}.php`                | Writes                          |
+| `app/Http/Controllers/Payroll/*`                                                                                                                                                       | Screens                         |
+| `app/Jobs/Payroll/GeneratePayslip.php`, `app/Listeners/QueuePayslips.php`, `app/Support/Payroll/PayslipPdf.php`, `app/Mail/PayslipIssued.php`, `resources/views/pdf/payslip.blade.php` | Payslips                        |
+| `app/Exports/{BankSheetExport,PayrollSummaryExport,TaxReportExport,OpeningTaxTemplateExport,OpeningLoansTemplateExport}.php`, `app/Imports/{OpeningTaxImport,OpeningLoansImport}.php`  | Excel                           |
+| `resources/js/pages/payroll/*`, `resources/js/pages/my/payslips.tsx`, `resources/js/components/payroll/*`, `resources/js/lib/payroll.ts` (+ test)                                      | Pages                           |
 
 ---
 
@@ -141,30 +237,31 @@ The design (section 7) lists them; each is marked "(default, owner may change)" 
 **Tests:** `tests/Feature/Payroll/SchemaTest.php`, `tests/Unit/Payroll/MoneyTest.php`, `tests/Unit/PayrollLockTest.php` (rewrite for the real lock; keep the malformed-month cases), `tests/Feature/Payroll/PayrollLockTest.php`, `tests/Feature/Payroll/PayrollAccessTest.php`, existing `tests/Unit/EmployeeAccessTest.php` / delete tests extended.
 
 **Interfaces — Produces:**
+
 - Tables (all money `unsignedBigInteger` paisa, default 0 where sensible; FKs `restrict` unless noted; timestamps):
-  - `salary_profiles`: `employee_id`, `effective_from` (DATE, `NaiveDate` cast, `HasNaiveDateScopes`), `basic`, `tax_mode` (string 12), `tax_value` (unsignedBigInteger: paisa for fixed, basis points for percentage, 0 for none), `tax_base` (nullable string 16), `note` (nullable string 255), `created_by` (nullable FK users, null on delete). Unique (`employee_id`, `effective_from`).
-  - `salary_components`: `salary_profile_id` (FK cascade), `name` (string 60), `type` (`allowance|deduction`), `amount`, `is_taxable` (bool, false for deductions), `sort_order` (smallint).
-  - `loans`: `employee_id`, `type`, `amount`, `installment`, `start_month` (char 7), `opening_repaid` (default 0), `status` (default `active`), `note` (nullable 255), `created_by`, `cancelled_by` (nullable FK users), `cancelled_at`, `cancel_reason` (nullable 255). Index (`employee_id`, `status`).
-  - `loan_repayments`: `loan_id`, `payroll_item_id` (nullable FK restrict), `amount`, `month` (char 7), `note` (nullable 255), `created_by` (nullable), timestamps. Unique (`loan_id`, `payroll_item_id`).
-  - `loan_skips`: `loan_id` (FK cascade), `month` (char 7), `reason` (string 255), `created_by`. Unique (`loan_id`, `month`).
-  - `opening_balances`: `employee_id`, `tax_year` (smallint: start year), `tax_deducted`, `taxable_income`, `note` (nullable 255). Unique (`employee_id`, `tax_year`).
-  - `payroll_runs`: `month` (char 7, unique), `status`, `headcount` (int), `gross`, `deductions`, `tax`, `net`, `generated_by`, `generated_at`, `approved_by`, `approved_at`, `paid_by`, `paid_at`, `paid_on` (nullable DATE), `summary` (JSON nullable), `calculated_at`. Index (`status`).
-  - `payroll_items`: `payroll_run_id` (FK cascade — only drafts are ever deleted), `employee_id`, `excluded` (bool), `excluded_reason` (nullable 255), `days_paid` (smallint), `basic`, `allowances`, `overtime`, `additions`, `gross`, `attendance_deduction`, `fixed_deductions`, `other_deductions`, `loan_deduction`, `taxable_pay`, `tax`, `net`, `tax_overridden` (bool), `tax_override` (nullable unsignedBigInteger), `tax_override_reason` (nullable 255), `breakdown` (JSON), `warnings` (JSON), `blocking` (JSON: list of keys), `bank_name`, `account_title`, `account_number` (nullable strings, set at approval), `payslip_path` (nullable), `payslip_generated_at`, `payslip_emailed_at`. Unique (`payroll_run_id`, `employee_id`). Index (`employee_id`).
-  - `payroll_adjustments`: `payroll_item_id` (FK cascade), `label` (string 100), `type`, `amount`, `is_taxable` (bool), `created_by`.
+    - `salary_profiles`: `employee_id`, `effective_from` (DATE, `NaiveDate` cast, `HasNaiveDateScopes`), `basic`, `tax_mode` (string 12), `tax_value` (unsignedBigInteger: paisa for fixed, basis points for percentage, 0 for none), `tax_base` (nullable string 16), `note` (nullable string 255), `created_by` (nullable FK users, null on delete). Unique (`employee_id`, `effective_from`).
+    - `salary_components`: `salary_profile_id` (FK cascade), `name` (string 60), `type` (`allowance|deduction`), `amount`, `is_taxable` (bool, false for deductions), `sort_order` (smallint).
+    - `loans`: `employee_id`, `type`, `amount`, `installment`, `start_month` (char 7), `opening_repaid` (default 0), `status` (default `active`), `note` (nullable 255), `created_by`, `cancelled_by` (nullable FK users), `cancelled_at`, `cancel_reason` (nullable 255). Index (`employee_id`, `status`).
+    - `loan_repayments`: `loan_id`, `payroll_item_id` (nullable FK restrict), `amount`, `month` (char 7), `note` (nullable 255), `created_by` (nullable), timestamps. Unique (`loan_id`, `payroll_item_id`).
+    - `loan_skips`: `loan_id` (FK cascade), `month` (char 7), `reason` (string 255), `created_by`. Unique (`loan_id`, `month`).
+    - `opening_balances`: `employee_id`, `tax_year` (smallint: start year), `tax_deducted`, `taxable_income`, `note` (nullable 255). Unique (`employee_id`, `tax_year`).
+    - `payroll_runs`: `month` (char 7, unique), `status`, `headcount` (int), `gross`, `deductions`, `tax`, `net`, `generated_by`, `generated_at`, `approved_by`, `approved_at`, `paid_by`, `paid_at`, `paid_on` (nullable DATE), `summary` (JSON nullable), `calculated_at`. Index (`status`).
+    - `payroll_items`: `payroll_run_id` (FK cascade — only drafts are ever deleted), `employee_id`, `excluded` (bool), `excluded_reason` (nullable 255), `days_paid` (smallint), `basic`, `allowances`, `overtime`, `additions`, `gross`, `attendance_deduction`, `fixed_deductions`, `other_deductions`, `loan_deduction`, `taxable_pay`, `tax`, `net`, `tax_overridden` (bool), `tax_override` (nullable unsignedBigInteger), `tax_override_reason` (nullable 255), `breakdown` (JSON), `warnings` (JSON), `blocking` (JSON: list of keys), `bank_name`, `account_title`, `account_number` (nullable strings, set at approval), `payslip_path` (nullable), `payslip_generated_at`, `payslip_emailed_at`. Unique (`payroll_run_id`, `employee_id`). Index (`employee_id`).
+    - `payroll_adjustments`: `payroll_item_id` (FK cascade), `label` (string 100), `type`, `amount`, `is_taxable` (bool), `created_by`.
 - Models with casts (money `integer`, JSON `array`, dates `NaiveDate` / `date:Y-m-d`), relations, and: `SalaryProfile::allowances()`, `deductions()` (filtered `components()`), `gross(): int`, `taxableGross(): int`; `Loan::remaining(): int` (amount − opening_repaid − sum of repayments; uses a loaded `repayments_sum_amount` when present), `Loan::scopeWithRemaining(Builder)` (adds `withSum('repayments', 'amount')`), `isCleared(): bool`; `PayrollRun::isLocked(): bool` (approved or paid), `isDraft(): bool`, `label(): string` ("November 2026"); `PayrollItem::run()`, `employee()`, `adjustments()`, `repayments()`.
 - `config('hrm.payroll')`: `run_statuses`, `locked_statuses` (`approved`, `paid`), `tax_modes`, `tax_bases`, `component_types`, `loan_types`, `loan_statuses`, `adjustment_types`, `max_components` (20). Settings defaults added: `payroll.tax_year_start_month` = 7; `attendance.overtime_rate_mode` = `'multiple'`, `attendance.overtime_multiplier_percent` = 150, `attendance.overtime_fixed_rate` = 0 (rupees an hour), `attendance.overtime_hours_per_day` = 8 (defaults, owner may change). (Task 11 adds the inputs and validation.)
 - `Money` as in Shared interfaces. `div` algorithm (pinned): `q = intdiv(n, d * 100); r = n - q * d * 100; return (2 * r >= d * 100 ? q + 1 : q) * 100;` throws `InvalidArgumentException` for n < 0 or d ≤ 0. Guard overflow by documenting the ceiling (amounts ≤ 10^12 paisa, multipliers ≤ 10^6) and testing it.
 - `PayrollLock`: `isLocked($month)` validates the month (unchanged message), then `exists` on `payroll_runs` where `month` and `status` in locked statuses; inside a transaction (`DB::transactionLevel() > 0`) the query uses `sharedLock()`. `lockedMonths(array $months)` one query. `latestLocked()` max locked month or null. `rangeTouchesLocked($a, $b)` one query over months between the two dates. `message($month)` as in Shared interfaces. `firstLocked` keeps its contract (now real).
 - `PayrollAccess` (static methods): `mayEditSalary(User $by, Employee $e)` per Global Constraints; `approvesOwn(User $by, PayrollRun $run)` = the user's `employee_id` has an item in the run; `soleActiveAdmin(User $u)` = `$u` is Admin and no other active user holds the admin role; `mayApprove(User $by, PayrollRun $run)` = `payroll.approve` and (not `approvesOwn` or `soleActiveAdmin`).
 - DTOs (readonly; amounts paisa):
-  - `PayComponent(string $name, int $amount, bool $taxable)`.
-  - `ProfileSegment(int $profileId, string $from, string $to, int $days, int $basic, list<PayComponent> $allowances, list<PayComponent> $deductions, string $taxMode, int $taxValue, ?string $taxBase)`; methods `gross(): int`, `taxableGross(): int`.
-  - `LoanDue(int $loanId, string $type, int $remaining, int $installment, bool $skipped)` (oldest first by `start_month`, then id).
-  - `PayAdjustment(int $id, string $label, string $type, int $amount, bool $taxable)`.
-  - `OvertimeRule(bool $enabled, string $mode, int $multiplierPercent, int $fixedRatePaisa, int $hoursPerDay)`.
-  - `PayInput(int $employeeId, array $employee /* code,name,department,designation,joining_date */, string $month, int $daysInMonth, string $windowFrom, string $windowTo, list<ProfileSegment> $segments, string $basis, int $basisDays, array<string,int> $attendanceHalves /* date => 0..2 from MonthGrid cells */, array<string,int> $unpaidLeaveHalves /* date => 1..2 */, list<string> $offDates /* cells O or W */, list<string> $manualWorkedDates /* manual cells P or L */, int $lateDays, int $lateRuleCount, int $overtimeMinutes, OvertimeRule $overtime, array $attendanceTotals /* MonthGrid totals */, ?string $countedFrom, list<LoanDue> $loans, list<PayAdjustment> $adjustments, ?int $taxOverride, ?string $taxOverrideReason, bool $exempt)`.
-  - `PayLine(string $key, string $label, int $amount, bool $taxable = false, array $extra = [])`.
-  - `PayResult(int $daysPaid, int $basic, int $allowances, int $overtime, int $additions, int $gross, int $attendanceDeduction, int $fixedDeductions, int $otherDeductions, int $loanDeduction, int $taxablePay, int $tax, int $net, array<int,int> $loanDeductions /* loan id => amount */, list<array{key:string,message:string}> $warnings, list<string> $blocking, array $breakdown)`; `toItemAttributes(): array` (the `payroll_items` figure columns).
+    - `PayComponent(string $name, int $amount, bool $taxable)`.
+    - `ProfileSegment(int $profileId, string $from, string $to, int $days, int $basic, list<PayComponent> $allowances, list<PayComponent> $deductions, string $taxMode, int $taxValue, ?string $taxBase)`; methods `gross(): int`, `taxableGross(): int`.
+    - `LoanDue(int $loanId, string $type, int $remaining, int $installment, bool $skipped)` (oldest first by `start_month`, then id).
+    - `PayAdjustment(int $id, string $label, string $type, int $amount, bool $taxable)`.
+    - `OvertimeRule(bool $enabled, string $mode, int $multiplierPercent, int $fixedRatePaisa, int $hoursPerDay)`.
+    - `PayInput(int $employeeId, array $employee /* code,name,department,designation,joining_date */, string $month, int $daysInMonth, string $windowFrom, string $windowTo, list<ProfileSegment> $segments, string $basis, int $basisDays, array<string,int> $attendanceHalves /* date => 0..2 from MonthGrid cells */, array<string,int> $unpaidLeaveHalves /* date => 1..2 */, list<string> $offDates /* cells O or W */, list<string> $manualWorkedDates /* manual cells P or L */, int $lateDays, int $lateRuleCount, int $overtimeMinutes, OvertimeRule $overtime, array $attendanceTotals /* MonthGrid totals */, ?string $countedFrom, list<LoanDue> $loans, list<PayAdjustment> $adjustments, ?int $taxOverride, ?string $taxOverrideReason, bool $exempt)`.
+    - `PayLine(string $key, string $label, int $amount, bool $taxable = false, array $extra = [])`.
+    - `PayResult(int $daysPaid, int $basic, int $allowances, int $overtime, int $additions, int $gross, int $attendanceDeduction, int $fixedDeductions, int $otherDeductions, int $loanDeduction, int $taxablePay, int $tax, int $net, array<int,int> $loanDeductions /* loan id => amount */, list<array{key:string,message:string}> $warnings, list<string> $blocking, array $breakdown)`; `toItemAttributes(): array` (the `payroll_items` figure columns).
 - Pest helpers in `tests/Pest.php`: `salaryProfile(Employee $e, int $basicRupees = 60000, array $allowances = [['House rent', 24000, true], ['Medical', 6000, false]], array $deductions = [['Provident fund', 3000]], string $from = '2026-01-01', string $taxMode = 'percentage', int $taxValue = 500, ?string $taxBase = 'gross_taxable'): SalaryProfile`; `payrollRun(string $month, string $status = 'draft'): PayrollRun`; `loanFor(Employee $e, int $amountRupees, int $installmentRupees, string $startMonth, int $openingRepaidRupees = 0, string $type = 'loan'): Loan`.
 
 **Key tests:** migration on SQLite (controller also on a scratch MariaDB database, never `lumino_hrm`); unique keys (profile employee+date, run month, item run+employee, skip loan+month, opening employee+year); `Money::div` table: `div(150050, 1)` = 150100 (Rs 1,500.50 → 1,501, half up); `div(150049, 1)` = 150000; `div(6000000 * 22, 31)` = 4258100 (Rs 42,580.645 → 42,581); `div(600000 * 22, 31)` = 425800 (Rs 4,258.06 → 4,258); `div(750050, 100)` = 7500 (Rs 75.005 → 75); `div(9000000 * 600 * 150, 30 * 8 * 60 * 100)` = 562500; negative numerator / zero denominator throw; `format(6493000)` = "Rs 64,930", `format(0)` = "Rs 0"; `bp('5')` 500, `bp('5.25')` 525, `bp('5.255')` throws, `bp('101')` throws. Lock: no run → false; draft → false; approved → true; paid → true; `firstLocked` finds an approved month; `lockedMonths` one query; `rangeTouchesLocked('2026-10-15', '2026-12-02')` = `2026-11` when November is approved; inside a transaction the read uses a shared lock (assert via query log containing `lock in share mode`/`for share` on MariaDB grammar, or simply that it runs inside `DB::transaction` on SQLite). Access: HR may edit an Employee-role person, not self, not an Admin/HR person; Admin may edit anyone incl. self; Manager never; `mayApprove` false for HR; Admin with own item true only when sole active Admin. Employee with a salary profile cannot be deleted. `Loan::remaining()` = 50,000 − 38,000 opening − 5,000 repaid = 7,000 (in paisa).
@@ -181,6 +278,7 @@ The design (section 7) lists them; each is marked "(default, owner may change)" 
 **Interfaces — Consumes:** Task 1 DTOs and `Money`.
 
 **Interfaces — Produces:** `PayCalculator::calculate(PayInput $in): PayResult` — static, pure, no I/O, no settings or clock reads. Rules in this order (design 5.3; pin each with the examples below):
+
 1. Segments as given (the loader splits the pay window at profile effective dates and drops days with no profile; `daysPaid` = sum of segment days). No segments → result with all zeros, `blocking = ['no_profile']`.
 2. Per component and segment: earned = `Money::div(amount × days, daysInMonth)`; earnings lines per component name (same name across segments summed into one line); `basic`, `allowances`, `gross`, taxable gross accordingly. Fixed deductions per segment the same way → `fixedDeductions`, one line per name.
 3. Deducted halves per date: for each date in `attendanceHalves ∪ unpaidLeaveHalves`: `unpaid = in_array(date, offDates) ? 0 : unpaidLeaveHalves[date] ?? 0` (an ignored unpaid date adds warning `unpaid_leave_on_off_day`); `halves = min(2, (attendanceHalves[date] ?? 0) + unpaid)`; a date in `manualWorkedDates` with unpaid > 0 adds warning `unpaid_leave_on_worked_day`. Exempt (`$in->exempt`) → attendance halves treated as 0 (unpaid still counts). Late halves = `lateRuleCount > 0 && !exempt ? intdiv(lateDays, lateRuleCount) * 2 : 0`, assigned to the last segment. Dates are assigned to the segment containing them; a date in no segment is ignored.
@@ -193,6 +291,7 @@ The design (section 7) lists them; each is marked "(default, owner may change)" 
 10. `breakdown` exactly as the Shared interfaces JSON (version 1), with `attendance` from `attendanceTotals` plus `unpaid_leave` (Σ unpaid halves ÷ 2 counted), `paid_leave` (= max(0, `on_leave` − unpaid_leave)), `late_days_deducted`, `deducted_halves`, `counted_from`.
 
 **Key tests** (profile P = basic 60,000; House rent 24,000 taxable; Medical 6,000 not taxable; Provident fund 3,000; tax 5.00% of gross taxable; November 2026, D = 30; all amounts below in rupees, asserted ×100 in paisa):
+
 - Example 1: P, full month, attendance halves {03: 2, 04: 2, 05: 1}, unpaid {06: 2}, lateDays 5, rule 3, loan due 5,000 (remaining 12,000) → attendance 13,500; taxable pay 71,400; tax 3,570; fixed 3,000; loan 5,000; net **64,930**; breakdown `deducted_halves` 9, `late_days_deducted` 1.
 - Example 2: P, one segment 16–30 Nov (15 days) → basic 30,000, allowances 15,000, gross 45,000, fixed 1,500, tax 2,100, net **41,400**, `days_paid` 15.
 - Example 3: P, December 2026 (D = 31), segment 10–31 Dec (22 days) → basic 42,581, house rent 17,032, medical 4,258, gross 63,871, fixed 2,129, tax 2,981, net **58,761**.
@@ -219,6 +318,7 @@ The design (section 7) lists them; each is marked "(default, owner may change)" 
 **Interfaces — Consumes:** `MonthGrid::for($month, $clock)->rows($employees)` (cells `[code, flags, in, out, worked, late, early, overtime]`, codes P L H A V O W `-`, `MonthGrid::FLAG_MANUAL`, `FLAG_HALF_LEAVE`; totals keys `present, late, half_day, absent, on_leave, off, worked_minutes, late_minutes, overtime_minutes, equivalent, working_days`), `AttendanceClock::startDate()`, `Leavers::{exceptWithoutLastDay, onlyWithoutLastDay}`, `Shift::forEmployee()`, `Holiday`, Task 1 models and DTOs, settings `payroll.day_pay_basis`, `attendance.late_rule_count`, `attendance.overtime_*`.
 
 **Interfaces — Produces:**
+
 - `LeaveLedger::unpaidByDate(array $employeeIds, string $from, string $to): array<int, array<string, int>>` — employee id → date → halves (full row 2; `am`/`pm` 1 each, summed and capped at 2; a `full` row wins over halves via `wholeDaysOnly`), unpaid types only; one query.
 - `RosterResult` (readonly): `included` (`Collection<Employee>` with `department`, `designation`, `shift`, `bankAccount`, `user` loaded), `settledSeparately` (list `{id, name, code, last_working_day}`), `leftWithoutLastDay` (list `{id, name, code, status}`).
 - `PayrollRoster::forMonth(string $month): RosterResult` — included: `joining_date <= month end`, (`last_working_day` null or `> month end`), and `Leavers::exceptWithoutLastDay`; settled separately: `last_working_day` within the month; left without last day: `Leavers::onlyWithoutLastDay` with `joining_date <= month end`. Fixed queries.
@@ -239,6 +339,7 @@ The design (section 7) lists them; each is marked "(default, owner may change)" 
 **Interfaces — Consumes:** `PayrollAccess::mayEditSalary`, `PayrollLock::{latestLocked, isLocked}`, `Money`, models from Task 1.
 
 **Interfaces — Produces:**
+
 - `SaveSalaryProfile::create(User $by, Employee $e, array $data): SalaryProfile`, `update(User $by, SalaryProfile $p, array $data): SalaryProfile`, `delete(User $by, SalaryProfile $p): void`. `$data`: `effective_from` (`Y-m-d`), `basic` (paisa), `tax_mode`, `tax_value`, `tax_base`, `note`, `components` (list `{name, type, amount, is_taxable}`). Transaction: lock the employee row first; `mayEditSalary` else 403; refusals (`ValidationException`): `effective_from` before the joining date [effective_from] "A salary cannot start before {name} joined ({date})."; `effective_from`'s month ≤ `PayrollLock::latestLocked()` [effective_from] "Payroll up to {month label} is approved. Start the new salary after it."; duplicate date [effective_from] "{name} already has a salary starting on {date}. Edit that one instead."; update / delete of a profile whose `effective_from` month ≤ latest locked → [effective_from] "This salary was used in approved payroll. Add a new salary instead.". Components replaced wholesale on update. Audit `Salary profile created|updated|deleted` (subject employee; `attributes` and `old`: basic, tax fields, components, effective_from; rupee strings too).
 - Routes under `/payroll/salary-profiles` (`can:payroll.view` for reads, `can:payroll.run` for writes; ids `whereNumber`): `payroll.salary-profiles.index` `GET ?search=&department=&missing=1&page=` (employees employed now or with a future joining date; columns code, name, department, current basic, gross, tax label ("5% of gross taxable" / "Rs 2,000 fixed" / "None"), effective from, "No salary" pill; 25 per page; fixed query count); `payroll.salary-profiles.show` `GET /{employee}` (history newest first with components, each row `can_edit`; form prefilled from the latest profile, `tax_mode` default `settings('payroll.default_tax_mode')`; `can_edit` from `mayEditSalary`); `payroll.salary-profiles.store` `POST /{employee}`; `.update` `PUT /{employee}/{profile}`; `.destroy` `DELETE /{employee}/{profile}` (profile must belong to the employee, else 404).
 - Request rules: `effective_from` required date `Y-m-d`; `basic` integer rupees 0–99,999,999; `tax_mode` in modes; `tax_value_rupees` (fixed, integer 0–99,999,999) / `tax_percent` (percentage, numeric 0–100, ≤ 2 decimals) converted to `tax_value`; `tax_base` required for percentage, default `gross_taxable`; `components` ≤ 20, each name 1–60 (unique within the profile, case-insensitive), type in types, amount integer rupees 1–99,999,999, `is_taxable` only for allowances; `note` ≤ 255.
@@ -260,6 +361,7 @@ The design (section 7) lists them; each is marked "(default, owner may change)" 
 **Interfaces — Consumes:** `PayrollAccess::mayEditSalary`, `PayrollLock::{isLocked, latestLocked}`, `Money`, `Loan::remaining()`, the import pattern of `App\Imports\LeaveOpeningImport` + `App\Http\Controllers\Leave\BalanceImportController` (token store, preview, per-row errors, time limit, separate upload slot per kind), `TextCells`.
 
 **Interfaces — Produces:**
+
 - `LoanSchedule::project(int $remaining, int $installment, string $fromMonth, array $skippedMonths, int $maxMonths = 120): list<array{month: string, amount: int}>` — pure. `TaxYear::of(string $month, int $startMonth = 7): int` (start year: `2026-11` → 2026, `2027-03` → 2026, `2026-06` → 2025), `TaxYear::months(int $year, int $startMonth = 7): list<string>`, `TaxYear::label(int $year): string` ("2026-27").
 - `SaveLoan::create(User $by, Employee $e, array $data): Loan` (`type`, `amount`, `installment` (advance: default = amount), `start_month`, `opening_repaid` (0 unless opening), `note`); `update(User $by, Loan $l, array $data): Loan` (installment and note any time; amount, start month and opening repaid only while the loan has no repayment, else [amount] "This loan already has repayments; only the installment and note can change."). Rules: installment 1..amount; opening_repaid < amount; `start_month` not locked and > latest locked [start_month] "Payroll for {month} is approved; start deductions after it.". Transaction: employee row first; audit `Loan created|updated`.
 - `LoanActions::skip(User $by, Loan $l, string $month, string $reason): void` (month ≥ start month, not locked, loan active with remaining > 0, unique) / `unskip(User $by, Loan $l, string $month)` (not locked); `repay(User $by, Loan $l, int $amount, string $month, string $note): LoanRepayment` (manual cash repayment, 1..remaining, month not locked; lock the employee row, then the loan row); `cancel(User $by, Loan $l, string $reason): void` (`payroll.approve`; status `cancelled`). All: `mayEditSalary` else 403; audits `Loan skipped|unskipped|repaid|cancelled`. A loan is never deleted.
@@ -281,6 +383,7 @@ The design (section 7) lists them; each is marked "(default, owner may change)" 
 **Interfaces — Consumes:** `PayrollLock::{isLocked, lockedMonths, rangeTouchesLocked}` (Task 1); Phase 3/4 code as named.
 
 **Interfaces — Produces:**
+
 - One message everywhere: `PayrollLock::message($month)` (Task 1) — "Payroll for November 2026 is approved, so this can no longer change." This task does not edit `PayrollLock`.
 - `ApplyManualCorrection::handle` → `ValidationException` [date]; `CorrectionRequests` submit [date] and the apply on final approval (stale-style refusal, request stays at its stage).
 - `RebuildMarks::{forShift, forEmployeesWithoutShift, forEmployee, forDate, outsideEmployment, forLeaveDays}`: rows whose `substr(date,1,7)` is a locked month are excluded (compute the locked months once per call with `lockedMonths` over the months the call could touch, then `whereNotIn` on a month expression valid on SQLite and MariaDB, or date-range exclusions). `forLeaveDays` skips locked dates (its callers already skip them; defensive).
@@ -302,6 +405,7 @@ The design (section 7) lists them; each is marked "(default, owner may change)" 
 **Interfaces — Consumes:** `PayrollRoster::forMonth`, `PayInputLoader::load` (Task 3), `PayCalculator::calculate`, `PayResult::toItemAttributes` (Task 2), `PayrollAccess`, `PayrollLock`, `AttendanceClock::attendanceToday()`, `AttendanceClock::startDate()`, `App\Events\PayrollRunApproved`, `settings('company.*')`, `Branding` (logo path), `settings('payroll.payslip_footer')`.
 
 **Interfaces — Produces:**
+
 - `GeneratePayrollRun::generate(User $by, string $month): PayrollRun` — `payroll.run` (controller-checked); refusals [month]: malformed; after the current month (`substr(attendanceToday(),0,7)`) "You can generate payroll up to {current month}."; ≤ latest locked "Payroll for {month} is already approved."; an existing locked run. Creates the run row (`insertOrIgnore` on `month`, then lock it `FOR UPDATE`) — an existing draft is recalculated instead. Then `recalculate`. Audit `Payroll generated` (first time) with headcount and totals.
 - `GeneratePayrollRun::recalculate(User $by, PayrollRun $run, ?int $employeeId = null): PayrollRun` — run row locked first; draft only (else [run] "This payroll is approved and cannot change."); roster → for the included people (or the one employee) build `$itemInputs` from their existing items (adjustments, tax override), `PayInputLoader::load`, calculate, upsert items (update in place, keeping `excluded`, adjustments and override; excluded items store the calculation but pay 0: `net` etc. set to 0 and `blocking` empty); delete items of people no longer in the roster (their adjustments cascade; listed in the audit entry); update run totals (`headcount` = non-excluded items, sums of gross, deductions (attendance + fixed + other + loan), tax, net), `summary.settled_separately`, `summary.left_without_last_day`, `calculated_at`. Audit `Payroll recalculated` (run, counts, removed people) unless called from `generate`. Returns the fresh run.
 - `PayrollChecks::for(PayrollRun $run): list<array{key: string, severity: 'block'|'warn', message: string, people: list<array{id:int,name:string}>, count: int}>` — fixed number of queries. Blocking keys: `month_not_ended` (month ≥ current attendance month), `earlier_draft` (a draft run of an earlier month exists), `no_profile` (non-excluded items with `blocking` containing it), `negative_net`, `missing_clock_out` (attendances with `needs_attention = true` for non-excluded people, dated in the month, on/after `AttendanceClock::startDate()` and inside each person's window), `pending_days` (status null or `needs_rebuild = true`, same scope, date < `attendanceToday()`), `open_leave` (leave requests in open statuses with `from_date <= month end` and `to_date >= month start`, same people). Warnings: `no_bank_account`, `settled_separately`, `left_without_last_day`, `excluded`, `tax_overridden`, `installment_reduced`, `unpaid_leave_on_off_day`, `unpaid_leave_on_worked_day`, `profile_changed_mid_month` (more than one segment), `attendance_start` (start date null or after the month's first day). `PayrollChecks::blocking(PayrollRun $run): list<string>` keys only.
@@ -325,6 +429,7 @@ The design (section 7) lists them; each is marked "(default, owner may change)" 
 **Interfaces — Consumes:** Task 7 actions (`GeneratePayrollRun::{generate, recalculate}`, `PayrollLineInputs::*`, `ApprovePayrollRun::approve`, `MarkRunPaid::handle`, `DeleteDraftRun::handle`, `PayrollChecks::for`, `PayrollRun::fingerprint`), Task 5 `LoanActions::{skip, unskip}`, `PayrollAccess`, route names of Task 10 (`payroll.runs.bank-sheet`, `payroll.runs.summary-export`) and Task 9 (`payroll.payslips.download`) for links (render only when the route exists: `Route::has`).
 
 **Interfaces — Produces:**
+
 - Routes (ids `whereNumber`): `payroll.runs.index` `GET /payroll/runs` (`can:payroll.view`): runs newest first (month label, status pill Draft amber / Approved green / Paid blue, headcount, gross, net, generated by/at, approved by/at); "Generate payroll" button (`payroll.run`) with a month select defaulting to the previous month (default, owner may change) and limited to the allowed window. `payroll.runs.store` `POST` (`can:payroll.run`, field `month`) → redirect to show. `payroll.runs.show` `GET /payroll/runs/{run}` (`can:payroll.view`): props `run` (month, label, status, totals, timestamps, `fingerprint`, `can_edit` (draft and `payroll.run`), `can_approve` (`PayrollAccess::mayApprove`), `approves_own`), `checks` (Task 7 list), `lines` (per item: id, employee id/name/code/department, days paid, gross, attendance deduction, fixed + other deductions, loan deduction, tax, net, excluded, tax_overridden, warnings count, blocking keys, `can_edit` from `mayEditSalary`), `settled_separately`, `left_without_last_day`, `downloads` (bank sheet and summary links when approved/paid). `payroll.runs.recalculate` `POST /{run}/recalculate` (`can:payroll.run`, optional `employee_id`). `payroll.runs.approve` `POST /{run}/approve` (`can:payroll.approve`, field `fingerprint`; `'changed'` → back with a warning flash). `payroll.runs.paid` `POST /{run}/paid` (`can:payroll.run`, `paid_on`). `payroll.runs.destroy` `DELETE /{run}` (`can:payroll.run`). Item routes (`can:payroll.run`; the item must belong to the run, else 404): `payroll.items.show` `GET /payroll/runs/{run}/items/{item}` (JSON for the drawer: the stored breakdown, adjustments with ids, loans with skip state for the month, `can_edit`; `can:payroll.view`), `payroll.items.adjustments.store` `POST …/adjustments`, `payroll.items.adjustments.destroy` `DELETE …/adjustments/{adjustment}`, `payroll.items.tax` `PUT …/tax` (amount nullable + reason), `payroll.items.exclude` `PUT …/exclude` (`excluded` bool + reason), `payroll.items.loan-skip` `PUT …/loans/{loan}` (`skipped` bool + reason; loan must belong to the item's employee; calls `LoanActions::skip|unskip` then `recalculate` for that employee).
 - Run page: header (month, status, actions: Recalculate, Approve (Admin; dialog with headcount, gross, tax, net, "Payslips will be emailed to N people", the own-line note when `approves_own`), Mark paid, Delete draft); totals tiles; checks panel (blocking red list first, warnings amber, each expandable to the people); lines table with search and "Needs attention" filter (blocking or warnings); line drawer: earnings, deductions, tax, net, attendance summary from the breakdown, plus edit controls when `can_edit` (add / remove one-off item, tax override, loan skip toggles, exclude with reason); settled-separately and left lists below the table. Phone width: the table collapses to cards.
 - Navigation: Payroll → Payroll Runs `ready`.
@@ -343,6 +448,7 @@ The design (section 7) lists them; each is marked "(default, owner may change)" 
 **Interfaces — Consumes:** `PayrollItem.breakdown` (Shared interfaces JSON), `PayrollRun.summary.company`, `PayrollRunApproved`, `Money::format`, `App\Support\EmployeeFiles::disk()` (private disk) or the `local` disk (private, never `public`).
 
 **Interfaces — Produces:**
+
 - `PayslipPdf::render(PayrollItem $item): string` (PDF bytes) — reads only `$item->breakdown`, `$item->run->summary['company']`, the item's bank snapshot (account number shown as "•••• 1234"); A4 portrait, one page; sections: company header (name, address, logo if the snapshot path exists), "Payslip — November 2026", employee block (name, code, department, designation, joining date, bank), earnings table, deductions table (attendance with day count, fixed, one-off, loans), tax (mode text "5% of gross taxable pay" / "Fixed" / "Overridden for this month"), **Net pay** large, attendance summary (days in month, days paid, present, late, half days, absent, paid leave, unpaid leave, late days deducted, overtime), footer text from the snapshot. `PayslipPdf::text(PayrollItem $item): string` — the same content as plain text (for tests and the email body numbers). Font DejaVu Sans; amounts via `Money::format`.
 - `PayslipPdf::store(PayrollItem $item): string` — writes `payslips/{month}/{employee_code}-{item_id}.pdf` on the private disk, sets `payslip_path`, `payslip_generated_at`; returns the path. `PayslipPdf::pathOrRender(PayrollItem $item): string` re-stores when the file is missing.
 - `GeneratePayslip(int $itemId)` job (queued, `tries = 3`): skips excluded items and runs not approved/paid; `store`; then, if the employee's login is active with an email and `payslip_emailed_at` is null, queues `PayslipIssued` and sets `payslip_emailed_at`. `QueuePayslips::handle(PayrollRunApproved $e)` dispatches one job per non-excluded item.
@@ -364,6 +470,7 @@ The design (section 7) lists them; each is marked "(default, owner may change)" 
 **Interfaces — Consumes:** `payroll_items` figure columns and bank snapshot, `opening_balances`, `TaxYear::{of, months, label}` (Task 5; if not landed, code against the signatures), `settings('payroll.tax_year_start_month')`, `TextCells`.
 
 **Interfaces — Produces:**
+
 - `payroll.runs.bank-sheet` `GET /payroll/runs/{run}/bank-sheet` (`can:payroll.run`; approved / paid only, else 404): `bank-transfer-2026-11.xlsx`; sheet "Transfers": Employee Code, Name, Bank, Account Title, Account Number / IBAN (text, formula-safe, leading zeros kept), Amount (numeric whole rupees), Reference ("Salary November 2026"); rows: non-excluded items with net > 0 and an account number snapshot; a total row. Sheet "Paid outside the sheet": the rest with net > 0 (code, name, amount, reason "No bank account"). Audit `Bank sheet exported` (run, rows, total).
 - `payroll.runs.summary-export` `GET /payroll/runs/{run}/summary` (`can:payroll.view`; any status, a draft file is titled "DRAFT"): one row per item: code, name, department, days paid, basic, allowances, overtime, additions, gross, attendance deduction, fixed deductions, other deductions, loan deduction, taxable pay, tax, net, excluded; totals row; numeric cells. Audit `Payroll summary exported`.
 - `TaxReport::for(int $taxYear): array{year: int, label: string, months: list<string>, rows: list<array{employee_id:int, code:string, name:string, opening_taxable:int, opening_tax:int, months: array<string, array{taxable:int, tax:int}>, total_taxable:int, total_tax:int}>, totals: array}` — opening balances of that year + items of approved/paid runs whose month is in `TaxYear::months`; everyone with any figure; fixed queries.
@@ -384,9 +491,10 @@ The design (section 7) lists them; each is marked "(default, owner may change)" 
 **Interfaces — Consumes:** `payroll_runs`, `payroll_items`, `AttendanceClock::attendanceToday()`, route names `payroll.runs.show|index`, `my.payslips.download` (Tasks 8, 9; build links with `Route::has` guards if not landed), `Money::format`.
 
 **Interfaces — Produces:**
+
 - Dashboard props (absent, never zero-filled, when the viewer may not have them):
-  - `payrollThisMonth` for `payroll.view`: `{month: 'Y-m' (previous calendar month of attendanceToday), label, status: 'none'|'draft'|'approved'|'paid', headcount, net (paisa), run_id|null}`; tile "Payroll This Month": "November 2026 · Approved · Rs 2,450,000 · 52 people", "Not generated yet" with a link to Payroll Runs (default, owner may change).
-  - `latestPayslip` for every viewer with an employee record: `{month, label, net, download_url}` from their latest item of an approved / paid run, or absent; employee view card "My latest payslip"; the existing Leave Balance tile logic is unchanged.
+    - `payrollThisMonth` for `payroll.view`: `{month: 'Y-m' (previous calendar month of attendanceToday), label, status: 'none'|'draft'|'approved'|'paid', headcount, net (paisa), run_id|null}`; tile "Payroll This Month": "November 2026 · Approved · Rs 2,450,000 · 52 people", "Not generated yet" with a link to Payroll Runs (default, owner may change).
+    - `latestPayslip` for every viewer with an employee record: `{month, label, net, download_url}` from their latest item of an approved / paid run, or absent; employee view card "My latest payslip"; the existing Leave Balance tile logic is unchanged.
 - `DashboardPayroll` holds both queries (two queries at most).
 - Settings → Payroll: adds "Tax year starts in" (month select, `tax_year_start_month` 1–12). Settings → Attendance → Overtime card: rate mode (multiple of hourly pay / fixed hourly rate), multiplier % (100–300), fixed rate (whole rupees 0–100,000), hours per day (1–24); shown with the existing "Pay overtime" switch and its hint. Validation in the two FormRequests; `hrm-settings.ts` types updated.
 

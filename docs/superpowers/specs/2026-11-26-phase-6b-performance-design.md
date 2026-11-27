@@ -15,6 +15,7 @@ Success (phase gate): HR runs one real cycle end to end in the system (KPIs ente
 **Non-goals (v1):** 360 feedback, goals or OKRs, links to salary increments, a PDF review form, email notices (in-app waiting list only), bulk close, comments threads, review templates other than KPIs.
 
 **Anti-goals (failure even if it works):**
+
 - An employee seeing the manager's ratings, comments or score before the review is closed (by screen, prop, list, profile tab or dashboard).
 - Anyone reading a draft that is not theirs (the employee's self-ratings before they submit are not shown to the manager).
 - A review changed twice by two clicks, two tabs or two users (double submit, close against send back, skip against submit).
@@ -67,17 +68,17 @@ Group `performance` (Admin, `settings.manage`, as the other company settings): `
 
 ### 5.5 The flow of one review
 
-| From | Action (who) | To |
-|---|---|---|
-| (open) | cycle opens or person added | `self_review`, or `manager_review` when self-review is off |
-| `self_review` | submit self-review (the employee) | `manager_review` |
-| `self_review` | waive self-review (HR) | `manager_review` |
-| `manager_review` | submit manager review (the reviewer) | `ready_to_close` |
-| `ready_to_close` | send back with a note (HR) | `manager_review` |
-| `ready_to_close` | close (HR): the score freezes | `closed` |
-| `closed` | reopen (HR, cycle still open): the frozen score is cleared | `ready_to_close` |
-| `self_review`, `manager_review`, `ready_to_close` | skip with a reason (HR) | `skipped` |
-| `skipped` | restore (HR, cycle still open) | the state it was skipped from |
+| From                                              | Action (who)                                               | To                                                         |
+| ------------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------- |
+| (open)                                            | cycle opens or person added                                | `self_review`, or `manager_review` when self-review is off |
+| `self_review`                                     | submit self-review (the employee)                          | `manager_review`                                           |
+| `self_review`                                     | waive self-review (HR)                                     | `manager_review`                                           |
+| `manager_review`                                  | submit manager review (the reviewer)                       | `ready_to_close`                                           |
+| `ready_to_close`                                  | send back with a note (HR)                                 | `manager_review`                                           |
+| `ready_to_close`                                  | close (HR): the score freezes                              | `closed`                                                   |
+| `closed`                                          | reopen (HR, cycle still open): the frozen score is cleared | `ready_to_close`                                           |
+| `self_review`, `manager_review`, `ready_to_close` | skip with a reason (HR)                                    | `skipped`                                                  |
+| `skipped`                                         | restore (HR, cycle still open)                             | the state it was skipped from                              |
 
 Anything else is refused ("This review is {state} and cannot be changed that way."). A `closed` review cannot be skipped (reopen first).
 
@@ -93,14 +94,14 @@ Anything else is refused ("This review is {state} and cannot be changed that way
 
 ### 5.7 Who sees what
 
-| | Employee (reviewee) | Reviewer (manager) | HR / Admin | Other |
-|---|---|---|---|---|
-| Own self-ratings, draft | yes | no (not until submitted) | yes | no |
-| Self-ratings, submitted | yes | yes | yes | no |
-| Manager ratings, comments, overall comment | **only when `closed`** | yes (their own drafts too) | yes | no |
-| Score and label | only when `closed` | yes | yes | no |
-| HR notes (skip reason, send-back note) | send-back note no; skip reason no | send-back note yes | yes | no |
-| Reviews listed | own, all states | reviews where they are reviewer (any state, open cycles) and the closed history of their current direct reports | everything | none |
+|                                            | Employee (reviewee)               | Reviewer (manager)                                                                                              | HR / Admin | Other |
+| ------------------------------------------ | --------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------- | ----- |
+| Own self-ratings, draft                    | yes                               | no (not until submitted)                                                                                        | yes        | no    |
+| Self-ratings, submitted                    | yes                               | yes                                                                                                             | yes        | no    |
+| Manager ratings, comments, overall comment | **only when `closed`**            | yes (their own drafts too)                                                                                      | yes        | no    |
+| Score and label                            | only when `closed`                | yes                                                                                                             | yes        | no    |
+| HR notes (skip reason, send-back note)     | send-back note no; skip reason no | send-back note yes                                                                                              | yes        | no    |
+| Reviews listed                             | own, all states                   | reviews where they are reviewer (any state, open cycles) and the closed history of their current direct reports | everything | none  |
 
 - A person looking at their own review sees the reviewee view whatever their role: an HR or Admin user does not see manager ratings on their own review before close (except as the sole `performance.manage` user rating it, which is their own work).
 - A `skipped` review shows the employee only "Skipped".
@@ -113,12 +114,12 @@ Area `performance` (added to `Audit::AREAS`; section in `docs/audit-log.md`), al
 
 ### 5.9 Locking
 
-| Action | Order |
-|---|---|
-| Open cycle | every cycle row FOR UPDATE (overlap check), then insert cycle and reviews |
-| Add people, close cycle | cycle row FOR UPDATE, then (close) the cycle's review rows |
+| Action                                                                              | Order                                                                                                                                               |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Open cycle                                                                          | every cycle row FOR UPDATE (overlap check), then insert cycle and reviews                                                                           |
+| Add people, close cycle                                                             | cycle row FOR UPDATE, then (close) the cycle's review rows                                                                                          |
 | Draft save, submit, waive, send back, close, reopen, skip, restore, change reviewer | plain read of the review's cycle id, cycle row `sharedLock`, then review row FOR UPDATE; the state and the cycle's status are re-checked after both |
-| KPI create, update, delete | KPI row FOR UPDATE (delete: then the usage check) |
+| KPI create, update, delete                                                          | KPI row FOR UPDATE (delete: then the usage check)                                                                                                   |
 
 One order everywhere: cycle row first, review row second. Closing a cycle takes the cycle exclusively, so no review change can slip in between "all done" and "closed". A unique index on `(review_cycle_id, employee_id)` and one on `(period_start, period_end)` are the database backstops. No employee, payroll or asset lock is involved.
 

@@ -40,32 +40,34 @@
 
 ## File map
 
-| Path | Responsibility |
-|---|---|
-| `routes/iclock.php` | Machine routes only |
-| `app/Http/Controllers/Iclock/IclockController.php` | Parse machine requests, reply in plain text |
-| `app/Models/DeviceLog.php` + migration | Raw record of every machine request |
-| `config/hrm.php` | Allowed device serials (phase 0), setting defaults, permission map |
-| `scripts/deploy.ps1`, `docs/deploy.md` | Build and upload routine |
-| `database/seeders/RolePermissionSeeder.php` | Four roles and their permissions |
-| `app/Http/Middleware/EnsureUserIsActive.php` | Sign out deactivated users |
-| `resources/js/config/navigation.ts` | Sidebar groups, entries, required permission |
-| `resources/js/components/hrm/*` | `page-header`, `status-pill`, `status-tabs`, `data-table`, `confirm-dialog` |
-| `app/Models/Department.php`, `Designation.php` + controllers, requests, pages | Organization lists |
-| `app/Models/Setting.php`, `app/Support/Settings.php`, `app/helpers.php` | Settings store and `settings()` helper |
-| `app/Http/Controllers/Settings/HrmSettingsController.php` | Settings screen |
-| `app/Http/Controllers/UserController.php` | Users & roles screen |
-| `app/Http/Controllers/AuditLogController.php` | Audit log viewer |
+| Path                                                                          | Responsibility                                                              |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `routes/iclock.php`                                                           | Machine routes only                                                         |
+| `app/Http/Controllers/Iclock/IclockController.php`                            | Parse machine requests, reply in plain text                                 |
+| `app/Models/DeviceLog.php` + migration                                        | Raw record of every machine request                                         |
+| `config/hrm.php`                                                              | Allowed device serials (phase 0), setting defaults, permission map          |
+| `scripts/deploy.ps1`, `docs/deploy.md`                                        | Build and upload routine                                                    |
+| `database/seeders/RolePermissionSeeder.php`                                   | Four roles and their permissions                                            |
+| `app/Http/Middleware/EnsureUserIsActive.php`                                  | Sign out deactivated users                                                  |
+| `resources/js/config/navigation.ts`                                           | Sidebar groups, entries, required permission                                |
+| `resources/js/components/hrm/*`                                               | `page-header`, `status-pill`, `status-tabs`, `data-table`, `confirm-dialog` |
+| `app/Models/Department.php`, `Designation.php` + controllers, requests, pages | Organization lists                                                          |
+| `app/Models/Setting.php`, `app/Support/Settings.php`, `app/helpers.php`       | Settings store and `settings()` helper                                      |
+| `app/Http/Controllers/Settings/HrmSettingsController.php`                     | Settings screen                                                             |
+| `app/Http/Controllers/UserController.php`                                     | Users & roles screen                                                        |
+| `app/Http/Controllers/AuditLogController.php`                                 | Audit log viewer                                                            |
 
 ---
 
 ### Task 1: Toolchain and project skeleton
 
 **Files:**
+
 - Create: the Laravel app in `C:\xampp\htdocs\LuminoHRM` (existing `docs/` kept)
 - Modify: `.env`, `.env.example`, `config/app.php` (timezone), `.gitignore`
 
 **Interfaces:**
+
 - Produces: a runnable app with the starter kit's auth, layout and Pest suite; local database `lumino_hrm`; git repository on branch `main`.
 
 - [ ] **Step 1: Install PHP 8.4 locally.** Ask the owner before installing. Preferred: Laravel Herd for Windows (bundles PHP 8.4 and Composer). Alternative: a standalone PHP 8.4 folder placed ahead of XAMPP on `PATH`. Verify: `php -v` prints 8.4.x.
@@ -82,16 +84,18 @@
 Phase 0 only records what the machine sends. Punch storage and day rebuilds come in Phase 3 and will extend these same routes.
 
 **Files:**
+
 - Create: `routes/iclock.php`, `app/Http/Controllers/Iclock/IclockController.php`, `app/Models/DeviceLog.php`, migration `create_device_logs_table`, `config/hrm.php`
 - Modify: `bootstrap/app.php` (register the route file with no middleware group)
 - Test: `tests/Feature/Iclock/IclockEndpointsTest.php`
 
 **Interfaces:**
+
 - Produces:
-  - Table `device_logs`: `id`, `serial_no` (string, indexed), `method`, `path`, `query` (text), `body` (longText, nullable), `ip`, `scheme` (`http`/`https`), `accepted` (bool), `summary` (string), timestamps.
-  - `config('hrm.devices.allowed_serials')`: array from env `HRM_DEVICE_SERIALS` (comma-separated). Replaced by the `devices` table in Phase 3.
-  - Route names: `iclock.handshake` (GET `/iclock/cdata`), `iclock.upload` (POST `/iclock/cdata`), `iclock.getrequest` (GET `/iclock/getrequest`), `iclock.devicecmd` (POST `/iclock/devicecmd`).
-  - `IclockController::parseAttlog(string $body): array` returning a list of `['pin' => string, 'punched_at' => string, 'status' => string, 'verify' => string]`; lines that do not parse are skipped.
+    - Table `device_logs`: `id`, `serial_no` (string, indexed), `method`, `path`, `query` (text), `body` (longText, nullable), `ip`, `scheme` (`http`/`https`), `accepted` (bool), `summary` (string), timestamps.
+    - `config('hrm.devices.allowed_serials')`: array from env `HRM_DEVICE_SERIALS` (comma-separated). Replaced by the `devices` table in Phase 3.
+    - Route names: `iclock.handshake` (GET `/iclock/cdata`), `iclock.upload` (POST `/iclock/cdata`), `iclock.getrequest` (GET `/iclock/getrequest`), `iclock.devicecmd` (POST `/iclock/devicecmd`).
+    - `IclockController::parseAttlog(string $body): array` returning a list of `['pin' => string, 'punched_at' => string, 'status' => string, 'verify' => string]`; lines that do not parse are skipped.
 
 - [ ] **Step 1: Write the failing tests** (set `hrm.devices.allowed_serials` to `['TESTSN001']` in `beforeEach`):
 
@@ -161,6 +165,7 @@ Encrypt=None
 ```
 
 ATTLOG lines are tab-separated: PIN, `Y-m-d H:i:s`, status, verify, then extra fields to ignore. A line counts when PIN is non-empty and the second field parses as a date-time. Truncate stored `body` at 1 MB. Every request writes one `device_logs` row; a logging failure must not change the reply.
+
 - [ ] **Step 4: Run** the tests — expected: all pass.
 - [ ] **Step 5: Commit** `feat: iclock endpoints that log machine requests`.
 
@@ -169,10 +174,12 @@ ATTLOG lines are tab-separated: PIN, `Y-m-d H:i:s`, status, verify, then extra f
 ### Task 3: Hostinger deploy and the phase 0 gate
 
 **Files:**
+
 - Create: `scripts/deploy.ps1`, `docs/deploy.md`, `docs/decisions/2026-11-phase-0-machine-link.md`
 - Modify: `public/.htaccess` (only if the HTTP exception needs it)
 
 **Interfaces:**
+
 - Produces: a live URL for the HRM; a repeatable deploy routine; a written outcome (1, 2 or 3 from spec section 6) that Phase 3 depends on.
 
 - [ ] **Step 1: Confirm with the owner** the subdomain name (default `hrm.luminocrm.online`), that a new database may be created, and the answer to open item 14 (is BioTime in use now). Do not proceed without a yes.
@@ -186,6 +193,7 @@ curl -i "http://<subdomain>/iclock/cdata?SN=<test-serial>&options=all"
 ```
 
 Expected for outcome 1: `HTTP/1.1 200` with the option list, no redirect. If it returns 301 to HTTPS, find the source: the app (`URL::forceScheme`, `.htaccess`) or Hostinger's "Force HTTPS" setting for the subdomain; turn off the hosting-level setting for this subdomain and instead redirect to HTTPS in `public/.htaccess` for every path except `^iclock/`. Re-run the curl.
+
 - [ ] **Step 6: Add the cron entry** for this app only: every minute, `/opt/alt/php84/usr/bin/php <app path>/artisan schedule:run`.
 - [ ] **Step 7: Machine test (owner does this at the office, under an hour).** Owner photographs MB20 → COMM → Cloud Server Setting, enters the server address and port 80 (or 443 if testing HTTPS push), and reads the serial number from the machine's device info so it can be put in `HRM_DEVICE_SERIALS`. Someone punches. Expected: `device_logs` shows a handshake row and an ATTLOG row with that punch. Then point the machine back at BioTime if item 14 was "yes".
 - [ ] **Step 8: Record the outcome** in `docs/decisions/2026-11-phase-0-machine-link.md`: which of outcomes 1, 2, 3 applies, the exact handshake query string and ATTLOG line the real machine sent, firmware version, and any reply-format changes needed. If outcome 3 (forwarder), stop and bring it to the owner before Phase 3 is planned.
@@ -198,48 +206,51 @@ Expected for outcome 1: `HTTP/1.1 200` with the option list, no redirect. If it 
 ### Task 4: Roles, permissions and inactive users
 
 **Files:**
+
 - Create: `database/seeders/RolePermissionSeeder.php`, `app/Http/Middleware/EnsureUserIsActive.php`, migration `add_is_active_and_last_login_to_users`
 - Modify: `app/Models/User.php`, `app/Http/Middleware/HandleInertiaRequests.php` (kit), `bootstrap/app.php`, `database/seeders/DatabaseSeeder.php`, `config/hrm.php`, `resources/js/types/index.d.ts` (kit)
 - Test: `tests/Feature/Auth/RolePermissionTest.php`, `tests/Feature/Auth/InactiveUserTest.php`
 
 **Interfaces:**
+
 - Produces:
-  - Roles: `admin`, `hr`, `manager`, `employee`.
-  - Permissions (exact names), from `config('hrm.permissions')`:
+    - Roles: `admin`, `hr`, `manager`, `employee`.
+    - Permissions (exact names), from `config('hrm.permissions')`:
 
-    | Permission | admin | hr | manager | employee |
-    |---|---|---|---|---|
-    | `org.manage` | ✓ | ✓ | | |
-    | `employees.view-all` | ✓ | ✓ | | |
-    | `employees.view-team` | ✓ | ✓ | ✓ | |
-    | `employees.manage` | ✓ | ✓ | | |
-    | `employees.delete` | ✓ | | | |
-    | `attendance.view-all` | ✓ | ✓ | | |
-    | `attendance.view-team` | ✓ | ✓ | ✓ | |
-    | `attendance.edit` | ✓ | ✓ | | |
-    | `leave.approve-all` | ✓ | ✓ | | |
-    | `leave.approve-team` | ✓ | ✓ | ✓ | |
-    | `payroll.view` | ✓ | ✓ | | |
-    | `payroll.run` | ✓ | ✓ | | |
-    | `payroll.approve` | ✓ | | | |
-    | `performance.manage` | ✓ | ✓ | | |
-    | `performance.review-team` | ✓ | ✓ | ✓ | |
-    | `assets.manage` | ✓ | | | |
-    | `assets.assign` | ✓ | ✓ | | |
-    | `assets.view-team` | ✓ | ✓ | ✓ | |
-    | `exit.manage` | ✓ | | | |
-    | `exit.clearance` | ✓ | ✓ | | |
-    | `exit.approve-team` | ✓ | ✓ | ✓ | |
-    | `settings.manage` | ✓ | | | |
-    | `settings.attendance-leave` | ✓ | ✓ | | |
-    | `users.manage` | ✓ | | | |
-    | `audit.view` | ✓ | | | |
+        | Permission                  | admin | hr  | manager | employee |
+        | --------------------------- | ----- | --- | ------- | -------- |
+        | `org.manage`                | ✓     | ✓   |         |          |
+        | `employees.view-all`        | ✓     | ✓   |         |          |
+        | `employees.view-team`       | ✓     | ✓   | ✓       |          |
+        | `employees.manage`          | ✓     | ✓   |         |          |
+        | `employees.delete`          | ✓     |     |         |          |
+        | `attendance.view-all`       | ✓     | ✓   |         |          |
+        | `attendance.view-team`      | ✓     | ✓   | ✓       |          |
+        | `attendance.edit`           | ✓     | ✓   |         |          |
+        | `leave.approve-all`         | ✓     | ✓   |         |          |
+        | `leave.approve-team`        | ✓     | ✓   | ✓       |          |
+        | `payroll.view`              | ✓     | ✓   |         |          |
+        | `payroll.run`               | ✓     | ✓   |         |          |
+        | `payroll.approve`           | ✓     |     |         |          |
+        | `performance.manage`        | ✓     | ✓   |         |          |
+        | `performance.review-team`   | ✓     | ✓   | ✓       |          |
+        | `assets.manage`             | ✓     |     |         |          |
+        | `assets.assign`             | ✓     | ✓   |         |          |
+        | `assets.view-team`          | ✓     | ✓   | ✓       |          |
+        | `exit.manage`               | ✓     |     |         |          |
+        | `exit.clearance`            | ✓     | ✓   |         |          |
+        | `exit.approve-team`         | ✓     | ✓   | ✓       |          |
+        | `settings.manage`           | ✓     |     |         |          |
+        | `settings.attendance-leave` | ✓     | ✓   |         |          |
+        | `users.manage`              | ✓     |     |         |          |
+        | `audit.view`                | ✓     |     |         |          |
 
-    "My Space" pages need no permission: every signed-in user has them.
-  - `users.is_active` (bool, default true), `users.last_login_at` (nullable datetime).
-  - Inertia shared props: `auth.user`, `auth.role: string`, `auth.permissions: string[]`.
-  - Test helper in `tests/Pest.php`: `userWithRole(string $role): User` (seeds roles once, returns an active user with that role).
-  - Seeder creates one Admin from env `HRM_ADMIN_EMAIL` / `HRM_ADMIN_PASSWORD` when no admin exists; it never prints or logs the password.
+        "My Space" pages need no permission: every signed-in user has them.
+
+    - `users.is_active` (bool, default true), `users.last_login_at` (nullable datetime).
+    - Inertia shared props: `auth.user`, `auth.role: string`, `auth.permissions: string[]`.
+    - Test helper in `tests/Pest.php`: `userWithRole(string $role): User` (seeds roles once, returns an active user with that role).
+    - Seeder creates one Admin from env `HRM_ADMIN_EMAIL` / `HRM_ADMIN_PASSWORD` when no admin exists; it never prints or logs the password.
 
 - [ ] **Step 1: Install** `spatie/laravel-permission`, publish its migration, add `HasRoles` to `User`.
 - [ ] **Step 2: Write the failing tests:**
@@ -295,49 +306,59 @@ it('records the last sign-in time', function () {
 ### Task 5: Design system and application shell
 
 **Files:**
+
 - Modify (kit): `resources/css/app.css`, `resources/js/components/app-sidebar.tsx`, `resources/js/components/nav-main.tsx`, `resources/js/components/app-sidebar-header.tsx`, `resources/js/pages/dashboard.tsx`, `resources/views/app.blade.php`
 - Create: `resources/js/config/navigation.ts`, `resources/js/hooks/use-can.ts`, `resources/js/components/hrm/page-header.tsx`, `resources/js/components/hrm/status-pill.tsx`, `resources/js/components/hrm/sidebar-search.tsx`, `resources/js/lib/navigation.test.ts`
 - Test: `resources/js/lib/navigation.test.ts` (add Vitest as a dev dependency if the kit has no JS test runner), `tests/Feature/DashboardShellTest.php`
 
 **Interfaces:**
+
 - Consumes: `auth.permissions`, `auth.role` from Task 4.
 - Produces:
-  - `navigation.ts` exports `type NavItem = { title: string; href?: string; icon?: LucideIcon; permission?: string | string[]; children?: NavItem[] }`, `type NavGroup = { label: string; items: NavItem[] }`, `const navigation: NavGroup[]`, and `filterNavigation(groups: NavGroup[], permissions: string[], query?: string): NavGroup[]`. An item with several permissions shows when the user has any one. A parent with no visible children is dropped; a group with no items is dropped. `query` matches titles case-insensitively, keeping parents of matches.
-  - `useCan(): (permission: string) => boolean`.
-  - `<PageHeader title subtitle actions? />`, `<StatusPill tone="green|grey|amber|red|blue">label</StatusPill>`.
-  - CSS variables in `app.css`: `--primary: #10b77f` with a white foreground in light and dark; `--radius: 0.625rem`; `--sidebar-width: 272px`; Inter loaded from a local or Bunny Fonts stylesheet.
+    - `navigation.ts` exports `type NavItem = { title: string; href?: string; icon?: LucideIcon; permission?: string | string[]; children?: NavItem[] }`, `type NavGroup = { label: string; items: NavItem[] }`, `const navigation: NavGroup[]`, and `filterNavigation(groups: NavGroup[], permissions: string[], query?: string): NavGroup[]`. An item with several permissions shows when the user has any one. A parent with no visible children is dropped; a group with no items is dropped. `query` matches titles case-insensitively, keeping parents of matches.
+    - `useCan(): (permission: string) => boolean`.
+    - `<PageHeader title subtitle actions? />`, `<StatusPill tone="green|grey|amber|red|blue">label</StatusPill>`.
+    - CSS variables in `app.css`: `--primary: #10b77f` with a white foreground in light and dark; `--radius: 0.625rem`; `--sidebar-width: 272px`; Inter loaded from a local or Bunny Fonts stylesheet.
 - Sidebar content (spec section 8). Entries whose pages do not exist yet are included with their final `href` and hidden behind a `ready: false` flag, so later phases only flip the flag:
 
-  | Group | Entries → permission |
-  |---|---|
-  | Overview | Dashboard → none; Calendar → none |
-  | Workforce | Employees → `employees.view-all` or `employees.view-team`; Organization Chart → same; Departments & Designations → `org.manage`; Attendance (Daily, Monthly, Correction Requests, Shifts, Raw Punches) → `attendance.view-all` or `attendance.view-team`; Leave (Requests, Balances, Leave Types, Holidays) → `leave.approve-all` or `leave.approve-team` |
-  | Growth | Performance (KPIs, Reviews) → `performance.manage` or `performance.review-team` |
-  | Finance & Assets | Payroll (Salary Profiles, Payroll Runs, Payslips, Loans & Advances) → `payroll.view`; Assets (All Assets, Assignments) → `assets.assign` or `assets.view-team` |
-  | Exit | Resignations & Clearance → `exit.clearance` or `exit.approve-team` |
-  | System | Settings → `settings.manage` or `settings.attendance-leave`; Users & Roles → `users.manage`; Audit Log → `audit.view` |
-  | My Space | My Profile, My Attendance, My Leaves, My Payslips, My Assets, My Reviews → none |
+    | Group            | Entries → permission                                                                                                                                                                                                                                                                                                                                      |
+    | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+    | Overview         | Dashboard → none; Calendar → none                                                                                                                                                                                                                                                                                                                         |
+    | Workforce        | Employees → `employees.view-all` or `employees.view-team`; Organization Chart → same; Departments & Designations → `org.manage`; Attendance (Daily, Monthly, Correction Requests, Shifts, Raw Punches) → `attendance.view-all` or `attendance.view-team`; Leave (Requests, Balances, Leave Types, Holidays) → `leave.approve-all` or `leave.approve-team` |
+    | Growth           | Performance (KPIs, Reviews) → `performance.manage` or `performance.review-team`                                                                                                                                                                                                                                                                           |
+    | Finance & Assets | Payroll (Salary Profiles, Payroll Runs, Payslips, Loans & Advances) → `payroll.view`; Assets (All Assets, Assignments) → `assets.assign` or `assets.view-team`                                                                                                                                                                                            |
+    | Exit             | Resignations & Clearance → `exit.clearance` or `exit.approve-team`                                                                                                                                                                                                                                                                                        |
+    | System           | Settings → `settings.manage` or `settings.attendance-leave`; Users & Roles → `users.manage`; Audit Log → `audit.view`                                                                                                                                                                                                                                     |
+    | My Space         | My Profile, My Attendance, My Leaves, My Payslips, My Assets, My Reviews → none                                                                                                                                                                                                                                                                           |
 
 - [ ] **Step 1: Write the failing tests.**
 
 ```ts
 // navigation.test.ts
 test('employee sees only Overview and My Space', () => {
-  const labels = filterNavigation(navigation, []).map(g => g.label)
-  expect(labels).toEqual(['Overview', 'My Space'])
-})
+    const labels = filterNavigation(navigation, []).map((g) => g.label);
+    expect(labels).toEqual(['Overview', 'My Space']);
+});
 test('manager never sees Payroll, Settings, Users or Audit Log', () => {
-  const perms = ['employees.view-team','attendance.view-team','leave.approve-team','performance.review-team','assets.view-team','exit.approve-team']
-  const titles = JSON.stringify(filterNavigation(navigation, perms))
-  for (const t of ['Payroll','Settings','Users & Roles','Audit Log']) expect(titles).not.toContain(t)
-})
+    const perms = [
+        'employees.view-team',
+        'attendance.view-team',
+        'leave.approve-team',
+        'performance.review-team',
+        'assets.view-team',
+        'exit.approve-team',
+    ];
+    const titles = JSON.stringify(filterNavigation(navigation, perms));
+    for (const t of ['Payroll', 'Settings', 'Users & Roles', 'Audit Log'])
+        expect(titles).not.toContain(t);
+});
 test('search keeps the parent of a matching child and drops other groups', () => {
-  const r = filterNavigation(navigation, allPermissions, 'payslip')
-  expect(r.map(g => g.label)).toEqual(['Finance & Assets', 'My Space'])
-})
+    const r = filterNavigation(navigation, allPermissions, 'payslip');
+    expect(r.map((g) => g.label)).toEqual(['Finance & Assets', 'My Space']);
+});
 test('search with no match returns an empty list', () => {
-  expect(filterNavigation(navigation, allPermissions, 'zzzz')).toEqual([])
-})
+    expect(filterNavigation(navigation, allPermissions, 'zzzz')).toEqual([]);
+});
 ```
 
 ```php
@@ -367,17 +388,19 @@ it('never mentions the reference product', function () {
 ### Task 6: Departments and designations
 
 **Files:**
+
 - Create: migrations `create_departments_table`, `create_designations_table`; `app/Models/Department.php`, `Designation.php`; `app/Http/Controllers/DepartmentController.php`, `DesignationController.php`; `app/Http/Requests/DepartmentRequest.php`, `DesignationRequest.php`; `resources/js/pages/organization/index.tsx`; `resources/js/components/hrm/data-table.tsx`, `status-tabs.tsx`, `confirm-dialog.tsx`
 - Modify: `routes/web.php`, `resources/js/config/navigation.ts` (set `ready: true`)
 - Test: `tests/Feature/Organization/DepartmentTest.php`, `DesignationTest.php`
 
 **Interfaces:**
+
 - Consumes: `org.manage`; `PageHeader`; `userWithRole()`.
 - Produces:
-  - `departments`: `id`, `name` (unique), timestamps. `head_employee_id` is added in Phase 2 with the employees table.
-  - `designations`: `id`, `name`, `department_id` (FK, restrict on delete), unique (`department_id`, `name`), timestamps.
-  - Routes under `/organization` (middleware `can:org.manage`): `organization.index` (one page, two tabs), `departments.store|update|destroy`, `designations.store|update|destroy`.
-  - `<DataTable columns rows pagination search? toolbar? emptyText />` (server-side pagination, 10 / 25 / 50 rows, search as a query-string parameter), `<StatusTabs tabs={[{key,label,count}]} value onChange />`, `<ConfirmDialog title description onConfirm />`. Later phases reuse these three.
+    - `departments`: `id`, `name` (unique), timestamps. `head_employee_id` is added in Phase 2 with the employees table.
+    - `designations`: `id`, `name`, `department_id` (FK, restrict on delete), unique (`department_id`, `name`), timestamps.
+    - Routes under `/organization` (middleware `can:org.manage`): `organization.index` (one page, two tabs), `departments.store|update|destroy`, `designations.store|update|destroy`.
+    - `<DataTable columns rows pagination search? toolbar? emptyText />` (server-side pagination, 10 / 25 / 50 rows, search as a query-string parameter), `<StatusTabs tabs={[{key,label,count}]} value onChange />`, `<ConfirmDialog title description onConfirm />`. Later phases reuse these three.
 
 - [ ] **Step 1: Write the failing tests:**
 
@@ -429,44 +452,46 @@ it('searches and paginates the list', function () {
 ### Task 7: Settings
 
 **Files:**
+
 - Create: migration `create_settings_table`; `app/Models/Setting.php`; `app/Support/Settings.php`; `app/helpers.php` (autoloaded in `composer.json`); `app/Http/Controllers/Settings/HrmSettingsController.php`; `app/Http/Requests/Settings/*Request.php` (one per group); `resources/js/pages/hrm-settings/index.tsx` and one panel component per group; `app/Mail/TestMail.php`
 - Modify: `config/hrm.php`, `routes/web.php`, `HandleInertiaRequests.php`, `app-sidebar.tsx` (logo), `app.css` usage of the accent, `navigation.ts`
 - Test: `tests/Feature/Settings/SettingsTest.php`, `tests/Unit/SettingsTest.php`
 
 **Interfaces:**
+
 - Consumes: `settings.manage`, `settings.attendance-leave`.
 - Produces:
-  - `settings` table: `id`, `group`, `key`, `value` (text, JSON-encoded), unique (`group`, `key`), timestamps.
-  - `Settings::get(string $dotted, mixed $default = null): mixed`, `Settings::set(string $group, array $values): void`, `Settings::group(string $group): array`; global helper `settings(string $dotted, mixed $default = null)`. Reads are cached per request and the cache is cleared on `set`. Missing values fall back to `config('hrm.defaults')`.
-  - Defaults (`config/hrm.php`, values from spec section 14):
+    - `settings` table: `id`, `group`, `key`, `value` (text, JSON-encoded), unique (`group`, `key`), timestamps.
+    - `Settings::get(string $dotted, mixed $default = null): mixed`, `Settings::set(string $group, array $values): void`, `Settings::group(string $group): array`; global helper `settings(string $dotted, mixed $default = null)`. Reads are cached per request and the cache is cleared on `set`. Missing values fall back to `config('hrm.defaults')`.
+    - Defaults (`config/hrm.php`, values from spec section 14):
 
-    | Key | Default |
-    |---|---|
-    | `company.name` | `Lumino Digital` |
-    | `company.currency` | `PKR` |
-    | `company.timezone` | `Asia/Karachi` |
-    | `company.date_format` | `d M Y` |
-    | `branding.accent` | `#10b77f` |
-    | `attendance.shift_start` / `shift_end` | `09:00` / `18:00` |
-    | `attendance.grace_minutes` | `15` |
-    | `attendance.weekly_offs` | `["saturday","sunday"]` |
-    | `attendance.late_rule_count` | `3` |
-    | `attendance.half_day_hours` | `4` |
-    | `attendance.overtime_enabled` | `false` |
-    | `attendance.overtime_min_minutes` | `30` |
-    | `leave.hr_step_enabled` | `true` |
-    | `leave.carry_forward_cap` | `0` |
-    | `leave.prorate_new_joiners` | `true` |
-    | `payroll.day_pay_basis` | `calendar_days` (also `thirty`, `working_days`) |
-    | `payroll.default_tax_mode` | `none` |
-    | `payroll.leave_encashment` | `false` |
-    | `payroll.notice_period_days` | `30` |
-    | `payroll.payslip_footer` | empty string |
+        | Key                                    | Default                                         |
+        | -------------------------------------- | ----------------------------------------------- |
+        | `company.name`                         | `Lumino Digital`                                |
+        | `company.currency`                     | `PKR`                                           |
+        | `company.timezone`                     | `Asia/Karachi`                                  |
+        | `company.date_format`                  | `d M Y`                                         |
+        | `branding.accent`                      | `#10b77f`                                       |
+        | `attendance.shift_start` / `shift_end` | `09:00` / `18:00`                               |
+        | `attendance.grace_minutes`             | `15`                                            |
+        | `attendance.weekly_offs`               | `["saturday","sunday"]`                         |
+        | `attendance.late_rule_count`           | `3`                                             |
+        | `attendance.half_day_hours`            | `4`                                             |
+        | `attendance.overtime_enabled`          | `false`                                         |
+        | `attendance.overtime_min_minutes`      | `30`                                            |
+        | `leave.hr_step_enabled`                | `true`                                          |
+        | `leave.carry_forward_cap`              | `0`                                             |
+        | `leave.prorate_new_joiners`            | `true`                                          |
+        | `payroll.day_pay_basis`                | `calendar_days` (also `thirty`, `working_days`) |
+        | `payroll.default_tax_mode`             | `none`                                          |
+        | `payroll.leave_encashment`             | `false`                                         |
+        | `payroll.notice_period_days`           | `30`                                            |
+        | `payroll.payslip_footer`               | empty string                                    |
 
-  - Groups and who may open and save them: `company`, `branding`, `payroll`, `email`, `letters` → `settings.manage`; `attendance`, `leave` → `settings.manage` or `settings.attendance-leave`. The "ZKTeco Device" group is added in Phase 3.
-  - Routes: `GET /hrm-settings` (`hrm-settings.index`), `PUT /hrm-settings/{group}` (`hrm-settings.update`), `POST /hrm-settings/email/test` (`hrm-settings.email.test`). The kit's own `/settings/*` profile pages stay as they are and are reached from the avatar menu.
-  - Inertia shared prop `app: { name: string, accent: string, logoUrl: string | null, logoDarkUrl: string | null }`.
-  - Email settings are stored in the `email` group with the SMTP password encrypted (`Crypt`), never sent back to the browser, and applied to the mailer config at boot. An empty password field on save keeps the stored one.
+    - Groups and who may open and save them: `company`, `branding`, `payroll`, `email`, `letters` → `settings.manage`; `attendance`, `leave` → `settings.manage` or `settings.attendance-leave`. The "ZKTeco Device" group is added in Phase 3.
+    - Routes: `GET /hrm-settings` (`hrm-settings.index`), `PUT /hrm-settings/{group}` (`hrm-settings.update`), `POST /hrm-settings/email/test` (`hrm-settings.email.test`). The kit's own `/settings/*` profile pages stay as they are and are reached from the avatar menu.
+    - Inertia shared prop `app: { name: string, accent: string, logoUrl: string | null, logoDarkUrl: string | null }`.
+    - Email settings are stored in the `email` group with the SMTP password encrypted (`Crypt`), never sent back to the browser, and applied to the mailer config at boot. An empty password field on save keeps the stored one.
 
 - [ ] **Step 1: Write the failing tests:**
 
@@ -546,11 +571,13 @@ it('reports a failed test email instead of crashing', function () {
 ### Task 8: Users and roles screen
 
 **Files:**
+
 - Create: `app/Http/Controllers/UserController.php`, `app/Http/Requests/UserRequest.php`, `resources/js/pages/users/index.tsx`, `app/Notifications/SetPasswordNotification.php`
 - Modify: `routes/web.php`, `navigation.ts`
 - Test: `tests/Feature/Users/UserManagementTest.php`
 
 **Interfaces:**
+
 - Consumes: `users.manage`, `DataTable`, `StatusTabs`, `StatusPill`, `ConfirmDialog`.
 - Produces: routes under `/users` (middleware `can:users.manage`): `users.index`, `users.store`, `users.update` (name, email, role), `users.toggle` (`PATCH /users/{user}/active`), `users.send-reset` (`POST /users/{user}/send-reset`). No delete route: accounts are disabled, never removed. `users.employee_id` is added in Phase 2, which will create accounts from the employee form through `UserController`'s underlying action `App\Actions\CreateUserAccount::handle(string $name, string $email, string $role): User`.
 
@@ -606,11 +633,13 @@ it('disables and re-enables a user', function () {
 ### Task 9: Audit log
 
 **Files:**
+
 - Create: `app/Http/Controllers/AuditLogController.php`, `resources/js/pages/audit-log/index.tsx`, `app/Listeners/LogAuthEvents.php`
 - Modify: `app/Models/Department.php`, `Designation.php`, `User.php` (add `LogsActivity`), `app/Support/Settings.php` (log on `set`), `routes/web.php`, `navigation.ts`
 - Test: `tests/Feature/Audit/AuditLogTest.php`
 
 **Interfaces:**
+
 - Consumes: `audit.view`.
 - Produces: routes `audit-log.index` (`GET /audit-log`, middleware `can:audit.view`; query filters `user_id`, `area`, `from`, `to`). No update or delete routes exist. Convention for later phases: every model whose changes matter adds `LogsActivity` with `logOnlyDirty()` and a `useLogName('<area>')`; areas used so far are `organization`, `users`, `settings`, `auth`.
 
@@ -673,11 +702,13 @@ it('exposes no route to change or delete entries', function () {
 ### Task 10: Scheduler, queue, backups and the phase 1 release
 
 **Files:**
+
 - Create: `app/Console/Commands/BackupDatabase.php`
 - Modify: `routes/console.php`, `scripts/deploy.ps1`, `docs/deploy.md`
 - Test: `tests/Feature/Console/BackupDatabaseTest.php`, `tests/Feature/Console/ScheduleTest.php`
 
 **Interfaces:**
+
 - Produces: schedule entries `queue:work --stop-when-empty --max-time=50` every minute (`withoutOverlapping`), `hrm:backup-database` daily at 02:00, `activitylog:clean` is **not** scheduled (audit entries are kept). Command `hrm:backup-database` writes `storage/app/backups/lumino-hrm-YYYY-MM-DD.sql.gz` using PDO only (no `mysqldump`, because `exec` is disabled) and deletes backups older than 14 days. Later phases add their jobs to `routes/console.php`.
 
 - [ ] **Step 1: Write the failing tests:**

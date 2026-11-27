@@ -48,16 +48,16 @@ C:\php84\php.exe artisan hrm:simulate-punches --date=2026-11-23
 
 Options:
 
-| Option | Default | Meaning |
-|---|---|---|
-| `--date=` | the current attendance day | The day to simulate (`Y-m-d`). Never a future day. On today only punches up to now are sent. |
-| `--employees=` | `all` | `all`, or a comma-separated list of employee ids or codes, e.g. `--employees=LD-0001,LD-0004` |
-| `--late=` | `10` | Percent of people who arrive after the grace period (1 to 75 minutes past it) |
-| `--absent=` | `5` | Percent of people who do not come |
-| `--missing-out=` | `3` | Percent of people who forget to punch out |
-| `--serial=` | `LOCAL-SIMULATOR` | Send as this active device instead. Without it the simulator always uses its own device "Local simulator (not a real machine)" (serial `LOCAL-SIMULATOR`), created on first use; it never borrows a real machine. |
-| `--assign-ids` | off | Give the next free machine user ID to chosen employees who have none |
-| `--seed=` | from the date | The same seed gives the same punches |
+| Option           | Default                    | Meaning                                                                                                                                                                                                           |
+| ---------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--date=`        | the current attendance day | The day to simulate (`Y-m-d`). Never a future day. On today only punches up to now are sent.                                                                                                                      |
+| `--employees=`   | `all`                      | `all`, or a comma-separated list of employee ids or codes, e.g. `--employees=LD-0001,LD-0004`                                                                                                                     |
+| `--late=`        | `10`                       | Percent of people who arrive after the grace period (1 to 75 minutes past it)                                                                                                                                     |
+| `--absent=`      | `5`                        | Percent of people who do not come                                                                                                                                                                                 |
+| `--missing-out=` | `3`                        | Percent of people who forget to punch out                                                                                                                                                                         |
+| `--serial=`      | `LOCAL-SIMULATOR`          | Send as this active device instead. Without it the simulator always uses its own device "Local simulator (not a real machine)" (serial `LOCAL-SIMULATOR`), created on first use; it never borrows a real machine. |
+| `--assign-ids`   | off                        | Give the next free machine user ID to chosen employees who have none                                                                                                                                              |
+| `--seed=`        | from the date              | The same seed gives the same punches                                                                                                                                                                              |
 
 Times follow each person's shift: arrival from 20 minutes early to the end of the grace period (or late, as above),
 departure from 10 minutes before the shift end to 45 minutes after it. Nobody punches on their weekly off day or on a

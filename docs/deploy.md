@@ -98,16 +98,17 @@ hour is over). The reply to the caller never changes. Registered machines are ne
 1. Commit your work on the branch to be released.
 2. Run, from the repository root:
 
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1
-   ```
+    ```powershell
+    powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1
+    ```
 
-   It refuses to run with uncommitted changes (`-AllowDirty` overrides, for
-   experiments only). It runs the test suite (stops on failure), `npm run build`,
-   copies the runtime files into `build\deploy\`, runs
-   `composer install --no-dev --optimize-autoloader` there, removes local-only
-   files, writes `deploy\hostinger\release.txt` (`<git sha>-<UTC timestamp>`), and
-   prints the staging path and file count. It does not upload.
+    It refuses to run with uncommitted changes (`-AllowDirty` overrides, for
+    experiments only). It runs the test suite (stops on failure), `npm run build`,
+    copies the runtime files into `build\deploy\`, runs
+    `composer install --no-dev --optimize-autoloader` there, removes local-only
+    files, writes `deploy\hostinger\release.txt` (`<git sha>-<UTC timestamp>`), and
+    prints the staging path and file count. It does not upload.
+
 3. Upload the **contents** of `build\deploy\` into
    `/home/u882878513/domains/hrm.luminocrm.online/public_html` with the uploader
    (it replaces the document root; `shared/` is outside it and untouched).
@@ -149,13 +150,13 @@ to `shared/storage/logs/cron.log`, which is rotated at about 1 MB (one `.1` back
 
 `schedule:run` is the only thing cron calls; the application decides what is due:
 
-| What | When | Notes |
-| --- | --- | --- |
-| `queue:work --stop-when-empty --max-time=50 --tries=3` | every minute | Sends queued mail (set-password emails). `withoutOverlapping` with a 10 minute expiry. A fresh process each minute, so current Settings > Email values apply. |
-| `hrm:backup-database` | 02:00 `APP_TIMEZONE` (Asia/Karachi) | PDO-only SQL dump to `shared/storage/app/private/backups/lumino-hrm-YYYY-MM-DD.sql.gz`, 14 days kept. See [backup-restore.md](backup-restore.md). |
-| `hrm:backup-database --if-missing` | hourly at :20 | Catch-up, see below: does nothing unless it is 02:00 or later and today has no good backup yet. |
-| `queue:prune-failed --hours=168` | 03:30 daily | Drops failed jobs (encrypted payloads can hold reset tokens) after a week. |
-| `queue:prune-batches` | 03:35 daily | Only when the `job_batches` table exists. |
+| What                                                   | When                                | Notes                                                                                                                                                         |
+| ------------------------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `queue:work --stop-when-empty --max-time=50 --tries=3` | every minute                        | Sends queued mail (set-password emails). `withoutOverlapping` with a 10 minute expiry. A fresh process each minute, so current Settings > Email values apply. |
+| `hrm:backup-database`                                  | 02:00 `APP_TIMEZONE` (Asia/Karachi) | PDO-only SQL dump to `shared/storage/app/private/backups/lumino-hrm-YYYY-MM-DD.sql.gz`, 14 days kept. See [backup-restore.md](backup-restore.md).             |
+| `hrm:backup-database --if-missing`                     | hourly at :20                       | Catch-up, see below: does nothing unless it is 02:00 or later and today has no good backup yet.                                                               |
+| `queue:prune-failed --hours=168`                       | 03:30 daily                         | Drops failed jobs (encrypted payloads can hold reset tokens) after a week.                                                                                    |
+| `queue:prune-batches`                                  | 03:35 daily                         | Only when the `job_batches` table exists.                                                                                                                     |
 
 `activitylog:clean` is deliberately not scheduled: the audit log is permanent.
 `schedule:run` runs these in the foreground, so a long queue run (up to about 50 s) keeps `cron.sh`'s lock for that
@@ -247,6 +248,7 @@ file API (denied over HTTP, rewritten every minute, removed by the next deploy u
   `last_backup` (time of the last SUCCESSFUL backup, empty if none yet) and `last_backup_ok` (result of the latest attempt: `yes`, `no` or `unknown`). No secrets and no command output.
 - `deploy/hostinger/status.log`: the last 40 lines `cron.sh` wrote itself (raw artisan output is not copied;
   for that, `shared/storage/logs/cron.log` is the full log).
+
 ## Check that a deploy worked
 
 - `https://hrm.luminocrm.online/login` shows the login page.
