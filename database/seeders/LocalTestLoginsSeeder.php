@@ -15,7 +15,8 @@ use RuntimeException;
  *   testmanager@lumino.test Manager  linked to employee LD-0001 (has direct reports)
  *   testemployee@lumino.test Employee linked to employee LD-0003 (reports to LD-0001)
  *
- * The shared password is read from LOCAL_TEST_PASSWORD in .env (git-ignored), never committed.
+ * The shared password is read from LOCAL_TEST_PASSWORD in .env (git-ignored) via config('hrm.local_test_password'),
+ * never committed.
  * Refuses to run unless APP_ENV=local. Safe to re-run: accounts are updated, not duplicated.
  *
  *   C:\php84\php.exe artisan db:seed --class=LocalTestLoginsSeeder
@@ -28,7 +29,7 @@ class LocalTestLoginsSeeder extends Seeder
             throw new RuntimeException('LocalTestLoginsSeeder only runs when APP_ENV=local.');
         }
 
-        $password = (string) env('LOCAL_TEST_PASSWORD', '');
+        $password = (string) config('hrm.local_test_password', '');
         if (strlen($password) < 12) {
             throw new RuntimeException('Set LOCAL_TEST_PASSWORD (12+ characters) in .env first.');
         }

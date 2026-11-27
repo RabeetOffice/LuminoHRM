@@ -2,6 +2,9 @@
 
 return [
 
+    // Local development only: shared password for LocalTestLoginsSeeder (never set in production).
+    'local_test_password' => (string) env('LOCAL_TEST_PASSWORD', ''),
+
     'devices' => [
         // Bootstrap only: a serial listed here (comma-separated in HRM_DEVICE_SERIALS) that has no devices row gets one
         // on its first /iclock request. From then on the devices table decides (an inactive row is rejected).
